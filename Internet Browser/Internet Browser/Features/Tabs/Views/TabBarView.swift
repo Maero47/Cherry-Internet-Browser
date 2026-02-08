@@ -4,20 +4,18 @@
 //
 
 import SwiftUI
+import AppKit
 
 struct TabBarView: View {
     @Bindable var tabManager: TabManager
+    var isFullScreen: Bool = false
     let onNewTab: () -> Void
 
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         HStack(spacing: 0) {
-            // Window controls spacer (for frameless window)
-            Spacer()
-                .frame(width: 76)
-
-            // Tab list
+            // Tab list - starts after traffic lights (or from edge in fullscreen)
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 2) {
                     // Pinned tabs first
@@ -40,16 +38,18 @@ struct TabBarView: View {
                         )
                     }
                 }
-                .padding(.horizontal, 8)
+                .padding(.leading, isFullScreen ? 8 : 76)
+                .padding(.trailing, 8)
             }
 
             // New tab button
             Button(action: onNewTab) {
                 Image(systemName: "plus")
                     .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.secondary)
                     .frame(width: 28, height: 28)
             }
-            .buttonStyle(ToolbarButtonStyle())
+            .buttonStyle(.plain)
             .help("New Tab (Cmd+T)")
             .padding(.trailing, 8)
         }

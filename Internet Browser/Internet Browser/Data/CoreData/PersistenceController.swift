@@ -154,7 +154,42 @@ final class PersistenceController: @unchecked Sendable {
             historyVisitDate, historyVisitCount
         ]
 
-        model.entities = [bookmarkEntity, historyEntity]
+        // Shortcut Entity (for homepage)
+        let shortcutEntity = NSEntityDescription()
+        shortcutEntity.name = "ShortcutEntity"
+        shortcutEntity.managedObjectClassName = "ShortcutEntity"
+
+        let shortcutID = NSAttributeDescription()
+        shortcutID.name = "id"
+        shortcutID.attributeType = .UUIDAttributeType
+        shortcutID.isOptional = false
+
+        let shortcutURL = NSAttributeDescription()
+        shortcutURL.name = "url"
+        shortcutURL.attributeType = .stringAttributeType
+        shortcutURL.isOptional = false
+
+        let shortcutTitle = NSAttributeDescription()
+        shortcutTitle.name = "title"
+        shortcutTitle.attributeType = .stringAttributeType
+        shortcutTitle.isOptional = false
+
+        let shortcutFavicon = NSAttributeDescription()
+        shortcutFavicon.name = "faviconData"
+        shortcutFavicon.attributeType = .binaryDataAttributeType
+        shortcutFavicon.isOptional = true
+
+        let shortcutSortOrder = NSAttributeDescription()
+        shortcutSortOrder.name = "sortOrder"
+        shortcutSortOrder.attributeType = .integer32AttributeType
+        shortcutSortOrder.isOptional = false
+        shortcutSortOrder.defaultValue = 0
+
+        shortcutEntity.properties = [
+            shortcutID, shortcutURL, shortcutTitle, shortcutFavicon, shortcutSortOrder
+        ]
+
+        model.entities = [bookmarkEntity, historyEntity, shortcutEntity]
         return model
     }
 

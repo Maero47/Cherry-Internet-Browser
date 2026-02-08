@@ -18,7 +18,7 @@ enum AppConstants {
     }
 
     enum UI {
-        static let tabBarHeight: CGFloat = 36
+        static let tabBarHeight: CGFloat = 38
         static let navigationBarHeight: CGFloat = 44
         static let minTabWidth: CGFloat = 120
         static let maxTabWidth: CGFloat = 240

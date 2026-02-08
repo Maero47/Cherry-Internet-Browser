@@ -1,0 +1,194 @@
+//
+//  ShortcutRepository.swift
+//  Cherry Browser
+//
+
+import CoreData
+import AppKit
+import SwiftUI
+import Observation
+
+@Observable
+final class ShortcutRepository {
+    static let shared = ShortcutRepository()
+
+    private let persistence = PersistenceController.shared
+    private(set) var shortcuts: [Shortcut] = []
+
+    init() {
+        fetchShortcuts()
+        addDefaultShortcutsIfNeeded()
+        fetchMissingFavicons()
+    }
+
+    // MARK: - Fetch
+
+    func fetchShortcuts() {
+        let context = persistence.viewContext
+        let request = NSFetchRequest<ShortcutEntity>(entityName: "ShortcutEntity")
+        request.sortDescriptors = [NSSortDescriptor(key: "sortOrder", ascending: true)]
+
+        do {
+            let entities = try context.fetch(request)
+            shortcuts = entities.map { Shortcut(entity: $0) }
+        } catch {
+            print("Failed to fetch shortcuts: \(error)")
+        }
+    }
+
+    // MARK: - Add
+
+    @discardableResult
+    func addShortcut(url: URL, title: String, favicon: NSImage? = nil) -> Shortcut {
+        let context = persistence.viewContext
+
+        let entity = ShortcutEntity(context: context)
+        entity.id = UUID()
+        entity.url = url.absoluteString
+        entity.title = title
+        entity.favicon = favicon
+        entity.sortOrder = Int32(shortcuts.count)
+
+        persistence.save()
+        fetchShortcuts()
+
+        let shortcut = Shortcut(entity: entity)
+
+        // Auto-fetch favicon if none provided
+        if favicon == nil {
+            fetchFavicon(for: shortcut)
+        }
+
+        return shortcut
+    }
+
+    // MARK: - Favicon Fetching
+
+    func fetchFavicon(for shortcut: Shortcut) {
+        guard let host = shortcut.url.host else { return }
+
+        // Use Google's favicon service for reliable favicons
+        let faviconURLString = "https://www.google.com/s2/favicons?domain=\(host)&sz=128"
+        guard let faviconURL = URL(string: faviconURLString) else { return }
+
+        Task {
+            do {
+                let (data, _) = try await URLSession.shared.data(from: faviconURL)
+                if let image = NSImage(data: data), image.size.width > 1 {
+                    await MainActor.run {
+                        self.updateFavicon(for: shortcut, favicon: image)
+                    }
+                }
+            } catch {
+                // Try fallback to /favicon.ico
+                if let fallbackURL = shortcut.url.faviconURL {
+                    do {
+                        let (data, _) = try await URLSession.shared.data(from: fallbackURL)
+                        if let image = NSImage(data: data) {
+                            await MainActor.run {
+                                self.updateFavicon(for: shortcut, favicon: image)
+                            }
+                        }
+                    } catch {}
+                }
+            }
+        }
+    }
+
+    func fetchMissingFavicons() {
+        for shortcut in shortcuts where shortcut.favicon == nil {
+            fetchFavicon(for: shortcut)
+        }
+    }
+
+    // MARK: - Update
+
+    func updateShortcut(_ shortcut: Shortcut) {
+        let context = persistence.viewContext
+        let request = NSFetchRequest<ShortcutEntity>(entityName: "ShortcutEntity")
+        request.predicate = NSPredicate(format: "id == %@", shortcut.id as CVarArg)
+
+        do {
+            if let entity = try context.fetch(request).first {
+                entity.url = shortcut.url.absoluteString
+                entity.title = shortcut.title
+                entity.favicon = shortcut.favicon
+                entity.sortOrder = Int32(shortcut.sortOrder)
+
+                persistence.save()
+                fetchShortcuts()
+            }
+        } catch {
+            print("Failed to update shortcut: \(error)")
+        }
+    }
+
+    func updateFavicon(for shortcut: Shortcut, favicon: NSImage) {
+        var updated = shortcut
+        updated.favicon = favicon
+        updateShortcut(updated)
+    }
+
+    // MARK: - Delete
+
+    func deleteShortcut(_ shortcut: Shortcut) {
+        let context = persistence.viewContext
+        let request = NSFetchRequest<ShortcutEntity>(entityName: "ShortcutEntity")
+        request.predicate = NSPredicate(format: "id == %@", shortcut.id as CVarArg)
+
+        do {
+            if let entity = try context.fetch(request).first {
+                context.delete(entity)
+                persistence.save()
+                fetchShortcuts()
+            }
+        } catch {
+            print("Failed to delete shortcut: \(error)")
+        }
+    }
+
+    // MARK: - Reorder
+
+    func moveShortcut(from source: IndexSet, to destination: Int) {
+        var reorderedShortcuts = shortcuts
+        reorderedShortcuts.move(fromOffsets: source, toOffset: destination)
+
+        let context = persistence.viewContext
+        for (index, shortcut) in reorderedShortcuts.enumerated() {
+            let request = NSFetchRequest<ShortcutEntity>(entityName: "ShortcutEntity")
+            request.predicate = NSPredicate(format: "id == %@", shortcut.id as CVarArg)
+
+            do {
+                if let entity = try context.fetch(request).first {
+                    entity.sortOrder = Int32(index)
+                }
+            } catch {
+                print("Failed to reorder shortcut: \(error)")
+            }
+        }
+
+        persistence.save()
+        fetchShortcuts()
+    }
+
+    // MARK: - Default Shortcuts
+
+    private func addDefaultShortcutsIfNeeded() {
+        guard shortcuts.isEmpty else { return }
+
+        let defaults: [(String, String)] = [
+            ("Google", "https://www.google.com"),
+            ("YouTube", "https://www.youtube.com"),
+            ("GitHub", "https://www.github.com"),
+            ("Twitter", "https://www.twitter.com"),
+            ("Reddit", "https://www.reddit.com"),
+            ("Wikipedia", "https://www.wikipedia.org")
+        ]
+
+        for (title, urlString) in defaults {
+            if let url = URL(string: urlString) {
+                addShortcut(url: url, title: title)
+            }
+        }
+    }
+}

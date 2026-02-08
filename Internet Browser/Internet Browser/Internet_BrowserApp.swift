@@ -6,15 +6,17 @@
 //
 
 import SwiftUI
+import AppKit
 
 @main
 struct Internet_BrowserApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
+
     var body: some Scene {
         WindowGroup {
             BrowserView()
         }
         .windowStyle(.hiddenTitleBar)
-        .windowToolbarStyle(.unified(showsTitle: false))
         .commands {
             // File menu
             CommandGroup(replacing: .newItem) {
@@ -137,6 +139,61 @@ struct Internet_BrowserApp: App {
                 .keyboardShortcut("u", modifiers: .command)
             }
         }
+    }
+}
+
+// MARK: - App Delegate to configure windows
+
+class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        for window in NSApplication.shared.windows {
+            configureWindow(window)
+        }
+
+        // Listen for fullscreen transitions to keep tab bar visible
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(windowDidEnterFullScreen(_:)),
+            name: NSWindow.didEnterFullScreenNotification,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(windowDidExitFullScreen(_:)),
+            name: NSWindow.didExitFullScreenNotification,
+            object: nil
+        )
+    }
+
+    func applicationDidBecomeActive(_ notification: Notification) {
+        for window in NSApplication.shared.windows {
+            configureWindow(window)
+        }
+    }
+
+    private func configureWindow(_ window: NSWindow) {
+        window.titlebarAppearsTransparent = true
+        window.titleVisibility = .hidden
+        window.isMovableByWindowBackground = true
+        window.backgroundColor = .windowBackgroundColor
+        window.titlebarSeparatorStyle = .none
+
+        window.standardWindowButton(.closeButton)?.isHidden = false
+        window.standardWindowButton(.miniaturizeButton)?.isHidden = false
+        window.standardWindowButton(.zoomButton)?.isHidden = false
+    }
+
+    @objc private func windowDidEnterFullScreen(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow else { return }
+        // In fullscreen, prevent the toolbar/titlebar from auto-hiding over our content
+        window.titlebarAppearsTransparent = true
+        window.titleVisibility = .hidden
+        window.titlebarSeparatorStyle = .none
+    }
+
+    @objc private func windowDidExitFullScreen(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow else { return }
+        configureWindow(window)
     }
 }
 

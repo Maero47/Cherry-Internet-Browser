@@ -19,9 +19,11 @@ final class BrowserViewModel {
     var showBookmarkBar: Bool = true
     var sidebarContent: SidebarContent = .none
     var showAddBookmark: Bool = false
+    var isFullScreen: Bool = false
 
     let bookmarkRepository = BookmarkRepository.shared
     let historyRepository = HistoryRepository.shared
+    let shortcutRepository = ShortcutRepository.shared
 
     var currentTab: Tab? {
         tabManager.selectedTab
@@ -78,9 +80,9 @@ final class BrowserViewModel {
     }
 
     func goHome() {
-        guard let tab = currentTab,
-              let homeURL = URL(string: AppConstants.defaultHomePage) else { return }
-        tab.loadURL(homeURL)
+        guard let tab = currentTab else { return }
+        tab.showHomePage = true
+        tab.title = "New Tab"
     }
 
     // MARK: - Tab Management

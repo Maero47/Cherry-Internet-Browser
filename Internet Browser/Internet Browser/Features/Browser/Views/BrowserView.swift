@@ -16,6 +16,7 @@ struct BrowserView: View {
                 // Tab bar
                 TabBarView(
                     tabManager: viewModel.tabManager,
+                    isFullScreen: viewModel.isFullScreen,
                     onNewTab: { viewModel.newTab() }
                 )
 
@@ -64,12 +65,19 @@ struct BrowserView: View {
             }
         }
         .frame(minWidth: 800, minHeight: 600)
+        .ignoresSafeArea(.all, edges: .top)
         .background(Color(nsColor: .windowBackgroundColor))
         .focusable()
         .focusEffectDisabled()
         .onKeyPress(.return) { .ignored }
         .background {
             keyboardShortcutButtons
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.willEnterFullScreenNotification)) { _ in
+            viewModel.isFullScreen = true
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.willExitFullScreenNotification)) { _ in
+            viewModel.isFullScreen = false
         }
         .sheet(isPresented: $viewModel.showAddBookmark) {
             if let tab = viewModel.currentTab, let url = tab.url {
@@ -224,10 +232,24 @@ struct BrowserContentView: View {
                 Divider()
             }
 
-            // Web content - use urlVersion to force updates when URL changes
-            WebViewWrapper(tab: tab, urlVersion: urlVersion)
-                .id(tab.id)
+            // Content - show homepage or web view
+            if tab.showHomePage {
+                HomePageView(
+                    repository: viewModel.shortcutRepository,
+                    onShortcutClick: { url in
+                        onNavigate(url.absoluteString)
+                    },
+                    onSearch: { query in
+                        onNavigate(query)
+                    }
+                )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                // Web content - use urlVersion to force updates when URL changes
+                WebViewWrapper(tab: tab, urlVersion: urlVersion)
+                    .id(tab.id)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
         }
         .onChange(of: tab.url) { _, _ in
             urlVersion += 1

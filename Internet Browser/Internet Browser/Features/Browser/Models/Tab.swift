@@ -19,6 +19,7 @@ final class Tab: Identifiable {
     var canGoForward: Bool
     var isPinned: Bool
     var isMuted: Bool
+    var showHomePage: Bool
     var webView: WKWebView?
 
     private(set) var createdAt: Date
@@ -28,7 +29,8 @@ final class Tab: Identifiable {
         url: URL? = nil,
         title: String = "New Tab",
         favicon: NSImage? = nil,
-        isLoading: Bool = false
+        isLoading: Bool = false,
+        showHomePage: Bool = true
     ) {
         self.id = id
         self.url = url
@@ -40,6 +42,7 @@ final class Tab: Identifiable {
         self.canGoForward = false
         self.isPinned = false
         self.isMuted = false
+        self.showHomePage = url == nil ? showHomePage : false
         self.createdAt = Date()
     }
 
@@ -71,6 +74,7 @@ final class Tab: Identifiable {
 
     func loadURL(_ url: URL) {
         self.url = url
+        self.showHomePage = false
         webView?.load(URLRequest(url: url))
     }
 

@@ -24,6 +24,7 @@ struct TabItemView: View {
             if !tab.isPinned {
                 Text(tab.displayTitle)
                     .font(.system(size: 12))
+                    .foregroundStyle(.primary)
                     .lineLimit(1)
                     .truncationMode(.tail)
                     .frame(maxWidth: .infinity, alignment: .leading)
