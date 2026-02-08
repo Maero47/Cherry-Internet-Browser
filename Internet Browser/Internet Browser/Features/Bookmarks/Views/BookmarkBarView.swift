@@ -1,0 +1,77 @@
+//
+//  BookmarkBarView.swift
+//  Cherry Browser
+//
+
+import SwiftUI
+
+struct BookmarkBarView: View {
+    @Bindable var repository: BookmarkRepository
+    let onBookmarkClick: (Bookmark) -> Void
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 4) {
+                ForEach(repository.bookmarkBarItems) { bookmark in
+                    BookmarkBarItemView(bookmark: bookmark) {
+                        onBookmarkClick(bookmark)
+                    }
+                }
+
+                if repository.bookmarkBarItems.isEmpty {
+                    Text("Drag bookmarks here or right-click to add")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 8)
+                }
+            }
+            .padding(.horizontal, 8)
+        }
+        .frame(height: 28)
+        .background(Color(nsColor: .windowBackgroundColor))
+    }
+}
+
+struct BookmarkBarItemView: View {
+    let bookmark: Bookmark
+    let action: () -> Void
+
+    @State private var isHovering = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 4) {
+                if let favicon = bookmark.favicon {
+                    Image(nsImage: favicon)
+                        .resizable()
+                        .frame(width: 14, height: 14)
+                } else {
+                    Image(systemName: "globe")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+
+                Text(bookmark.title)
+                    .font(.system(size: 11))
+                    .lineLimit(1)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(
+                RoundedRectangle(cornerRadius: 4)
+                    .fill(isHovering ? Color.gray.opacity(0.2) : Color.clear)
+            )
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering in
+            isHovering = hovering
+        }
+        .contextMenu {
+            Button("Open") { action() }
+            Button("Open in New Tab") { /* TODO */ }
+            Divider()
+            Button("Edit...") { /* TODO */ }
+            Button("Delete") { /* TODO */ }
+        }
+    }
+}

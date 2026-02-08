@@ -1,0 +1,50 @@
+# Xcode
+build/
+DerivedData/
+*.xcuserstate
+*.xcscmblueprint
+*.xccheckout
+
+# User-specific files
+xcuserdata/
+*.xcworkspace/xcuserdata/
+
+# Swift Package Manager
+.build/
+Packages/
+Package.pins
+Package.resolved
+*.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/
+
+# CocoaPods
+Pods/
+
+# Carthage
+Carthage/Build/
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDE
+.idea/
+*.swp
+*.swo
+*~
+
+# Playgrounds
+timeline.xctimeline
+playground.xcworkspace
+
+# Archives
+*.xcarchive
+
+# Other
+*.ipa
+*.dSYM.zip
+*.dSYM
