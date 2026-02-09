@@ -167,6 +167,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidBecomeActive(_ notification: Notification) {
         for window in NSApplication.shared.windows {
+            guard window.contentView != nil else { continue }
             configureWindow(window)
         }
     }
@@ -174,7 +175,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private func configureWindow(_ window: NSWindow) {
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
-        window.isMovableByWindowBackground = true
+        window.isMovableByWindowBackground = false
+        window.isMovable = false  // Prevent system titlebar drag — we handle window movement ourselves
         window.backgroundColor = .windowBackgroundColor
         window.titlebarSeparatorStyle = .none
 

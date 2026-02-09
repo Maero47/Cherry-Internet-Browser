@@ -20,10 +20,17 @@ final class BrowserViewModel {
     var sidebarContent: SidebarContent = .none
     var showAddBookmark: Bool = false
     var isFullScreen: Bool = false
+    var showTabSearch: Bool = false
+    var useVerticalTabs: Bool = UserDefaults.standard.bool(forKey: "useVerticalTabs")
+    var verticalTabBarCollapsed: Bool = UserDefaults.standard.bool(forKey: "verticalTabBarCollapsed")
 
     let bookmarkRepository = BookmarkRepository.shared
     let historyRepository = HistoryRepository.shared
     let shortcutRepository = ShortcutRepository.shared
+
+    // Keep strong references to detached windows and their delegates
+    static var detachedWindows: [NSWindow] = []
+    static var detachedWindowDelegates: [DetachedWindowDelegate] = []
 
     var currentTab: Tab? {
         tabManager.selectedTab
@@ -132,6 +139,72 @@ final class BrowserViewModel {
         }
     }
 
+    // MARK: - Tab Search
+
+    func toggleTabSearch() {
+        showTabSearch.toggle()
+    }
+
+    // MARK: - Tab Detach
+
+    func detachTab(_ tab: Tab) {
+        let url = tab.url
+        let title = tab.title
+
+        // Don't detach if it's the only tab
+        guard tabManager.tabs.count > 1 else { return }
+
+        tabManager.closeTab(tab)
+
+        // Create a new window with the tab's URL
+        let newBrowserView = BrowserView(initialURL: url)
+        let hostingView = NSHostingView(rootView: newBrowserView)
+
+        let window = DetachedWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 1000, height: 700),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = hostingView
+        window.titlebarAppearsTransparent = true
+        window.titleVisibility = .hidden
+        window.isMovableByWindowBackground = false
+        window.isMovable = false  // We handle window movement ourselves
+        window.backgroundColor = .windowBackgroundColor
+        window.titlebarSeparatorStyle = .none
+        window.title = title
+
+        // Position near mouse cursor
+        let mouseLocation = NSEvent.mouseLocation
+        window.setFrameOrigin(NSPoint(
+            x: mouseLocation.x - 500,
+            y: mouseLocation.y - 400
+        ))
+
+        // Use a delegate to clean up when the window closes
+        let delegate = DetachedWindowDelegate()
+        window.delegate = delegate
+
+        // Retain the window and its delegate so they don't deallocate
+        BrowserViewModel.detachedWindows.append(window)
+        BrowserViewModel.detachedWindowDelegates.append(delegate)
+
+        window.makeKeyAndOrderFront(nil)
+    }
+
+    // MARK: - Vertical Tabs
+
+    func toggleVerticalTabs() {
+        useVerticalTabs.toggle()
+        UserDefaults.standard.set(useVerticalTabs, forKey: "useVerticalTabs")
+    }
+
+    func toggleVerticalTabBarCollapsed() {
+        verticalTabBarCollapsed.toggle()
+        UserDefaults.standard.set(verticalTabBarCollapsed, forKey: "verticalTabBarCollapsed")
+    }
+
     // MARK: - Bookmarks
 
     func toggleBookmarkBar() {
@@ -190,6 +263,36 @@ final class BrowserViewModel {
             tab.loadURL(item.url)
         } else {
             newTab(url: item.url)
+        }
+    }
+}
+
+// MARK: - Detached Window
+
+/// Custom NSWindow subclass for detached tabs
+class DetachedWindow: NSWindow {
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { true }
+
+    override init(
+        contentRect: NSRect,
+        styleMask style: NSWindow.StyleMask,
+        backing backingStoreType: NSWindow.BackingStoreType,
+        defer flag: Bool
+    ) {
+        super.init(contentRect: contentRect, styleMask: style, backing: backingStoreType, defer: flag)
+        self.isReleasedWhenClosed = false
+    }
+}
+
+/// Delegate that cleans up detached window references when the window closes
+class DetachedWindowDelegate: NSObject, NSWindowDelegate {
+    func windowWillClose(_ notification: Notification) {
+        guard let closedWindow = notification.object as? NSWindow else { return }
+        // Defer cleanup to avoid mutating state during notification
+        DispatchQueue.main.async {
+            BrowserViewModel.detachedWindows.removeAll { $0 === closedWindow }
+            BrowserViewModel.detachedWindowDelegates.removeAll { $0 === closedWindow.delegate as? DetachedWindowDelegate }
         }
     }
 }

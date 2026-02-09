@@ -21,8 +21,14 @@ final class Tab: Identifiable {
     var isMuted: Bool
     var showHomePage: Bool
     var webView: WKWebView?
+    var group: TabGroup?
+    var isSleeping: Bool
+    var lastActiveDate: Date
 
     private(set) var createdAt: Date
+
+    // Store URL before sleeping so we can reload
+    private var sleepURL: URL?
 
     init(
         id: UUID = UUID(),
@@ -44,6 +50,8 @@ final class Tab: Identifiable {
         self.isMuted = false
         self.showHomePage = url == nil ? showHomePage : false
         self.createdAt = Date()
+        self.isSleeping = false
+        self.lastActiveDate = Date()
     }
 
     var displayTitle: String {
@@ -75,6 +83,8 @@ final class Tab: Identifiable {
     func loadURL(_ url: URL) {
         self.url = url
         self.showHomePage = false
+        self.isSleeping = false
+        self.lastActiveDate = Date()
         webView?.load(URLRequest(url: url))
     }
 
@@ -92,6 +102,29 @@ final class Tab: Identifiable {
 
     func stopLoading() {
         webView?.stopLoading()
+    }
+
+    // MARK: - Tab Sleeping
+
+    func sleep() {
+        guard !isSleeping, !showHomePage else { return }
+        sleepURL = url
+        isSleeping = true
+        // Release the WebView to free memory
+        webView = nil
+    }
+
+    func wake() {
+        guard isSleeping else { return }
+        isSleeping = false
+        lastActiveDate = Date()
+        // WebView will be re-created by WebViewWrapper; reload the URL
+        if let savedURL = sleepURL ?? url {
+            // Delay slightly to let the WebView get created
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                self?.webView?.load(URLRequest(url: savedURL))
+            }
+        }
     }
 }
 

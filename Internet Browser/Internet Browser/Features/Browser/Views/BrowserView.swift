@@ -6,21 +6,43 @@
 import SwiftUI
 
 struct BrowserView: View {
-    @State private var viewModel = BrowserViewModel()
+    @State private var viewModel: BrowserViewModel
     @FocusState private var isOmniboxFocused: Bool
+
+    init(initialURL: URL? = nil) {
+        let vm = BrowserViewModel()
+        if let url = initialURL, let tab = vm.tabManager.selectedTab {
+            tab.url = url
+            tab.showHomePage = false
+            tab.title = url.host ?? "Loading..."
+        }
+        _viewModel = State(initialValue: vm)
+    }
 
     var body: some View {
         HStack(spacing: 0) {
-            // Main browser content
-            VStack(spacing: 0) {
-                // Tab bar
-                TabBarView(
+            // Vertical tab bar (left side)
+            if viewModel.useVerticalTabs {
+                VerticalTabBarView(
                     tabManager: viewModel.tabManager,
-                    isFullScreen: viewModel.isFullScreen,
+                    isCollapsed: $viewModel.verticalTabBarCollapsed,
                     onNewTab: { viewModel.newTab() }
                 )
-
                 Divider()
+            }
+
+            // Main browser content
+            VStack(spacing: 0) {
+                // Horizontal tab bar (only when not using vertical tabs)
+                if !viewModel.useVerticalTabs {
+                    TabBarView(
+                        tabManager: viewModel.tabManager,
+                        isFullScreen: viewModel.isFullScreen,
+                        onNewTab: { viewModel.newTab() },
+                        onDetachTab: { tab in viewModel.detachTab(tab) }
+                    )
+                    Divider()
+                }
 
                 // Navigation bar and web content
                 if let currentTab = viewModel.currentTab {
@@ -67,6 +89,7 @@ struct BrowserView: View {
         .frame(minWidth: 800, minHeight: 600)
         .ignoresSafeArea(.all, edges: .top)
         .background(Color(nsColor: .windowBackgroundColor))
+        .background { WindowConfigurator() }
         .focusable()
         .focusEffectDisabled()
         .onKeyPress(.return) { .ignored }
@@ -87,6 +110,26 @@ struct BrowserView: View {
                     favicon: tab.favicon
                 ) { title, folder, isInBar in
                     viewModel.addBookmark(title: title, folder: folder, isInBookmarkBar: isInBar)
+                }
+            }
+        }
+        .overlay {
+            // Tab search overlay
+            if viewModel.showTabSearch {
+                Color.black.opacity(0.3)
+                    .ignoresSafeArea()
+                    .onTapGesture {
+                        viewModel.showTabSearch = false
+                    }
+
+                VStack {
+                    TabSearchView(
+                        tabManager: viewModel.tabManager,
+                        isPresented: $viewModel.showTabSearch
+                    )
+                    .padding(.top, 60)
+
+                    Spacer()
                 }
             }
         }
@@ -154,7 +197,7 @@ struct BrowserView: View {
             Button("") { viewModel.toggleBookmarks() }
                 .keyboardShortcut("b", modifiers: [.command, .shift])
 
-            // Toggle Bookmark Bar (Cmd+Shift+B)
+            // Toggle Bookmark Bar (Cmd+Option+B)
             Button("") { viewModel.toggleBookmarkBar() }
                 .keyboardShortcut("b", modifiers: [.command, .option])
 
@@ -165,6 +208,14 @@ struct BrowserView: View {
             // Previous Tab (Ctrl+Shift+Tab)
             Button("") { viewModel.selectPreviousTab() }
                 .keyboardShortcut(.tab, modifiers: [.control, .shift])
+
+            // Tab Search (Cmd+Shift+A)
+            Button("") { viewModel.toggleTabSearch() }
+                .keyboardShortcut("a", modifiers: [.command, .shift])
+
+            // Toggle Vertical Tabs (Cmd+Option+V)
+            Button("") { viewModel.toggleVerticalTabs() }
+                .keyboardShortcut("v", modifiers: [.command, .option])
 
             // Tab selection 1-9
             ForEach(1...9, id: \.self) { index in

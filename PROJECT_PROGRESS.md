@@ -158,16 +158,50 @@ Internet Browser/
 
 ---
 
-## Phase 4: Enhanced Tab Management ⏳ PENDING
+## Phase 4: Enhanced Tab Management ✅ COMPLETE
 
-### Planned Features
-- [ ] Tab groups with colors
-- [ ] Pinned tabs
-- [ ] Tab sleeping (memory management)
-- [ ] Tab search (Cmd+Shift+A)
-- [ ] Vertical tab bar option
-- [ ] Tab preview on hover
-- [ ] Drag-and-drop reordering
+### Implemented Features
+- [x] Context menu actions fully wired (New Tab, Duplicate, Pin/Unpin, Close Others, Close Right)
+- [x] Drag-and-drop tab reordering (horizontal and vertical tab bars)
+- [x] Tab groups with colors (8 colors: red, orange, yellow, green, blue, purple, pink, gray)
+- [x] Tab group collapse/expand with group chip display
+- [x] Tab group context menu (Add to New Group, Add to Group, Remove from Group)
+- [x] Tab search overlay (Cmd+Shift+A) with filtering by title/URL
+- [x] Tab preview on hover (delayed popover with title, URL, sleep status)
+- [x] Vertical tab bar option (Cmd+Option+V to toggle, collapsible sidebar)
+- [x] Tab sleeping (auto-sleep after 30min inactive, releases WebView for memory)
+- [x] Sleeping tabs: dimmed visual indicator, moon icon, wake on select
+- [x] Pinned tabs excluded from auto-sleep
+- [x] Vertical tab bar preference persisted via UserDefaults
+
+### Keyboard Shortcuts (Phase 4)
+| Shortcut | Action |
+|----------|--------|
+| Cmd+Shift+A | Toggle Tab Search |
+| Cmd+Option+V | Toggle Vertical Tab Bar |
+
+### Files Created/Modified
+```
+Internet Browser/
+├── Features/
+│   ├── Tabs/
+│   │   ├── Models/
+│   │   │   └── TabGroup.swift              (NEW)
+│   │   ├── Views/
+│   │   │   ├── TabBarView.swift            (MODIFIED)
+│   │   │   ├── TabItemView.swift           (MODIFIED)
+│   │   │   ├── TabSearchView.swift         (NEW)
+│   │   │   └── VerticalTabBarView.swift    (NEW)
+│   │   └── ViewModels/
+│   │       └── TabManager.swift            (MODIFIED)
+│   └── Browser/
+│       ├── Models/
+│       │   └── Tab.swift                   (MODIFIED)
+│       ├── Views/
+│       │   └── BrowserView.swift           (MODIFIED)
+│       └── ViewModels/
+│           └── BrowserViewModel.swift      (MODIFIED)
+```
 
 ---
 

@@ -8,10 +8,25 @@ import SwiftUI
 struct TabItemView: View {
     @Bindable var tab: Tab
     let isSelected: Bool
+    var fixedWidth: CGFloat? = nil
     let onSelect: () -> Void
     let onClose: () -> Void
+    var onNewTab: (() -> Void)? = nil
+    var onDuplicate: (() -> Void)? = nil
+    var onPin: (() -> Void)? = nil
+    var onCloseOthers: (() -> Void)? = nil
+    var onCloseRight: (() -> Void)? = nil
+    var onAddToNewGroup: (() -> Void)? = nil
+    var onRemoveFromGroup: (() -> Void)? = nil
+    var availableGroups: [TabGroup] = []
+    var onAddToGroup: ((TabGroup) -> Void)? = nil
+    var onDragUpdate: ((CGSize) -> Void)? = nil
+    var onDragEnd: ((CGSize) -> Void)? = nil
 
     @State private var isHovering = false
+    @State private var showPreview = false
+    @State private var dragOffset: CGSize = .zero
+    @State private var isDragging = false
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
@@ -20,18 +35,18 @@ struct TabItemView: View {
             faviconView
                 .frame(width: 16, height: 16)
 
-            // Title (hidden for pinned tabs)
-            if !tab.isPinned {
+            // Title (hidden for pinned tabs or very narrow tabs)
+            if !tab.isPinned && (fixedWidth ?? 999) > 100 {
                 Text(tab.displayTitle)
                     .font(.system(size: 12))
-                    .foregroundStyle(.primary)
+                    .foregroundStyle(tab.isSleeping ? .tertiary : .primary)
                     .lineLimit(1)
                     .truncationMode(.tail)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
 
-            // Close button (hidden for pinned tabs, visible on hover)
-            if !tab.isPinned && (isHovering || isSelected) {
+            // Close button (always available for non-pinned tabs on hover/select)
+            if !tab.isPinned && (isHovering || isSelected) && !isDragging {
                 Button(action: onClose) {
                     Image(systemName: "xmark")
                         .font(.system(size: 9, weight: .bold))
@@ -49,17 +64,63 @@ struct TabItemView: View {
         }
         .padding(.horizontal, tab.isPinned ? 8 : 12)
         .padding(.vertical, 6)
-        .frame(width: tab.isPinned ? 40 : nil)
-        .frame(minWidth: tab.isPinned ? nil : AppConstants.UI.minTabWidth)
-        .frame(maxWidth: tab.isPinned ? nil : AppConstants.UI.maxTabWidth)
+        .frame(width: fixedWidth ?? (tab.isPinned ? 40 : AppConstants.UI.maxTabWidth))
         .background(tabBackground)
+        .overlay(alignment: .bottom) {
+            // Tab group color indicator
+            if let group = tab.group {
+                RoundedRectangle(cornerRadius: 1)
+                    .fill(group.swiftUIColor)
+                    .frame(height: 2)
+                    .padding(.horizontal, 4)
+            }
+        }
         .clipShape(RoundedRectangle(cornerRadius: AppConstants.UI.tabCornerRadius))
+        .opacity(tab.isSleeping && !isDragging ? 0.6 : 1.0)
+        .scaleEffect(isDragging ? 0.95 : 1.0)
+        .shadow(color: isDragging ? .black.opacity(0.3) : .clear, radius: isDragging ? 8 : 0)
+        .offset(x: dragOffset.width, y: 0)
+        .zIndex(isDragging ? 100 : 0)
         .onHover { hovering in
+            guard !isDragging else { return }
             isHovering = hovering
+            if hovering {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                    if isHovering && !isDragging {
+                        showPreview = true
+                    }
+                }
+            } else {
+                showPreview = false
+            }
         }
-        .onTapGesture {
-            onSelect()
+        .popover(isPresented: $showPreview, arrowEdge: .bottom) {
+            tabPreviewPopover
         }
+        .gesture(
+            DragGesture(minimumDistance: 8)
+                .onChanged { value in
+                    if !isDragging {
+                        isDragging = true
+                        showPreview = false
+                    }
+                    dragOffset = value.translation
+                    onDragUpdate?(value.translation)
+                }
+                .onEnded { value in
+                    onDragEnd?(value.translation)
+                    withAnimation(.easeOut(duration: 0.2)) {
+                        dragOffset = .zero
+                    }
+                    isDragging = false
+                }
+        )
+        .simultaneousGesture(
+            TapGesture()
+                .onEnded {
+                    onSelect()
+                }
+        )
         .contextMenu {
             tabContextMenu
         }
@@ -70,6 +131,10 @@ struct TabItemView: View {
         if tab.isLoading {
             ProgressView()
                 .scaleEffect(0.5)
+        } else if tab.isSleeping {
+            Image(systemName: "moon.zzz.fill")
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
         } else if let favicon = tab.favicon {
             Image(nsImage: favicon)
                 .resizable()
@@ -95,26 +160,79 @@ struct TabItemView: View {
     }
 
     @ViewBuilder
+    private var tabPreviewPopover: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(tab.displayTitle)
+                .font(.system(size: 12, weight: .medium))
+                .lineLimit(2)
+            if let url = tab.url {
+                Text(url.absoluteString)
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            if tab.isSleeping {
+                Text("Tab is sleeping")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.orange)
+            }
+        }
+        .padding(8)
+        .frame(maxWidth: 300)
+    }
+
+    @ViewBuilder
     private var tabContextMenu: some View {
         Button("New Tab") {
-            // Will be handled by parent
+            onNewTab?()
         }
         Divider()
         Button("Reload") {
             tab.reload()
         }
         Button("Duplicate Tab") {
-            // Will be handled by parent
+            onDuplicate?()
         }
         if tab.isPinned {
             Button("Unpin Tab") {
-                // Will be handled by parent
+                onPin?()
             }
         } else {
             Button("Pin Tab") {
-                // Will be handled by parent
+                onPin?()
             }
         }
+        Divider()
+
+        // Tab group menu
+        Menu("Tab Group") {
+            Button("Add to New Group") {
+                onAddToNewGroup?()
+            }
+            if !availableGroups.isEmpty {
+                Divider()
+                ForEach(availableGroups) { group in
+                    Button {
+                        onAddToGroup?(group)
+                    } label: {
+                        HStack {
+                            Circle()
+                                .fill(group.swiftUIColor)
+                                .frame(width: 8, height: 8)
+                            Text(group.name)
+                        }
+                    }
+                }
+            }
+            if tab.group != nil {
+                Divider()
+                Button("Remove from Group") {
+                    onRemoveFromGroup?()
+                }
+            }
+        }
+
         Divider()
         if tab.isMuted {
             Button("Unmute Tab") {
@@ -130,10 +248,10 @@ struct TabItemView: View {
             onClose()
         }
         Button("Close Other Tabs") {
-            // Will be handled by parent
+            onCloseOthers?()
         }
         Button("Close Tabs to the Right") {
-            // Will be handled by parent
+            onCloseRight?()
         }
     }
 }
