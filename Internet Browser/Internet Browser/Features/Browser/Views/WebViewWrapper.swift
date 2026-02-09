@@ -27,6 +27,11 @@ struct WebViewWrapper: NSViewRepresentable {
             configuration.websiteDataStore = .nonPersistent()
         }
 
+        // Apply ad blocker rules (skip for whitelisted domains)
+        if settings.adBlockEnabled && !settings.isAdBlockPaused(for: tab.url) {
+            AdBlockManager.shared.applyRules(to: configuration)
+        }
+
         // Set modern user agent to get full website features
         configuration.applicationNameForUserAgent = "Safari/605.1.15"
 

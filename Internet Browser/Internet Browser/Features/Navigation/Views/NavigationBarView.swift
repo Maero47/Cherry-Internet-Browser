@@ -17,9 +17,22 @@ struct NavigationBarView: View {
     var onBookmark: (() -> Void)? = nil
     var onToggleHistory: (() -> Void)? = nil
     var onToggleBookmarks: (() -> Void)? = nil
+    var onDownloads: (() -> Void)? = nil
+    var onSettings: (() -> Void)? = nil
+    var onToggleAdBlock: (() -> Void)? = nil
+    var isAdBlockPaused: Bool = false
 
     @State private var addressText: String = ""
     @State private var isEditing: Bool = false
+
+    /// Extra leading padding when vertical tabs are collapsed so nav buttons don't overlap traffic lights
+    private var verticalTabsCollapsedPadding: CGFloat {
+        let settings = SettingsManager.shared
+        if settings.useVerticalTabs && settings.verticalTabBarCollapsed {
+            return 36  // traffic lights extend ~70pt, collapsed sidebar is 44pt, need ~26pt extra + normal 12
+        }
+        return 12
+    }
 
     var body: some View {
         HStack(spacing: 4) {
@@ -46,7 +59,8 @@ struct NavigationBarView: View {
             // Action buttons
             actionButtons
         }
-        .padding(.horizontal, 12)
+        .padding(.leading, verticalTabsCollapsedPadding)
+        .padding(.trailing, 12)
         .padding(.vertical, 8)
         .background(Color(nsColor: .windowBackgroundColor))
         .onChange(of: tab.url) { _, newURL in
@@ -127,33 +141,58 @@ struct NavigationBarView: View {
                 .help("Add Bookmark (Cmd+D)")
             }
 
-            // History button
-            if let onToggleHistory = onToggleHistory {
-                Button(action: onToggleHistory) {
-                    Image(systemName: "clock")
+            // Ad blocker shield button
+            if SettingsManager.shared.adBlockEnabled, let onToggleAdBlock = onToggleAdBlock {
+                Button(action: onToggleAdBlock) {
+                    Image(systemName: isAdBlockPaused ? "shield.slash" : "shield.checkered")
                         .font(.system(size: AppConstants.UI.toolbarIconSize, weight: .medium))
+                        .foregroundStyle(isAdBlockPaused ? .secondary : SettingsManager.shared.accentColor)
                 }
                 .buttonStyle(ToolbarButtonStyle())
-                .help("History (Cmd+Y)")
+                .help(isAdBlockPaused ? "Ad blocker paused for this site" : "Ad blocker active — click to pause for this site")
             }
 
-            // Bookmarks button
-            if let onToggleBookmarks = onToggleBookmarks {
-                Button(action: onToggleBookmarks) {
-                    Image(systemName: "book")
-                        .font(.system(size: AppConstants.UI.toolbarIconSize, weight: .medium))
+            // 3-dot menu
+            Menu {
+                Button {
+                    onToggleBookmarks?()
+                } label: {
+                    Label("Bookmarks", systemImage: "book")
                 }
-                .buttonStyle(ToolbarButtonStyle())
-                .help("Bookmarks (Cmd+Shift+B)")
-            }
 
-            // Downloads button (placeholder)
-            Button(action: {}) {
-                Image(systemName: "arrow.down.circle")
+                Button {
+                    onToggleHistory?()
+                } label: {
+                    Label("History", systemImage: "clock")
+                }
+
+                Button {
+                    onDownloads?()
+                } label: {
+                    Label("Downloads", systemImage: "arrow.down.circle")
+                }
+
+                Divider()
+
+                Button {
+                    onSettings?()
+                } label: {
+                    Label("Settings", systemImage: "gear")
+                }
+            } label: {
+                Image(systemName: "ellipsis")
                     .font(.system(size: AppConstants.UI.toolbarIconSize, weight: .medium))
+                    .frame(width: 28, height: 28)
+                    .background(
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(Color.clear)
+                    )
+                    .contentShape(Rectangle())
             }
-            .buttonStyle(ToolbarButtonStyle())
-            .help("Downloads")
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .frame(width: 28, height: 28)
+            .help("Menu")
         }
     }
 }

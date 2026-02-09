@@ -62,9 +62,15 @@ final class TabManager {
 
         // Handle selection
         if tabs.isEmpty {
-            let newTab = Tab()
-            tabs.append(newTab)
-            selectedTabID = newTab.id
+            // Close the window when the last tab is closed
+            if let window = NSApp.keyWindow {
+                window.close()
+            }
+            // If no windows remain, quit the app
+            if NSApp.windows.filter({ $0.isVisible }).isEmpty {
+                NSApp.terminate(nil)
+            }
+            return
         } else if selectedTabID == tab.id {
             let newIndex = min(index, tabs.count - 1)
             selectedTabID = tabs[newIndex].id

@@ -40,9 +40,8 @@ struct VerticalTabBarView: View {
                 .help(isCollapsed ? "Expand sidebar" : "Collapse sidebar")
             }
             .padding(.horizontal, 8)
-            .padding(.vertical, 6)
-
-            Divider()
+            .padding(.top, 32)
+            .padding(.bottom, 6)
 
             // Tab list
             ScrollView(.vertical, showsIndicators: false) {
@@ -219,7 +218,7 @@ private struct VerticalTabItemView: View {
             .background(
                 RoundedRectangle(cornerRadius: 6)
                     .fill(isSelected
-                          ? AppConstants.Colors.accent.opacity(0.15)
+                          ? SettingsManager.shared.accentColor.opacity(0.15)
                           : (isHovering ? Color.gray.opacity(0.1) : Color.clear))
             )
             .opacity(tab.isSleeping ? 0.6 : 1.0)

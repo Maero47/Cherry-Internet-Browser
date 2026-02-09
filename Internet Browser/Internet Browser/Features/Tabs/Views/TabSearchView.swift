@@ -148,7 +148,7 @@ struct TabSearchView: View {
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 6)
-            .background(isSelected ? AppConstants.Colors.accent.opacity(0.1) : Color.clear)
+            .background(isSelected ? SettingsManager.shared.accentColor.opacity(0.1) : Color.clear)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

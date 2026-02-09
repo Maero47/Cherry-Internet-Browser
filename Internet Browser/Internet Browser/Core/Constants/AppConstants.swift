@@ -27,8 +27,8 @@ enum AppConstants {
     }
 
     enum Colors {
-        static let accent = Color(hex: "DB283C")  // Cherry red
-        static let accentBlue = Color(hex: "DB283C")  // Keep for compatibility
+        static var accent: Color { Color(hex: SettingsManager.shared.accentColorHex) }
+        static var accentBlue: Color { Color(hex: SettingsManager.shared.accentColorHex) }
         static let lightBackground = Color(hex: "F5F5F5")
         static let darkBackground = Color(hex: "1C1C1E")
         static let tabBackground = Color(hex: "E5E5E5")

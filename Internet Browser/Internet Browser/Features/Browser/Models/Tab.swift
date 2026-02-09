@@ -20,6 +20,7 @@ final class Tab: Identifiable {
     var isPinned: Bool
     var isMuted: Bool
     var showHomePage: Bool
+    var showSettingsPage: Bool
     var webView: WKWebView?
     var group: TabGroup?
     var isSleeping: Bool
@@ -51,6 +52,7 @@ final class Tab: Identifiable {
         self.isPinned = false
         self.isMuted = false
         self.showHomePage = url == nil ? showHomePage : false
+        self.showSettingsPage = false
         self.createdAt = Date()
         self.isSleeping = false
         self.lastActiveDate = Date()
@@ -86,6 +88,7 @@ final class Tab: Identifiable {
     func loadURL(_ url: URL) {
         self.url = url
         self.showHomePage = false
+        self.showSettingsPage = false
         self.isSleeping = false
         self.lastActiveDate = Date()
         webView?.load(URLRequest(url: url))

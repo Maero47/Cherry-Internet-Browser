@@ -15,6 +15,152 @@ enum CookieBlockingLevel: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+enum AppearanceMode: String, CaseIterable, Identifiable {
+    case system = "System"
+    case light = "Light"
+    case dark = "Dark"
+
+    var id: String { rawValue }
+}
+
+struct AccentColorOption: Identifiable {
+    let name: String
+    let hex: String
+    var id: String { hex }
+    var color: Color { Color(hex: hex) }
+
+    static let options: [AccentColorOption] = [
+        .init(name: "Cherry Red", hex: "DB283C"),
+        .init(name: "Ocean Blue", hex: "2563EB"),
+        .init(name: "Emerald", hex: "059669"),
+        .init(name: "Purple", hex: "7C3AED"),
+        .init(name: "Orange", hex: "EA580C"),
+        .init(name: "Pink", hex: "DB2777"),
+        .init(name: "Teal", hex: "0D9488"),
+        .init(name: "Graphite", hex: "6B7280"),
+    ]
+}
+
+enum HomepageTheme: String, CaseIterable, Identifiable {
+    case cherry = "Cherry"
+    case ocean = "Ocean"
+    case forest = "Forest"
+    case sunset = "Sunset"
+    case purple = "Purple"
+    case midnight = "Midnight"
+    case rose = "Rose"
+    case slate = "Slate"
+
+    var id: String { rawValue }
+
+    /// Returns 9 MeshGradient colors (3x3 grid) for the homepage background
+    var gradientColors: [Color] {
+        switch self {
+        case .cherry:
+            return [
+                Color(red: 0.5, green: 0.0, blue: 0.1),
+                Color(red: 0.6, green: 0.0, blue: 0.15),
+                Color(red: 0.4, green: 0.0, blue: 0.2),
+                Color(red: 0.35, green: 0.0, blue: 0.12),
+                Color(red: 0.45, green: 0.0, blue: 0.12),
+                Color(red: 0.45, green: 0.0, blue: 0.15),
+                Color(red: 0.15, green: 0.0, blue: 0.08),
+                Color(red: 0.2, green: 0.0, blue: 0.1),
+                Color(red: 0.1, green: 0.0, blue: 0.05),
+            ]
+        case .ocean:
+            return [
+                Color(red: 0.0, green: 0.15, blue: 0.4),
+                Color(red: 0.0, green: 0.2, blue: 0.5),
+                Color(red: 0.0, green: 0.1, blue: 0.35),
+                Color(red: 0.0, green: 0.12, blue: 0.35),
+                Color(red: 0.0, green: 0.25, blue: 0.55),
+                Color(red: 0.0, green: 0.18, blue: 0.45),
+                Color(red: 0.0, green: 0.05, blue: 0.2),
+                Color(red: 0.0, green: 0.08, blue: 0.25),
+                Color(red: 0.0, green: 0.03, blue: 0.15),
+            ]
+        case .forest:
+            return [
+                Color(red: 0.0, green: 0.3, blue: 0.15),
+                Color(red: 0.0, green: 0.35, blue: 0.18),
+                Color(red: 0.0, green: 0.25, blue: 0.12),
+                Color(red: 0.0, green: 0.22, blue: 0.1),
+                Color(red: 0.05, green: 0.35, blue: 0.15),
+                Color(red: 0.0, green: 0.28, blue: 0.14),
+                Color(red: 0.0, green: 0.1, blue: 0.05),
+                Color(red: 0.0, green: 0.15, blue: 0.08),
+                Color(red: 0.0, green: 0.08, blue: 0.04),
+            ]
+        case .sunset:
+            return [
+                Color(red: 0.6, green: 0.2, blue: 0.0),
+                Color(red: 0.7, green: 0.15, blue: 0.0),
+                Color(red: 0.5, green: 0.1, blue: 0.1),
+                Color(red: 0.55, green: 0.08, blue: 0.15),
+                Color(red: 0.65, green: 0.12, blue: 0.05),
+                Color(red: 0.5, green: 0.15, blue: 0.1),
+                Color(red: 0.25, green: 0.05, blue: 0.1),
+                Color(red: 0.3, green: 0.05, blue: 0.15),
+                Color(red: 0.2, green: 0.02, blue: 0.08),
+            ]
+        case .purple:
+            return [
+                Color(red: 0.3, green: 0.0, blue: 0.5),
+                Color(red: 0.35, green: 0.0, blue: 0.55),
+                Color(red: 0.25, green: 0.0, blue: 0.45),
+                Color(red: 0.2, green: 0.0, blue: 0.4),
+                Color(red: 0.35, green: 0.05, blue: 0.55),
+                Color(red: 0.28, green: 0.0, blue: 0.48),
+                Color(red: 0.1, green: 0.0, blue: 0.2),
+                Color(red: 0.15, green: 0.0, blue: 0.25),
+                Color(red: 0.08, green: 0.0, blue: 0.15),
+            ]
+        case .midnight:
+            return [
+                Color(red: 0.08, green: 0.08, blue: 0.2),
+                Color(red: 0.1, green: 0.1, blue: 0.25),
+                Color(red: 0.06, green: 0.06, blue: 0.18),
+                Color(red: 0.05, green: 0.08, blue: 0.18),
+                Color(red: 0.12, green: 0.12, blue: 0.3),
+                Color(red: 0.08, green: 0.1, blue: 0.22),
+                Color(red: 0.02, green: 0.02, blue: 0.08),
+                Color(red: 0.04, green: 0.04, blue: 0.12),
+                Color(red: 0.01, green: 0.01, blue: 0.06),
+            ]
+        case .rose:
+            return [
+                Color(red: 0.55, green: 0.1, blue: 0.3),
+                Color(red: 0.6, green: 0.08, blue: 0.35),
+                Color(red: 0.45, green: 0.05, blue: 0.25),
+                Color(red: 0.4, green: 0.08, blue: 0.28),
+                Color(red: 0.55, green: 0.12, blue: 0.35),
+                Color(red: 0.48, green: 0.08, blue: 0.3),
+                Color(red: 0.2, green: 0.02, blue: 0.12),
+                Color(red: 0.25, green: 0.04, blue: 0.15),
+                Color(red: 0.15, green: 0.01, blue: 0.08),
+            ]
+        case .slate:
+            return [
+                Color(red: 0.2, green: 0.22, blue: 0.25),
+                Color(red: 0.25, green: 0.27, blue: 0.3),
+                Color(red: 0.18, green: 0.2, blue: 0.22),
+                Color(red: 0.15, green: 0.17, blue: 0.2),
+                Color(red: 0.22, green: 0.25, blue: 0.28),
+                Color(red: 0.18, green: 0.2, blue: 0.24),
+                Color(red: 0.08, green: 0.09, blue: 0.1),
+                Color(red: 0.1, green: 0.11, blue: 0.13),
+                Color(red: 0.06, green: 0.07, blue: 0.08),
+            ]
+        }
+    }
+
+    /// Preview color for the theme picker (center color of gradient)
+    var previewColor: Color {
+        gradientColors[4]
+    }
+}
+
 @Observable
 final class SettingsManager {
     static let shared = SettingsManager()
@@ -41,7 +187,60 @@ final class SettingsManager {
         didSet { UserDefaults.standard.set(verticalTabBarCollapsed, forKey: Keys.verticalTabBarCollapsed) }
     }
 
+    // MARK: - Theme
+
+    var appearanceMode: AppearanceMode {
+        didSet { UserDefaults.standard.set(appearanceMode.rawValue, forKey: Keys.appearanceMode) }
+    }
+
+    var accentColorHex: String {
+        didSet { UserDefaults.standard.set(accentColorHex, forKey: Keys.accentColorHex) }
+    }
+
+    var homepageTheme: HomepageTheme {
+        didSet { UserDefaults.standard.set(homepageTheme.rawValue, forKey: Keys.homepageTheme) }
+    }
+
+    var accentColor: Color {
+        Color(hex: accentColorHex)
+    }
+
+    var resolvedColorScheme: ColorScheme? {
+        switch appearanceMode {
+        case .system: nil
+        case .light: .light
+        case .dark: .dark
+        }
+    }
+
     // MARK: - Privacy
+
+    var adBlockEnabled: Bool {
+        didSet { UserDefaults.standard.set(adBlockEnabled, forKey: Keys.adBlockEnabled) }
+    }
+
+    var adBlockWhitelistedDomains: Set<String> {
+        didSet {
+            UserDefaults.standard.set(Array(adBlockWhitelistedDomains), forKey: Keys.adBlockWhitelistedDomains)
+        }
+    }
+
+    func isAdBlockPaused(for url: URL?) -> Bool {
+        guard let host = url?.host?.lowercased() else { return false }
+        // Check both the full host and the base domain (e.g. www.example.com → example.com)
+        let baseDomain = host.components(separatedBy: ".").suffix(2).joined(separator: ".")
+        return adBlockWhitelistedDomains.contains(host) || adBlockWhitelistedDomains.contains(baseDomain)
+    }
+
+    func toggleAdBlockPause(for url: URL?) {
+        guard let host = url?.host?.lowercased() else { return }
+        let baseDomain = host.components(separatedBy: ".").suffix(2).joined(separator: ".")
+        if adBlockWhitelistedDomains.contains(baseDomain) {
+            adBlockWhitelistedDomains.remove(baseDomain)
+        } else {
+            adBlockWhitelistedDomains.insert(baseDomain)
+        }
+    }
 
     var blockCookies: CookieBlockingLevel {
         didSet {
@@ -90,7 +289,27 @@ final class SettingsManager {
         self.useVerticalTabs = defaults.bool(forKey: Keys.useVerticalTabs)
         self.verticalTabBarCollapsed = defaults.bool(forKey: Keys.verticalTabBarCollapsed)
 
+        // Theme
+        if let modeRaw = defaults.string(forKey: Keys.appearanceMode),
+           let mode = AppearanceMode(rawValue: modeRaw) {
+            self.appearanceMode = mode
+        } else {
+            self.appearanceMode = .system
+        }
+        self.accentColorHex = defaults.string(forKey: Keys.accentColorHex) ?? "DB283C"
+
+        if let themeRaw = defaults.string(forKey: Keys.homepageTheme),
+           let theme = HomepageTheme(rawValue: themeRaw) {
+            self.homepageTheme = theme
+        } else {
+            self.homepageTheme = .cherry
+        }
+
         // Privacy
+        self.adBlockEnabled = defaults.object(forKey: Keys.adBlockEnabled) as? Bool ?? true
+        let savedDomains = defaults.stringArray(forKey: Keys.adBlockWhitelistedDomains) ?? []
+        self.adBlockWhitelistedDomains = Set(savedDomains)
+
         if let cookieRaw = defaults.string(forKey: Keys.blockCookies),
            let level = CookieBlockingLevel(rawValue: cookieRaw) {
             self.blockCookies = level
@@ -168,5 +387,10 @@ final class SettingsManager {
         static let enableJavaScript = "enableJavaScript"
         static let tabSleepEnabled = "tabSleepEnabled"
         static let tabSleepTimeout = "tabSleepTimeout"
+        static let appearanceMode = "appearanceMode"
+        static let accentColorHex = "accentColorHex"
+        static let homepageTheme = "homepageTheme"
+        static let adBlockEnabled = "adBlockEnabled"
+        static let adBlockWhitelistedDomains = "adBlockWhitelistedDomains"
     }
 }

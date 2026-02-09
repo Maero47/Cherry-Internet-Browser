@@ -99,7 +99,22 @@ final class BrowserViewModel {
     func goHome() {
         guard let tab = currentTab else { return }
         tab.showHomePage = true
+        tab.showSettingsPage = false
         tab.title = "New Tab"
+    }
+
+    func showSettings() {
+        guard let tab = currentTab else { return }
+        tab.showSettingsPage = true
+        tab.showHomePage = false
+        tab.title = "Settings"
+    }
+
+    func toggleAdBlockForCurrentSite() {
+        guard let tab = currentTab else { return }
+        SettingsManager.shared.toggleAdBlockPause(for: tab.url)
+        // Reload the page so the change takes effect
+        tab.reload()
     }
 
     // MARK: - Tab Management

@@ -32,7 +32,7 @@ struct AddBookmarkView: View {
                 } else {
                     Image(systemName: "bookmark.fill")
                         .font(.system(size: 24))
-                        .foregroundStyle(AppConstants.Colors.accent)
+                        .foregroundStyle(SettingsManager.shared.accentColor)
                 }
 
                 VStack(alignment: .leading) {

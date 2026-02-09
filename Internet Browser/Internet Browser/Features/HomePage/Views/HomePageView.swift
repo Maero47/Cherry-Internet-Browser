@@ -9,8 +9,10 @@ import SwiftUI
 
 struct AnimatedGradientBackground: View {
     @State private var animateGradient = false
+    private var theme: HomepageTheme { SettingsManager.shared.homepageTheme }
 
     var body: some View {
+        let colors = theme.gradientColors
         MeshGradient(
             width: 3, height: 3,
             points: [
@@ -18,19 +20,7 @@ struct AnimatedGradientBackground: View {
                 [0.0, 0.5], [animateGradient ? 0.6 : 0.4, animateGradient ? 0.4 : 0.6], [1.0, 0.5],
                 [0.0, 1.0], [0.5, 1.0], [1.0, 1.0]
             ],
-            colors: [
-                Color(red: 0.5, green: 0.0, blue: 0.1),
-                Color(red: 0.6, green: 0.0, blue: 0.15),
-                Color(red: 0.4, green: 0.0, blue: 0.2),
-
-                Color(red: 0.35, green: 0.0, blue: 0.12),
-                Color(red: animateGradient ? 0.55 : 0.3, green: 0.0, blue: animateGradient ? 0.08 : 0.18),
-                Color(red: 0.45, green: 0.0, blue: 0.15),
-
-                Color(red: 0.15, green: 0.0, blue: 0.08),
-                Color(red: 0.2, green: 0.0, blue: 0.1),
-                Color(red: 0.1, green: 0.0, blue: 0.05)
-            ]
+            colors: colors
         )
         .ignoresSafeArea()
         .onAppear {

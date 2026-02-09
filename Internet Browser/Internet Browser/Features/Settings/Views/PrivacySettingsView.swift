@@ -11,6 +11,14 @@ struct PrivacySettingsView: View {
 
     var body: some View {
         Form {
+            Section("Content Blocking") {
+                Toggle("Block Ads & Trackers", isOn: $settings.adBlockEnabled)
+
+                Text("Blocks ads, trackers, and intrusive content. New tabs will use updated settings.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("Web Content") {
                 Toggle("Enable JavaScript", isOn: $settings.enableJavaScript)
                 Toggle("HTTPS-Only Mode", isOn: $settings.httpsOnlyMode)

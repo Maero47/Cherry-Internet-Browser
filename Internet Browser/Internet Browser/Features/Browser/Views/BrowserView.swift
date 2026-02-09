@@ -33,6 +33,7 @@ struct BrowserView: View {
                     onNewTab: { viewModel.newTab() }
                 )
                 Divider()
+                    .padding(.top, viewModel.showBookmarkBar ? 73 : 43)
             }
 
             // Main browser content
@@ -62,7 +63,10 @@ struct BrowserView: View {
                         onHome: { viewModel.goHome() },
                         onBookmark: { viewModel.showAddBookmark = true },
                         onToggleHistory: { viewModel.toggleHistory() },
-                        onToggleBookmarks: { viewModel.toggleBookmarks() }
+                        onToggleBookmarks: { viewModel.toggleBookmarks() },
+                        onDownloads: {},
+                        onSettings: { viewModel.showSettings() },
+                        onToggleAdBlock: { viewModel.toggleAdBlockForCurrentSite() }
                     )
                 } else {
                     emptyState
@@ -95,6 +99,7 @@ struct BrowserView: View {
         .ignoresSafeArea(.all, edges: .top)
         .background(Color(nsColor: .windowBackgroundColor))
         .background { WindowConfigurator() }
+        .preferredColorScheme(SettingsManager.shared.resolvedColorScheme)
         .focusable()
         .focusEffectDisabled()
         .onKeyPress(.return) { .ignored }
@@ -250,6 +255,9 @@ struct BrowserContentView: View {
     let onBookmark: () -> Void
     let onToggleHistory: () -> Void
     let onToggleBookmarks: () -> Void
+    let onDownloads: () -> Void
+    let onSettings: () -> Void
+    let onToggleAdBlock: () -> Void
 
     // Track URL changes to force WebViewWrapper updates
     @State private var urlVersion: Int = 0
@@ -267,7 +275,11 @@ struct BrowserContentView: View {
                 onHome: onHome,
                 onBookmark: onBookmark,
                 onToggleHistory: onToggleHistory,
-                onToggleBookmarks: onToggleBookmarks
+                onToggleBookmarks: onToggleBookmarks,
+                onDownloads: onDownloads,
+                onSettings: onSettings,
+                onToggleAdBlock: onToggleAdBlock,
+                isAdBlockPaused: SettingsManager.shared.isAdBlockPaused(for: tab.url)
             )
 
             // Bookmark bar
@@ -283,7 +295,7 @@ struct BrowserContentView: View {
             if tab.isLoading {
                 GeometryReader { geometry in
                     Rectangle()
-                        .fill(AppConstants.Colors.accent)
+                        .fill(SettingsManager.shared.accentColor)
                         .frame(width: geometry.size.width * tab.loadingProgress, height: 2)
                         .animation(.linear(duration: 0.1), value: tab.loadingProgress)
                 }
@@ -292,8 +304,11 @@ struct BrowserContentView: View {
                 Divider()
             }
 
-            // Content - show homepage or web view
-            if tab.showHomePage {
+            // Content - show settings, homepage, or web view
+            if tab.showSettingsPage {
+                SettingsPageView()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if tab.showHomePage {
                 HomePageView(
                     repository: viewModel.shortcutRepository,
                     onShortcutClick: { url in

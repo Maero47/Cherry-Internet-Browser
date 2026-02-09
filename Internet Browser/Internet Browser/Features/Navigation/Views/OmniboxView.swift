@@ -55,7 +55,7 @@ struct OmniboxView: View {
         )
         .overlay(
             RoundedRectangle(cornerRadius: 8)
-                .stroke(isFocused ? AppConstants.Colors.accentBlue : Color.clear, lineWidth: 2)
+                .stroke(isFocused ? SettingsManager.shared.accentColor : Color.clear, lineWidth: 2)
         )
     }
 
