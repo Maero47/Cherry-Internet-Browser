@@ -9,6 +9,7 @@ import AppKit
 struct TabBarView: View {
     @Bindable var tabManager: TabManager
     var isFullScreen: Bool = false
+    var isPrivateMode: Bool = false
     let onNewTab: () -> Void
     var onDetachTab: ((Tab) -> Void)? = nil
 
@@ -223,9 +224,15 @@ struct TabBarView: View {
 
     @ViewBuilder
     private var tabBarBackground: some View {
-        colorScheme == .dark
-            ? AppConstants.Colors.darkBackground
-            : AppConstants.Colors.lightBackground
+        if isPrivateMode {
+            colorScheme == .dark
+                ? Color(hex: "2D1B3D")  // Dark purple
+                : Color(hex: "E8D5F5")  // Light purple
+        } else {
+            colorScheme == .dark
+                ? AppConstants.Colors.darkBackground
+                : AppConstants.Colors.lightBackground
+        }
     }
 }
 

@@ -142,6 +142,21 @@ final class HistoryRepository {
         }
     }
 
+    func clearHistory(since date: Date) {
+        let context = persistence.viewContext
+        let request = NSFetchRequest<NSFetchRequestResult>(entityName: "HistoryEntity")
+        request.predicate = NSPredicate(format: "visitDate >= %@", date as CVarArg)
+        let deleteRequest = NSBatchDeleteRequest(fetchRequest: request)
+
+        do {
+            try context.execute(deleteRequest)
+            persistence.save()
+            fetchHistory()
+        } catch {
+            print("Failed to clear history since date: \(error)")
+        }
+    }
+
     func clearHistoryOlderThan(days: Int) {
         let calendar = Calendar.current
         guard let cutoffDate = calendar.date(byAdding: .day, value: -days, to: Date()) else { return }

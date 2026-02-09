@@ -139,6 +139,11 @@ struct Internet_BrowserApp: App {
                 .keyboardShortcut("u", modifiers: .command)
             }
         }
+
+        // Settings window (Cmd+,)
+        Settings {
+            SettingsView()
+        }
     }
 }
 
@@ -150,7 +155,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             configureWindow(window)
         }
 
-        // Listen for fullscreen transitions to keep tab bar visible
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(windowDidEnterFullScreen(_:)),
@@ -176,7 +180,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
         window.isMovableByWindowBackground = false
-        window.isMovable = false  // Prevent system titlebar drag — we handle window movement ourselves
+        window.isMovable = false
         window.backgroundColor = .windowBackgroundColor
         window.titlebarSeparatorStyle = .none
 
@@ -187,7 +191,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func windowDidEnterFullScreen(_ notification: Notification) {
         guard let window = notification.object as? NSWindow else { return }
-        // In fullscreen, prevent the toolbar/titlebar from auto-hiding over our content
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
         window.titlebarSeparatorStyle = .none

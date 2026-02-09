@@ -24,6 +24,7 @@ final class Tab: Identifiable {
     var group: TabGroup?
     var isSleeping: Bool
     var lastActiveDate: Date
+    var isPrivate: Bool
 
     private(set) var createdAt: Date
 
@@ -36,7 +37,8 @@ final class Tab: Identifiable {
         title: String = "New Tab",
         favicon: NSImage? = nil,
         isLoading: Bool = false,
-        showHomePage: Bool = true
+        showHomePage: Bool = true,
+        isPrivate: Bool = false
     ) {
         self.id = id
         self.url = url
@@ -52,6 +54,7 @@ final class Tab: Identifiable {
         self.createdAt = Date()
         self.isSleeping = false
         self.lastActiveDate = Date()
+        self.isPrivate = isPrivate
     }
 
     var displayTitle: String {

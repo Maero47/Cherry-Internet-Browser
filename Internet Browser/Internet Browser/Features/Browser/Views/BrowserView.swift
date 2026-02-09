@@ -9,12 +9,16 @@ struct BrowserView: View {
     @State private var viewModel: BrowserViewModel
     @FocusState private var isOmniboxFocused: Bool
 
-    init(initialURL: URL? = nil) {
+    init(initialURL: URL? = nil, isPrivate: Bool = false) {
         let vm = BrowserViewModel()
-        if let url = initialURL, let tab = vm.tabManager.selectedTab {
-            tab.url = url
-            tab.showHomePage = false
-            tab.title = url.host ?? "Loading..."
+        vm.isPrivateMode = isPrivate
+        if let tab = vm.tabManager.selectedTab {
+            tab.isPrivate = isPrivate
+            if let url = initialURL {
+                tab.url = url
+                tab.showHomePage = false
+                tab.title = url.host ?? "Loading..."
+            }
         }
         _viewModel = State(initialValue: vm)
     }
@@ -38,6 +42,7 @@ struct BrowserView: View {
                     TabBarView(
                         tabManager: viewModel.tabManager,
                         isFullScreen: viewModel.isFullScreen,
+                        isPrivateMode: viewModel.isPrivateMode,
                         onNewTab: { viewModel.newTab() },
                         onDetachTab: { tab in viewModel.detachTab(tab) }
                     )
@@ -216,6 +221,10 @@ struct BrowserView: View {
             // Toggle Vertical Tabs (Cmd+Option+V)
             Button("") { viewModel.toggleVerticalTabs() }
                 .keyboardShortcut("v", modifiers: [.command, .option])
+
+            // New Private Window (Cmd+Shift+N)
+            Button("") { viewModel.openPrivateWindow() }
+                .keyboardShortcut("n", modifiers: [.command, .shift])
 
             // Tab selection 1-9
             ForEach(1...9, id: \.self) { index in

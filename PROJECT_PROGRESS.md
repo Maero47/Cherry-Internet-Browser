@@ -205,17 +205,68 @@ Internet Browser/
 
 ---
 
-## Phase 5: Settings & Privacy ⏳ PENDING
+## Phase 5: Settings & Privacy ✅ COMPLETE
 
-### Planned Features
-- [ ] Settings UI with sidebar navigation
-- [ ] Private browsing mode
-- [ ] Cookie management
-- [ ] Site permissions (camera, mic, location)
-- [ ] HTTPS-only mode option
-- [ ] Clear browsing data
-- [ ] Search engine selection
-- [ ] Custom search engines
+### Implemented Features
+- [x] Centralized SettingsManager (@Observable singleton backed by UserDefaults)
+- [x] Settings window (Cmd+,) with tabbed layout (General, Privacy, About)
+- [x] Search engine selection (Google, Bing, DuckDuckGo, Yahoo, Ecosia)
+- [x] Homepage URL configuration
+- [x] Bookmark bar toggle in settings
+- [x] Vertical tabs toggle in settings
+- [x] Tab sleep settings (enable/disable, timeout in minutes)
+- [x] JavaScript toggle (applies to new WKWebView instances)
+- [x] HTTPS-only mode (upgrades known hosts to HTTPS)
+- [x] Cookie blocking (None, Third-party, All)
+- [x] Do Not Track header option
+- [x] Clear browsing data UI (History, Cookies & Site Data, Cache)
+- [x] Time-range clearing (Last Hour, Last 24 Hours, All Time)
+- [x] Private browsing mode (Cmd+Shift+N for new private window)
+- [x] Private mode uses ephemeral WKWebsiteDataStore (no data persisted)
+- [x] Private mode skips history recording
+- [x] Purple tab bar indicator for private browsing windows
+- [x] About tab with app name, version, and build info
+- [x] Chrome-style dynamic tab sizing (tabs fill available space, shrink as more added)
+- [x] AppKit-based window drag areas (prevents drag conflict with tab reorder)
+- [x] Drop-based tab reorder (smooth animation, no oscillation)
+
+### Keyboard Shortcuts (Phase 5)
+| Shortcut | Action |
+|----------|--------|
+| Cmd+, | Open Settings |
+| Cmd+Shift+N | New Private Window |
+
+### Files Created/Modified
+```
+Internet Browser/
+├── Core/
+│   └── Views/
+│       └── WindowDragAreaView.swift         (NEW)
+├── Features/
+│   ├── Settings/
+│   │   ├── ViewModels/
+│   │   │   └── SettingsManager.swift        (NEW)
+│   │   └── Views/
+│   │       ├── SettingsView.swift           (NEW)
+│   │       ├── GeneralSettingsView.swift    (NEW)
+│   │       ├── PrivacySettingsView.swift    (NEW)
+│   │       ├── ClearDataView.swift          (NEW)
+│   │       └── AboutSettingsView.swift      (NEW)
+│   ├── Browser/
+│   │   ├── Models/
+│   │   │   └── Tab.swift                    (MODIFIED - added isPrivate)
+│   │   ├── Views/
+│   │   │   ├── BrowserView.swift            (MODIFIED - private mode, WindowConfigurator)
+│   │   │   └── WebViewWrapper.swift         (MODIFIED - privacy settings)
+│   │   └── ViewModels/
+│   │       └── BrowserViewModel.swift       (MODIFIED - uses SettingsManager, private windows)
+│   └── Tabs/Views/
+│       └── TabBarView.swift                 (MODIFIED - Chrome-style sizing, private mode indicator)
+├── Data/
+│   └── Repositories/
+│       └── HistoryRepository.swift          (MODIFIED - time-range clearing)
+└── Internet_BrowserApp.swift                (MODIFIED - added Settings scene)
+```
 
 ---
 

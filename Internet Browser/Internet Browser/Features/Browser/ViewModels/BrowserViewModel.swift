@@ -15,14 +15,24 @@ enum SidebarContent {
 @Observable
 final class BrowserViewModel {
     var tabManager = TabManager()
-    var searchEngine: SearchEngine = .google
-    var showBookmarkBar: Bool = true
+    var searchEngine: SearchEngine { SettingsManager.shared.searchEngine }
+    var showBookmarkBar: Bool {
+        get { SettingsManager.shared.showBookmarkBar }
+        set { SettingsManager.shared.showBookmarkBar = newValue }
+    }
     var sidebarContent: SidebarContent = .none
     var showAddBookmark: Bool = false
     var isFullScreen: Bool = false
     var showTabSearch: Bool = false
-    var useVerticalTabs: Bool = UserDefaults.standard.bool(forKey: "useVerticalTabs")
-    var verticalTabBarCollapsed: Bool = UserDefaults.standard.bool(forKey: "verticalTabBarCollapsed")
+    var isPrivateMode: Bool = false
+    var useVerticalTabs: Bool {
+        get { SettingsManager.shared.useVerticalTabs }
+        set { SettingsManager.shared.useVerticalTabs = newValue }
+    }
+    var verticalTabBarCollapsed: Bool {
+        get { SettingsManager.shared.verticalTabBarCollapsed }
+        set { SettingsManager.shared.verticalTabBarCollapsed = newValue }
+    }
 
     let bookmarkRepository = BookmarkRepository.shared
     let historyRepository = HistoryRepository.shared
@@ -96,6 +106,7 @@ final class BrowserViewModel {
 
     func newTab(url: URL? = nil) {
         let tab = tabManager.newTab(url: url)
+        tab.isPrivate = isPrivateMode
         if let url = url {
             tab.loadURL(url)
         }
@@ -193,16 +204,50 @@ final class BrowserViewModel {
         window.makeKeyAndOrderFront(nil)
     }
 
+    // MARK: - Private Browsing
+
+    func openPrivateWindow() {
+        let newBrowserView = BrowserView(isPrivate: true)
+        let hostingView = NSHostingView(rootView: newBrowserView)
+
+        let window = DetachedWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 1000, height: 700),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = hostingView
+        window.titlebarAppearsTransparent = true
+        window.titleVisibility = .hidden
+        window.isMovableByWindowBackground = false
+        window.isMovable = false
+        window.backgroundColor = .windowBackgroundColor
+        window.titlebarSeparatorStyle = .none
+        window.title = "Private Browsing"
+
+        BrowserViewModel.detachedWindows.append(window)
+
+        NotificationCenter.default.addObserver(
+            forName: NSWindow.willCloseNotification,
+            object: window,
+            queue: .main
+        ) { notification in
+            guard let closedWindow = notification.object as? NSWindow else { return }
+            BrowserViewModel.detachedWindows.removeAll { $0 === closedWindow }
+        }
+
+        window.center()
+        window.makeKeyAndOrderFront(nil)
+    }
+
     // MARK: - Vertical Tabs
 
     func toggleVerticalTabs() {
         useVerticalTabs.toggle()
-        UserDefaults.standard.set(useVerticalTabs, forKey: "useVerticalTabs")
     }
 
     func toggleVerticalTabBarCollapsed() {
         verticalTabBarCollapsed.toggle()
-        UserDefaults.standard.set(verticalTabBarCollapsed, forKey: "verticalTabBarCollapsed")
     }
 
     // MARK: - Bookmarks

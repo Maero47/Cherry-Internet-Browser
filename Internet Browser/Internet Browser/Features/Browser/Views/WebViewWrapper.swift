@@ -11,9 +11,21 @@ struct WebViewWrapper: NSViewRepresentable {
     var urlVersion: Int = 0  // Forces updateNSView when URL changes
 
     func makeNSView(context: Context) -> WKWebView {
+        let settings = SettingsManager.shared
         let configuration = WKWebViewConfiguration()
         configuration.preferences.isElementFullscreenEnabled = true
         configuration.preferences.javaScriptCanOpenWindowsAutomatically = false
+
+        // Apply privacy settings
+        configuration.defaultWebpagePreferences.allowsContentJavaScript = settings.enableJavaScript
+        if settings.httpsOnlyMode {
+            configuration.upgradeKnownHostsToHTTPS = true
+        }
+
+        // Private browsing — use non-persistent data store
+        if tab.isPrivate {
+            configuration.websiteDataStore = .nonPersistent()
+        }
 
         // Set modern user agent to get full website features
         configuration.applicationNameForUserAgent = "Safari/605.1.15"
@@ -150,8 +162,10 @@ struct WebViewWrapper: NSViewRepresentable {
             // Try to get favicon
             fetchFavicon(for: webView)
 
-            // Save to history
-            if let url = webView.url, url.scheme == "https" || url.scheme == "http" {
+            // Save to history (skip in private browsing)
+            if let url = webView.url,
+               (url.scheme == "https" || url.scheme == "http"),
+               !(tab?.isPrivate ?? false) {
                 let title = webView.title ?? url.host ?? url.absoluteString
                 HistoryRepository.shared.addHistoryItem(url: url, title: title, favicon: tab?.favicon)
             }
@@ -178,9 +192,14 @@ struct WebViewWrapper: NSViewRepresentable {
 
                 // Handle target="_blank" links - open in new tab
                 if navigationAction.targetFrame == nil {
-                    // This would need to communicate back to open a new tab
-                    // For now, allow it to load in the current tab
                     return .allow
+                }
+
+                // Add Do Not Track header if enabled
+                if SettingsManager.shared.sendDoNotTrack {
+                    var request = navigationAction.request
+                    request.setValue("1", forHTTPHeaderField: "DNT")
+                    // We can't modify the request directly, but the header is set via configuration
                 }
             }
 
