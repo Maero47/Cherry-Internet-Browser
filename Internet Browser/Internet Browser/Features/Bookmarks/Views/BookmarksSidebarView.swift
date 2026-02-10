@@ -136,7 +136,6 @@ struct BookmarksSidebarView: View {
                 .listStyle(.sidebar)
             }
         }
-        .frame(width: 300)
         .background(Color(nsColor: .windowBackgroundColor))
     }
 }

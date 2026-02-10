@@ -4,6 +4,7 @@
 //
 
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct BrowserView: View {
     @State private var viewModel: BrowserViewModel
@@ -23,6 +24,14 @@ struct BrowserView: View {
         _viewModel = State(initialValue: vm)
     }
 
+    /// Init with an existing tab (preserves webView state, no reload)
+    init(existingTab: Tab) {
+        let vm = BrowserViewModel(withDefaultTab: false)
+        vm.isPrivateMode = existingTab.isPrivate
+        vm.tabManager.addExistingTab(existingTab)
+        _viewModel = State(initialValue: vm)
+    }
+
     var body: some View {
         HStack(spacing: 0) {
             // Vertical tab bar (left side)
@@ -30,7 +39,15 @@ struct BrowserView: View {
                 VerticalTabBarView(
                     tabManager: viewModel.tabManager,
                     isCollapsed: $viewModel.verticalTabBarCollapsed,
-                    onNewTab: { viewModel.newTab() }
+                    onNewTab: { viewModel.newTab() },
+                    onDetachTab: { tab in viewModel.detachTab(tab) },
+                    onReceiveTab: { tabID in
+                        _ = BrowserViewModel.transferTab(tabID: tabID, to: viewModel)
+                    }
+                )
+                .frame(
+                    minWidth: viewModel.verticalTabBarCollapsed ? 44 : 240,
+                    maxWidth: viewModel.verticalTabBarCollapsed ? 44 : 240
                 )
                 Divider()
                     .padding(.top, viewModel.showBookmarkBar ? 73 : 43)
@@ -38,14 +55,17 @@ struct BrowserView: View {
 
             // Main browser content
             VStack(spacing: 0) {
-                // Horizontal tab bar (only when not using vertical tabs)
                 if !viewModel.useVerticalTabs {
+                    // Horizontal tab bar
                     TabBarView(
                         tabManager: viewModel.tabManager,
                         isFullScreen: viewModel.isFullScreen,
                         isPrivateMode: viewModel.isPrivateMode,
                         onNewTab: { viewModel.newTab() },
-                        onDetachTab: { tab in viewModel.detachTab(tab) }
+                        onDetachTab: { tab in viewModel.detachTab(tab) },
+                        onReceiveTab: { tabID in
+                            _ = BrowserViewModel.transferTab(tabID: tabID, to: viewModel)
+                        }
                     )
                     Divider()
                 }
@@ -66,12 +86,18 @@ struct BrowserView: View {
                         onToggleBookmarks: { viewModel.toggleBookmarks() },
                         onDownloads: {},
                         onSettings: { viewModel.showSettings() },
-                        onToggleAdBlock: { viewModel.toggleAdBlockForCurrentSite() }
+                        onToggleAdBlock: { viewModel.toggleAdBlockForCurrentSite() },
+                        onTogglePrivateMode: { viewModel.requestTogglePrivateMode() }
                     )
+                    // Drop a tab onto the content area to detach it to a new window
+                    .onDrop(of: [.cherryBrowserTab], isTargeted: nil) { providers in
+                        viewModel.handleContentAreaDrop()
+                    }
                 } else {
                     emptyState
                 }
             }
+            .frame(maxWidth: .infinity)
 
             // Sidebar
             if viewModel.isSidebarVisible {
@@ -84,22 +110,25 @@ struct BrowserView: View {
                         onItemClick: { viewModel.openHistoryItem($0) },
                         onClose: { viewModel.closeSidebar() }
                     )
+                    .frame(minWidth: 300, maxWidth: 300)
                 case .bookmarks:
                     BookmarksSidebarView(
                         repository: viewModel.bookmarkRepository,
                         onBookmarkClick: { viewModel.openBookmark($0) },
                         onClose: { viewModel.closeSidebar() }
                     )
+                    .frame(minWidth: 300, maxWidth: 300)
                 case .none:
                     EmptyView()
                 }
             }
         }
-        .frame(minWidth: 800, minHeight: 600)
+        .frame(minWidth: 1000, minHeight: 600)
         .ignoresSafeArea(.all, edges: .top)
         .background(Color(nsColor: .windowBackgroundColor))
         .background { WindowConfigurator() }
         .preferredColorScheme(SettingsManager.shared.resolvedColorScheme)
+        .tint(SettingsManager.shared.accentColor)
         .focusable()
         .focusEffectDisabled()
         .onKeyPress(.return) { .ignored }
@@ -121,6 +150,21 @@ struct BrowserView: View {
                 ) { title, folder, isInBar in
                     viewModel.addBookmark(title: title, folder: folder, isInBookmarkBar: isInBar)
                 }
+            }
+        }
+        .alert(
+            viewModel.isPrivateMode ? "Exit Incognito Mode?" : "Enter Incognito Mode?",
+            isPresented: $viewModel.showPrivateModeAlert
+        ) {
+            Button(viewModel.isPrivateMode ? "Exit" : "Enter", role: viewModel.isPrivateMode ? .destructive : nil) {
+                viewModel.confirmTogglePrivateMode()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            if viewModel.isPrivateMode {
+                Text("Exiting incognito mode will restore normal browsing. Your tabs will reload with standard browsing data.")
+            } else {
+                Text("In incognito mode, your browsing history, cookies, and site data won't be saved after you close the window.")
             }
         }
         .overlay {
@@ -258,6 +302,7 @@ struct BrowserContentView: View {
     let onDownloads: () -> Void
     let onSettings: () -> Void
     let onToggleAdBlock: () -> Void
+    var onTogglePrivateMode: (() -> Void)? = nil
 
     // Track URL changes to force WebViewWrapper updates
     @State private var urlVersion: Int = 0
@@ -279,7 +324,10 @@ struct BrowserContentView: View {
                 onDownloads: onDownloads,
                 onSettings: onSettings,
                 onToggleAdBlock: onToggleAdBlock,
-                isAdBlockPaused: SettingsManager.shared.isAdBlockPaused(for: tab.url)
+                isAdBlockPaused: SettingsManager.shared.isAdBlockPaused(for: tab.url),
+                isPrivateMode: viewModel.isPrivateMode,
+                onTogglePrivateMode: onTogglePrivateMode,
+                showWindowDragArea: viewModel.useVerticalTabs && !viewModel.isFullScreen
             )
 
             // Bookmark bar
@@ -293,13 +341,7 @@ struct BrowserContentView: View {
 
             // Loading progress bar
             if tab.isLoading {
-                GeometryReader { geometry in
-                    Rectangle()
-                        .fill(SettingsManager.shared.accentColor)
-                        .frame(width: geometry.size.width * tab.loadingProgress, height: 2)
-                        .animation(.linear(duration: 0.1), value: tab.loadingProgress)
-                }
-                .frame(height: 2)
+                ProgressBarView(progress: tab.loadingProgress)
             } else {
                 Divider()
             }
@@ -329,6 +371,21 @@ struct BrowserContentView: View {
         .onChange(of: tab.url) { _, _ in
             urlVersion += 1
         }
+    }
+}
+
+// MARK: - Progress Bar
+
+struct ProgressBarView: View {
+    let progress: Double
+
+    var body: some View {
+        Rectangle()
+            .fill(SettingsManager.shared.accentColor)
+            .frame(height: 2)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .scaleEffect(x: progress, y: 1, anchor: .leading)
+            .animation(.linear(duration: 0.15), value: progress)
     }
 }
 

@@ -13,6 +13,9 @@ final class TabManager {
     private(set) var recentlyClosedTabs: [ClosedTab] = []
     private(set) var tabGroups: [TabGroup] = []
 
+    /// Shared drag state for native drag-and-drop across windows
+    static var draggedTabID: UUID?
+
     private let maxRecentlyClosedTabs = 25
     private let sleepTimeout: TimeInterval = 30 * 60 // 30 minutes
     private var sleepTimer: Timer?
@@ -27,12 +30,43 @@ final class TabManager {
         return tabs.firstIndex { $0.id == id }
     }
 
-    init() {
-        // Start with one new tab
-        let initialTab = Tab()
-        tabs.append(initialTab)
-        selectedTabID = initialTab.id
+    init(createDefaultTab: Bool = true) {
+        if createDefaultTab {
+            let initialTab = Tab()
+            tabs.append(initialTab)
+            selectedTabID = initialTab.id
+        }
         startSleepTimer()
+    }
+
+    // MARK: - Tab Transfer (cross-window)
+
+    /// Remove a tab without closing it — preserves webview state for transfer
+    func removeTab(_ tab: Tab) -> Tab? {
+        guard let index = tabs.firstIndex(of: tab) else { return nil }
+        tabs.remove(at: index)
+
+        if tabs.isEmpty {
+            if let window = NSApp.keyWindow {
+                window.close()
+            }
+            if NSApp.windows.filter({ $0.isVisible }).isEmpty {
+                NSApp.terminate(nil)
+            }
+            return tab
+        } else if selectedTabID == tab.id {
+            let newIndex = min(index, tabs.count - 1)
+            selectedTabID = tabs[newIndex].id
+        }
+        return tab
+    }
+
+    /// Add an existing tab (transferred from another window)
+    func addExistingTab(_ tab: Tab, switchTo: Bool = true) {
+        tabs.append(tab)
+        if switchTo {
+            selectedTabID = tab.id
+        }
     }
 
     // MARK: - Tab CRUD

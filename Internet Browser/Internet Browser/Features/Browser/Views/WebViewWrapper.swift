@@ -49,10 +49,13 @@ struct WebViewWrapper: NSViewRepresentable {
         // Add observers for state changes
         context.coordinator.observeWebView(webView)
 
-        // Load initial URL if present
+        // Load initial URL only if the webView doesn't already have content
+        // (e.g. when switching tabs, the webView is reused from tab.webView)
         if let url = tab.url {
-            webView.load(URLRequest(url: url))
-            context.coordinator.lastLoadedURL = url
+            if webView.url == nil {
+                webView.load(URLRequest(url: url))
+            }
+            context.coordinator.lastLoadedURL = webView.url ?? url
         }
 
         return webView
@@ -85,6 +88,7 @@ struct WebViewWrapper: NSViewRepresentable {
         var tab: Tab?
         var lastLoadedURL: URL?
         private var observations: [NSKeyValueObservation] = []
+        private var progressThrottleTask: Task<Void, Never>?
 
         init(_ parent: WebViewWrapper) {
             self.parent = parent
@@ -98,11 +102,18 @@ struct WebViewWrapper: NSViewRepresentable {
             // Observe URL changes
             observations.append(
                 webView.observe(\.url, options: [.new]) { [weak self] webView, _ in
+                    let url = webView.url
+                    let canBack = webView.canGoBack
+                    let canForward = webView.canGoForward
                     Task { @MainActor in
-                        if let url = webView.url {
-                            self?.lastLoadedURL = url
-                            self?.tab?.url = url
+                        guard let self, let tab = self.tab else { return }
+                        if let url {
+                            self.lastLoadedURL = url
+                            tab.url = url
                         }
+                        // Batch navigation state with URL change
+                        tab.canGoBack = canBack
+                        tab.canGoForward = canForward
                     }
                 }
             )
@@ -110,45 +121,48 @@ struct WebViewWrapper: NSViewRepresentable {
             // Observe title changes
             observations.append(
                 webView.observe(\.title, options: [.new]) { [weak self] webView, _ in
+                    let title = webView.title
                     Task { @MainActor in
-                        if let title = webView.title, !title.isEmpty {
+                        if let title, !title.isEmpty {
                             self?.tab?.title = title
                         }
                     }
                 }
             )
 
-            // Observe loading state
+            // Observe loading state — batch with navigation state
             observations.append(
                 webView.observe(\.isLoading, options: [.new]) { [weak self] webView, _ in
+                    let loading = webView.isLoading
+                    let canBack = webView.canGoBack
+                    let canForward = webView.canGoForward
                     Task { @MainActor in
-                        self?.tab?.isLoading = webView.isLoading
+                        guard let self, let tab = self.tab else { return }
+                        tab.isLoading = loading
+                        tab.canGoBack = canBack
+                        tab.canGoForward = canForward
                     }
                 }
             )
 
-            // Observe progress
+            // Observe progress — throttle updates to avoid excessive redraws
             observations.append(
                 webView.observe(\.estimatedProgress, options: [.new]) { [weak self] webView, _ in
-                    Task { @MainActor in
-                        self?.tab?.loadingProgress = webView.estimatedProgress
+                    let progress = webView.estimatedProgress
+                    // Always report completion immediately
+                    if progress >= 1.0 {
+                        self?.progressThrottleTask?.cancel()
+                        Task { @MainActor in
+                            self?.tab?.loadingProgress = 1.0
+                        }
+                        return
                     }
-                }
-            )
-
-            // Observe navigation state
-            observations.append(
-                webView.observe(\.canGoBack, options: [.new]) { [weak self] webView, _ in
-                    Task { @MainActor in
-                        self?.tab?.canGoBack = webView.canGoBack
-                    }
-                }
-            )
-
-            observations.append(
-                webView.observe(\.canGoForward, options: [.new]) { [weak self] webView, _ in
-                    Task { @MainActor in
-                        self?.tab?.canGoForward = webView.canGoForward
+                    // Throttle intermediate updates
+                    self?.progressThrottleTask?.cancel()
+                    self?.progressThrottleTask = Task { @MainActor in
+                        try? await Task.sleep(nanoseconds: 50_000_000) // 50ms
+                        guard !Task.isCancelled else { return }
+                        self?.tab?.loadingProgress = progress
                     }
                 }
             )

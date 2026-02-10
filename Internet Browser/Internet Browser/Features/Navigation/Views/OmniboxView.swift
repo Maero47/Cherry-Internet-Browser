@@ -56,6 +56,7 @@ struct OmniboxView: View {
         .overlay(
             RoundedRectangle(cornerRadius: 8)
                 .stroke(isFocused ? SettingsManager.shared.accentColor : Color.clear, lineWidth: 2)
+                .animation(.easeInOut(duration: 0.15), value: isFocused)
         )
     }
 

@@ -20,13 +20,11 @@ struct TabItemView: View {
     var onRemoveFromGroup: (() -> Void)? = nil
     var availableGroups: [TabGroup] = []
     var onAddToGroup: ((TabGroup) -> Void)? = nil
-    var onDragUpdate: ((CGSize) -> Void)? = nil
-    var onDragEnd: ((CGSize) -> Void)? = nil
+    var onDetachTab: (() -> Void)? = nil
 
     @State private var isHovering = false
     @State private var showPreview = false
-    @State private var dragOffset: CGSize = .zero
-    @State private var isDragging = false
+    @State private var previewTask: Task<Void, Never>?
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
@@ -45,8 +43,8 @@ struct TabItemView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
 
-            // Close button (always available for non-pinned tabs on hover/select)
-            if !tab.isPinned && (isHovering || isSelected) && !isDragging {
+            // Close button (always in layout to prevent jumps, opacity-controlled)
+            if !tab.isPinned {
                 Button(action: onClose) {
                     Image(systemName: "xmark")
                         .font(.system(size: 9, weight: .bold))
@@ -59,6 +57,8 @@ struct TabItemView: View {
                         .fill(Color.gray.opacity(0.2))
                         .opacity(isHovering ? 1 : 0)
                 )
+                .opacity(isHovering || isSelected ? 1 : 0)
+                .animation(.easeInOut(duration: 0.1), value: isHovering)
                 .help("Close Tab (Cmd+W)")
             }
         }
@@ -76,51 +76,55 @@ struct TabItemView: View {
             }
         }
         .clipShape(RoundedRectangle(cornerRadius: AppConstants.UI.tabCornerRadius))
-        .opacity(tab.isSleeping && !isDragging ? 0.6 : 1.0)
-        .scaleEffect(isDragging ? 0.95 : 1.0)
-        .shadow(color: isDragging ? .black.opacity(0.3) : .clear, radius: isDragging ? 8 : 0)
-        .offset(x: dragOffset.width, y: 0)
-        .zIndex(isDragging ? 100 : 0)
+        .animation(.easeInOut(duration: 0.12), value: isHovering)
+        .animation(.easeInOut(duration: 0.12), value: isSelected)
+        .opacity(tab.isSleeping ? 0.6 : 1.0)
+        .contentShape(Rectangle())
         .onHover { hovering in
-            guard !isDragging else { return }
             isHovering = hovering
             if hovering {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
-                    if isHovering && !isDragging {
-                        showPreview = true
-                    }
+                previewTask?.cancel()
+                previewTask = Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 800_000_000)
+                    guard !Task.isCancelled, isHovering else { return }
+                    showPreview = true
                 }
             } else {
+                previewTask?.cancel()
                 showPreview = false
             }
         }
         .popover(isPresented: $showPreview, arrowEdge: .bottom) {
             tabPreviewPopover
         }
-        .gesture(
-            DragGesture(minimumDistance: 8)
-                .onChanged { value in
-                    if !isDragging {
-                        isDragging = true
-                        showPreview = false
-                    }
-                    dragOffset = value.translation
-                    onDragUpdate?(value.translation)
+        .onTapGesture {
+            onSelect()
+        }
+        .onDrag {
+            showPreview = false
+            TabManager.draggedTabID = tab.id
+            return tab.itemProvider()
+        } preview: {
+            // Floating drag preview that follows cursor
+            HStack(spacing: 6) {
+                if let favicon = tab.favicon {
+                    Image(nsImage: favicon)
+                        .resizable()
+                        .frame(width: 14, height: 14)
+                } else {
+                    Image(systemName: "globe")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
                 }
-                .onEnded { value in
-                    onDragEnd?(value.translation)
-                    withAnimation(.easeOut(duration: 0.2)) {
-                        dragOffset = .zero
-                    }
-                    isDragging = false
-                }
-        )
-        .simultaneousGesture(
-            TapGesture()
-                .onEnded {
-                    onSelect()
-                }
-        )
+                Text(tab.displayTitle)
+                    .font(.system(size: 11))
+                    .lineLimit(1)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(.regularMaterial)
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+        }
         .contextMenu {
             tabContextMenu
         }
@@ -233,6 +237,10 @@ struct TabItemView: View {
             }
         }
 
+        Divider()
+        Button("Open in New Window") {
+            onDetachTab?()
+        }
         Divider()
         if tab.isMuted {
             Button("Unmute Tab") {

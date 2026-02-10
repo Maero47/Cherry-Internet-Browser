@@ -400,6 +400,7 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "Internet Browser/Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = Cherry;
 				INFOPLIST_KEY_CFBundleName = Cherry;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
@@ -433,6 +434,7 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "Internet Browser/Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = Cherry;
 				INFOPLIST_KEY_CFBundleName = Cherry;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";

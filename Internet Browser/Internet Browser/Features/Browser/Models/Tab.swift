@@ -6,6 +6,11 @@
 import SwiftUI
 import WebKit
 import Observation
+import UniformTypeIdentifiers
+
+extension UTType {
+    static let cherryBrowserTab = UTType(exportedAs: "com.cherry.browser.tab")
+}
 
 @Observable
 final class Tab: Identifiable {
@@ -68,6 +73,21 @@ final class Tab: Identifiable {
 
     var displayURL: String {
         url?.absoluteString ?? ""
+    }
+
+    static let dragUTType: UTType = .cherryBrowserTab
+
+    func itemProvider() -> NSItemProvider {
+        let provider = NSItemProvider()
+        provider.registerDataRepresentation(
+            forTypeIdentifier: UTType.cherryBrowserTab.identifier,
+            visibility: .all
+        ) { completion in
+            let data = self.id.uuidString.data(using: .utf8)
+            completion(data, nil)
+            return nil
+        }
+        return provider
     }
 
     private static let modernUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15"

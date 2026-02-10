@@ -21,6 +21,9 @@ struct NavigationBarView: View {
     var onSettings: (() -> Void)? = nil
     var onToggleAdBlock: (() -> Void)? = nil
     var isAdBlockPaused: Bool = false
+    var isPrivateMode: Bool = false
+    var onTogglePrivateMode: (() -> Void)? = nil
+    var showWindowDragArea: Bool = false
 
     @State private var addressText: String = ""
     @State private var isEditing: Bool = false
@@ -62,7 +65,15 @@ struct NavigationBarView: View {
         .padding(.leading, verticalTabsCollapsedPadding)
         .padding(.trailing, 12)
         .padding(.vertical, 8)
+        .padding(.top, showWindowDragArea ? 6 : 0)
         .background(Color(nsColor: .windowBackgroundColor))
+        .overlay(alignment: .top) {
+            if showWindowDragArea {
+                WindowDragAreaView()
+                    .frame(height: 14)
+                    .frame(maxWidth: .infinity)
+            }
+        }
         .onChange(of: tab.url) { _, newURL in
             // Update display text when URL changes (show host when not editing)
             if !isEditing {
@@ -152,6 +163,17 @@ struct NavigationBarView: View {
                 .help(isAdBlockPaused ? "Ad blocker paused for this site" : "Ad blocker active — click to pause for this site")
             }
 
+            // Incognito mode button
+            if let onTogglePrivateMode = onTogglePrivateMode {
+                Button(action: onTogglePrivateMode) {
+                    Image(systemName: isPrivateMode ? "eye.slash.fill" : "eye.slash")
+                        .font(.system(size: AppConstants.UI.toolbarIconSize, weight: .medium))
+                        .foregroundStyle(isPrivateMode ? Color.purple : .primary)
+                }
+                .buttonStyle(ToolbarButtonStyle())
+                .help(isPrivateMode ? "Exit Incognito Mode" : "Enter Incognito Mode")
+            }
+
             // 3-dot menu
             Menu {
                 Button {
@@ -205,9 +227,11 @@ struct ToolbarButtonStyle: ButtonStyle {
             .frame(width: 28, height: 28)
             .background(
                 RoundedRectangle(cornerRadius: 6)
-                    .fill(configuration.isPressed ? Color.gray.opacity(0.2) : Color.clear)
+                    .fill(configuration.isPressed ? Color.gray.opacity(0.25) : Color.clear)
             )
             .foregroundStyle(isEnabled ? .primary : .tertiary)
+            .scaleEffect(configuration.isPressed ? 0.90 : 1.0)
+            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
             .contentShape(Rectangle())
     }
 }

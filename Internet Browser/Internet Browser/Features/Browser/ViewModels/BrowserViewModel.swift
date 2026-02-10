@@ -25,6 +25,7 @@ final class BrowserViewModel {
     var isFullScreen: Bool = false
     var showTabSearch: Bool = false
     var isPrivateMode: Bool = false
+    var showPrivateModeAlert: Bool = false
     var useVerticalTabs: Bool {
         get { SettingsManager.shared.useVerticalTabs }
         set { SettingsManager.shared.useVerticalTabs = newValue }
@@ -41,6 +42,21 @@ final class BrowserViewModel {
     // Keep strong references to detached windows and their delegates
     static var detachedWindows: [NSWindow] = []
     static var detachedWindowDelegates: [DetachedWindowDelegate] = []
+
+    // Registry of all active view models for cross-window tab transfer
+    private let instanceID = UUID()
+    static var windowViewModels: [UUID: BrowserViewModel] = [:]
+
+    init(withDefaultTab: Bool = true) {
+        if !withDefaultTab {
+            tabManager = TabManager(createDefaultTab: false)
+        }
+        BrowserViewModel.windowViewModels[instanceID] = self
+    }
+
+    deinit {
+        BrowserViewModel.windowViewModels.removeValue(forKey: instanceID)
+    }
 
     var currentTab: Tab? {
         tabManager.selectedTab
@@ -165,6 +181,40 @@ final class BrowserViewModel {
         }
     }
 
+    // MARK: - Tab Transfer
+
+    /// Transfer a tab from any window to a target viewModel
+    static func transferTab(tabID: UUID, to targetViewModel: BrowserViewModel) -> Bool {
+        // Find the source viewModel that owns this tab
+        for (_, vm) in windowViewModels {
+            if vm === targetViewModel { continue }
+            if let tab = vm.tabManager.tabs.first(where: { $0.id == tabID }) {
+                // Remove from source (preserving webview)
+                _ = vm.tabManager.removeTab(tab)
+                // Add to target
+                targetViewModel.tabManager.addExistingTab(tab)
+                return true
+            }
+        }
+        return false
+    }
+
+    /// Handle a tab dropped on the content area — detach to new window
+    func handleContentAreaDrop() -> Bool {
+        guard let draggedID = TabManager.draggedTabID else { return false }
+        TabManager.draggedTabID = nil
+
+        // Find the tab across all windows
+        for (_, vm) in BrowserViewModel.windowViewModels {
+            if let tab = vm.tabManager.tabs.first(where: { $0.id == draggedID }) {
+                guard vm.tabManager.tabs.count > 1 else { return false }
+                vm.detachTab(tab)
+                return true
+            }
+        }
+        return false
+    }
+
     // MARK: - Tab Search
 
     func toggleTabSearch() {
@@ -174,20 +224,23 @@ final class BrowserViewModel {
     // MARK: - Tab Detach
 
     func detachTab(_ tab: Tab) {
-        let url = tab.url
         let title = tab.title
 
         // Don't detach if it's the only tab
         guard tabManager.tabs.count > 1 else { return }
 
-        tabManager.closeTab(tab)
+        // Remove tab from source window (preserves webView state)
+        _ = tabManager.removeTab(tab)
 
-        // Create a new window with the tab's URL
-        let newBrowserView = BrowserView(initialURL: url)
+        // Create a new window with the existing tab (no reload)
+        let newBrowserView = BrowserView(existingTab: tab)
         let hostingView = NSHostingView(rootView: newBrowserView)
 
+        let windowWidth: CGFloat = 1000
+        let windowHeight: CGFloat = 700
+
         let window = DetachedWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 1000, height: 700),
+            contentRect: NSRect(x: 0, y: 0, width: windowWidth, height: windowHeight),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
@@ -196,23 +249,27 @@ final class BrowserViewModel {
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
         window.isMovableByWindowBackground = false
-        window.isMovable = false  // We handle window movement ourselves
+        window.isMovable = false
         window.backgroundColor = .windowBackgroundColor
         window.titlebarSeparatorStyle = .none
         window.title = title
 
-        // Position near mouse cursor
-        let mouseLocation = NSEvent.mouseLocation
-        window.setFrameOrigin(NSPoint(
-            x: mouseLocation.x - 500,
-            y: mouseLocation.y - 400
-        ))
+        // Position centered on screen, clamped to screen bounds
+        if let screen = NSScreen.main {
+            let screenFrame = screen.visibleFrame
+            let mouseLocation = NSEvent.mouseLocation
+            var originX = mouseLocation.x - windowWidth / 2
+            var originY = mouseLocation.y - windowHeight / 2
+            originX = max(screenFrame.minX, min(originX, screenFrame.maxX - windowWidth))
+            originY = max(screenFrame.minY, min(originY, screenFrame.maxY - windowHeight))
+            window.setFrameOrigin(NSPoint(x: originX, y: originY))
+        } else {
+            window.center()
+        }
 
-        // Use a delegate to clean up when the window closes
         let delegate = DetachedWindowDelegate()
         window.delegate = delegate
 
-        // Retain the window and its delegate so they don't deallocate
         BrowserViewModel.detachedWindows.append(window)
         BrowserViewModel.detachedWindowDelegates.append(delegate)
 
@@ -220,6 +277,23 @@ final class BrowserViewModel {
     }
 
     // MARK: - Private Browsing
+
+    func requestTogglePrivateMode() {
+        showPrivateModeAlert = true
+    }
+
+    func confirmTogglePrivateMode() {
+        isPrivateMode.toggle()
+        // Update all existing tabs
+        for tab in tabManager.tabs {
+            tab.isPrivate = isPrivateMode
+        }
+        // Reload current tab so it uses the correct data store
+        if let tab = currentTab, tab.url != nil {
+            tab.webView = nil // Force new webView with correct data store
+            tab.reload()
+        }
+    }
 
     func openPrivateWindow() {
         let newBrowserView = BrowserView(isPrivate: true)

@@ -107,7 +107,6 @@ struct HistoryView: View {
                 .listStyle(.sidebar)
             }
         }
-        .frame(width: 300)
         .background(Color(nsColor: .windowBackgroundColor))
         .alert("Clear History", isPresented: $showingClearAlert) {
             Button("Cancel", role: .cancel) {}

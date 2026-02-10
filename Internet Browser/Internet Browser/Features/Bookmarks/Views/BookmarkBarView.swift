@@ -61,6 +61,7 @@ struct BookmarkBarItemView: View {
                 RoundedRectangle(cornerRadius: 4)
                     .fill(isHovering ? Color.gray.opacity(0.2) : Color.clear)
             )
+            .animation(.easeInOut(duration: 0.12), value: isHovering)
         }
         .buttonStyle(.plain)
         .onHover { hovering in

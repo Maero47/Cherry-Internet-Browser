@@ -9,6 +9,7 @@ import SwiftUI
 
 struct AnimatedGradientBackground: View {
     @State private var animateGradient = false
+    @State private var isVisible = false
     private var theme: HomepageTheme { SettingsManager.shared.homepageTheme }
 
     var body: some View {
@@ -23,10 +24,15 @@ struct AnimatedGradientBackground: View {
             colors: colors
         )
         .ignoresSafeArea()
+        .drawingGroup()
         .onAppear {
-            withAnimation(.easeInOut(duration: 6).repeatForever(autoreverses: true)) {
+            isVisible = true
+            withAnimation(.easeInOut(duration: 8).repeatForever(autoreverses: true)) {
                 animateGradient.toggle()
             }
+        }
+        .onDisappear {
+            isVisible = false
         }
     }
 }
@@ -212,6 +218,8 @@ struct ShortcutItemView: View {
                 RoundedRectangle(cornerRadius: 12)
                     .fill(isHovering ? Color.white.opacity(0.08) : Color.clear)
             )
+            .scaleEffect(isHovering ? 1.05 : 1.0)
+            .animation(.easeOut(duration: 0.15), value: isHovering)
         }
         .buttonStyle(.plain)
         .onHover { hovering in
@@ -255,6 +263,8 @@ struct AddShortcutButton: View {
                 RoundedRectangle(cornerRadius: 12)
                     .fill(isHovering ? Color.white.opacity(0.08) : Color.clear)
             )
+            .scaleEffect(isHovering ? 1.05 : 1.0)
+            .animation(.easeOut(duration: 0.15), value: isHovering)
         }
         .buttonStyle(.plain)
         .onHover { hovering in

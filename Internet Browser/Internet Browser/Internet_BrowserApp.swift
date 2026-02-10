@@ -176,6 +176,68 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    // MARK: - Dock Menu
+
+    func applicationDockMenu(_ sender: NSApplication) -> NSMenu? {
+        let menu = NSMenu()
+
+        let newWindowItem = NSMenuItem(title: "New Window", action: #selector(openNewWindow), keyEquivalent: "")
+        newWindowItem.target = self
+        menu.addItem(newWindowItem)
+
+        let incognitoItem = NSMenuItem(title: "New Incognito Window", action: #selector(openIncognitoWindow), keyEquivalent: "")
+        incognitoItem.target = self
+        menu.addItem(incognitoItem)
+
+        return menu
+    }
+
+    @objc private func openNewWindow() {
+        let browserView = BrowserView()
+        let hostingView = NSHostingView(rootView: browserView)
+
+        let window = DetachedWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 1000, height: 700),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = hostingView
+        configureWindow(window)
+        window.title = "Cherry"
+
+        let delegate = DetachedWindowDelegate()
+        window.delegate = delegate
+        BrowserViewModel.detachedWindows.append(window)
+        BrowserViewModel.detachedWindowDelegates.append(delegate)
+
+        window.center()
+        window.makeKeyAndOrderFront(nil)
+    }
+
+    @objc private func openIncognitoWindow() {
+        let browserView = BrowserView(isPrivate: true)
+        let hostingView = NSHostingView(rootView: browserView)
+
+        let window = DetachedWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 1000, height: 700),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = hostingView
+        configureWindow(window)
+        window.title = "Incognito"
+
+        let delegate = DetachedWindowDelegate()
+        window.delegate = delegate
+        BrowserViewModel.detachedWindows.append(window)
+        BrowserViewModel.detachedWindowDelegates.append(delegate)
+
+        window.center()
+        window.makeKeyAndOrderFront(nil)
+    }
+
     private func configureWindow(_ window: NSWindow) {
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
