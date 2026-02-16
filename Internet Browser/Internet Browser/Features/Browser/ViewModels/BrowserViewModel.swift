@@ -4,12 +4,14 @@
 //
 
 import SwiftUI
+import WebKit
 import Observation
 
 enum SidebarContent {
     case none
     case history
     case bookmarks
+    case downloads
 }
 
 @Observable
@@ -26,6 +28,11 @@ final class BrowserViewModel {
     var showTabSearch: Bool = false
     var isPrivateMode: Bool = false
     var showPrivateModeAlert: Bool = false
+    var showDownloadToast: Bool = false
+    var toastDownloadID: UUID?
+    var toastIsCompleted: Bool = false
+    var popupBlockedCount: Int = 0
+    var toastDismissTask: Task<Void, Never>?
     var useVerticalTabs: Bool {
         get { SettingsManager.shared.useVerticalTabs }
         set { SettingsManager.shared.useVerticalTabs = newValue }
@@ -38,6 +45,8 @@ final class BrowserViewModel {
     let bookmarkRepository = BookmarkRepository.shared
     let historyRepository = HistoryRepository.shared
     let shortcutRepository = ShortcutRepository.shared
+    let downloadRepository = DownloadRepository.shared
+    let downloadManager = DownloadManager.shared
 
     // Keep strong references to detached windows and their delegates
     static var detachedWindows: [NSWindow] = []
@@ -127,9 +136,22 @@ final class BrowserViewModel {
     }
 
     func toggleAdBlockForCurrentSite() {
-        guard let tab = currentTab else { return }
+        guard let tab = currentTab, let webView = tab.webView else { return }
         SettingsManager.shared.toggleAdBlockPause(for: tab.url)
-        // Reload the page so the change takes effect
+
+        // Actually add/remove content blocker rules on the existing webview
+        let controller = webView.configuration.userContentController
+        let isPaused = SettingsManager.shared.isAdBlockPaused(for: tab.url)
+
+        if isPaused {
+            // Remove all content rule lists to disable ad blocking
+            controller.removeAllContentRuleLists()
+        } else {
+            // Re-apply ad blocker rules
+            AdBlockManager.shared.applyRules(to: webView.configuration)
+        }
+
+        // Reload so the page reflects the change
         tab.reload()
     }
 
@@ -141,6 +163,17 @@ final class BrowserViewModel {
         if let url = url {
             tab.loadURL(url)
         }
+    }
+
+    func newTabWithWebView(_ webView: WKWebView, url: URL?) {
+        // Don't pass the URL to newTab — the adopted webView is already navigating
+        // and the URL observer will pick up the real URL once navigation completes.
+        // Passing a URL here would cause updateNSView to re-load it, interrupting the popup.
+        let tab = tabManager.newTab(url: nil)
+        tab.isPrivate = isPrivateMode
+        tab.showHomePage = false
+        tab.title = url?.host ?? "Loading..."
+        tab.adoptWebView(webView)
     }
 
     func closeCurrentTab() {
@@ -386,6 +419,25 @@ final class BrowserViewModel {
         } else {
             sidebarContent = .bookmarks
         }
+    }
+
+    func toggleDownloads() {
+        if sidebarContent == .downloads {
+            sidebarContent = .none
+        } else {
+            sidebarContent = .downloads
+        }
+    }
+
+    func dismissDownloadToast() {
+        withAnimation(.spring(duration: 0.3)) {
+            showDownloadToast = false
+        }
+    }
+
+    func showDownloadsFromToast() {
+        sidebarContent = .downloads
+        dismissDownloadToast()
     }
 
     func closeSidebar() {

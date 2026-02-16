@@ -101,6 +101,19 @@ struct GeneralSettingsView: View {
                 .padding(.vertical, 4)
             }
 
+            Section("Downloads") {
+                HStack {
+                    Text("Save files to")
+                    Spacer()
+                    Text(downloadDirectoryName)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                    Button("Change...") {
+                        chooseDownloadDirectory()
+                    }
+                }
+            }
+
             Section("Appearance") {
                 Toggle("Show Bookmark Bar", isOn: $settings.showBookmarkBar)
                 Toggle("Use Vertical Tab Bar", isOn: $settings.useVerticalTabs)
@@ -122,5 +135,25 @@ struct GeneralSettingsView: View {
         }
         .formStyle(.grouped)
         .padding()
+    }
+
+    private var downloadDirectoryName: String {
+        let url = URL(fileURLWithPath: settings.downloadDirectory)
+        return url.lastPathComponent
+    }
+
+    private func chooseDownloadDirectory() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = true
+        panel.directoryURL = URL(fileURLWithPath: settings.downloadDirectory)
+        panel.prompt = "Select"
+        panel.message = "Choose where downloaded files will be saved"
+
+        if panel.runModal() == .OK, let url = panel.url {
+            settings.downloadDirectory = url.path
+        }
     }
 }

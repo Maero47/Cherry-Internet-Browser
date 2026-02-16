@@ -48,6 +48,8 @@ struct HomePageView: View {
     @State private var showingAddShortcut: Bool = false
     @State private var editingShortcut: Shortcut? = nil
 
+    private var theme: HomepageTheme { SettingsManager.shared.homepageTheme }
+
     private let columns = [
         GridItem(.adaptive(minimum: 100, maximum: 120), spacing: 16)
     ]
@@ -55,40 +57,19 @@ struct HomePageView: View {
     var body: some View {
         GeometryReader { geo in
             let isCompact = geo.size.width < 700
-            let logoSize = min(geo.size.width * 0.25, geo.size.height * 0.35)
-            let titleSize = min(max(logoSize * 0.22, 28), 72)
             let searchMaxWidth = min(geo.size.width * 0.7, 600.0)
             let shortcutsMaxWidth = min(geo.size.width * 0.7, 600.0)
 
             ScrollView {
-                VStack(spacing: isCompact ? 24 : 40) {
+                VStack(spacing: isCompact ? 20 : 32) {
                     Spacer()
-                        .frame(height: isCompact ? 20 : 40)
+                        .frame(height: isCompact ? 16 : 32)
 
-                    // Logo + Title
-                    if isCompact {
-                        VStack(spacing: -4) {
-                            Image("CherryLogo")
-                                .resizable()
-                                .aspectRatio(contentMode: .fit)
-                                .frame(width: logoSize, height: logoSize)
-
-                            Text("Cherry")
-                                .font(.system(size: titleSize, weight: .bold, design: .rounded))
-                                .foregroundStyle(.white)
-                        }
-                    } else {
-                        HStack(spacing: -8) {
-                            Image("CherryLogo")
-                                .resizable()
-                                .aspectRatio(contentMode: .fit)
-                                .frame(width: logoSize, height: logoSize)
-
-                            Text("Cherry")
-                                .font(.system(size: titleSize, weight: .bold, design: .rounded))
-                                .foregroundStyle(.white)
-                        }
-                    }
+                    // Themed logo (includes "cherry" text)
+                    Image(theme.logoImageName)
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .frame(width: searchMaxWidth * 0.75)
 
                     // Search bar
                     HStack(spacing: 12) {

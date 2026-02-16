@@ -53,6 +53,20 @@ enum HomepageTheme: String, CaseIterable, Identifiable {
 
     var id: String { rawValue }
 
+    /// Asset catalog image name for the themed homepage logo
+    var logoImageName: String {
+        switch self {
+        case .cherry:   return "CherryLogoRed"
+        case .ocean:    return "CherryLogoBlue"
+        case .forest:   return "CherryLogoGreen"
+        case .sunset:   return "CherryLogoOrange"
+        case .purple:   return "CherryLogoPurple"
+        case .midnight: return "CherryLogoBlue"
+        case .rose:     return "CherryLogoPink"
+        case .slate:    return "CherryLogoBlack"
+        }
+    }
+
     /// Returns 9 MeshGradient colors (3x3 grid) for the homepage background
     var gradientColors: [Color] {
         switch self {
@@ -70,27 +84,27 @@ enum HomepageTheme: String, CaseIterable, Identifiable {
             ]
         case .ocean:
             return [
-                Color(red: 0.0, green: 0.15, blue: 0.4),
-                Color(red: 0.0, green: 0.2, blue: 0.5),
-                Color(red: 0.0, green: 0.1, blue: 0.35),
-                Color(red: 0.0, green: 0.12, blue: 0.35),
-                Color(red: 0.0, green: 0.25, blue: 0.55),
-                Color(red: 0.0, green: 0.18, blue: 0.45),
-                Color(red: 0.0, green: 0.05, blue: 0.2),
-                Color(red: 0.0, green: 0.08, blue: 0.25),
-                Color(red: 0.0, green: 0.03, blue: 0.15),
+                Color(red: 0.0, green: 0.05, blue: 0.18),
+                Color(red: 0.0, green: 0.06, blue: 0.22),
+                Color(red: 0.0, green: 0.04, blue: 0.16),
+                Color(red: 0.0, green: 0.06, blue: 0.2),
+                Color(red: 0.0, green: 0.08, blue: 0.28),
+                Color(red: 0.0, green: 0.07, blue: 0.24),
+                Color(red: 0.0, green: 0.03, blue: 0.12),
+                Color(red: 0.0, green: 0.05, blue: 0.18),
+                Color(red: 0.0, green: 0.02, blue: 0.1),
             ]
         case .forest:
             return [
-                Color(red: 0.0, green: 0.3, blue: 0.15),
-                Color(red: 0.0, green: 0.35, blue: 0.18),
-                Color(red: 0.0, green: 0.25, blue: 0.12),
-                Color(red: 0.0, green: 0.22, blue: 0.1),
-                Color(red: 0.05, green: 0.35, blue: 0.15),
-                Color(red: 0.0, green: 0.28, blue: 0.14),
+                Color(red: 0.0, green: 0.12, blue: 0.06),
+                Color(red: 0.0, green: 0.14, blue: 0.07),
                 Color(red: 0.0, green: 0.1, blue: 0.05),
-                Color(red: 0.0, green: 0.15, blue: 0.08),
+                Color(red: 0.0, green: 0.1, blue: 0.04),
+                Color(red: 0.02, green: 0.16, blue: 0.07),
+                Color(red: 0.0, green: 0.12, blue: 0.06),
+                Color(red: 0.0, green: 0.06, blue: 0.03),
                 Color(red: 0.0, green: 0.08, blue: 0.04),
+                Color(red: 0.0, green: 0.04, blue: 0.02),
             ]
         case .sunset:
             return [
@@ -213,6 +227,16 @@ final class SettingsManager {
         }
     }
 
+    // MARK: - Downloads
+
+    var downloadDirectory: String {
+        didSet { UserDefaults.standard.set(downloadDirectory, forKey: Keys.downloadDirectory) }
+    }
+
+    var downloadDirectoryURL: URL {
+        URL(fileURLWithPath: downloadDirectory, isDirectory: true)
+    }
+
     // MARK: - Privacy
 
     var adBlockEnabled: Bool {
@@ -261,6 +285,10 @@ final class SettingsManager {
         didSet { UserDefaults.standard.set(enableJavaScript, forKey: Keys.enableJavaScript) }
     }
 
+    var blockPopups: Bool {
+        didSet { UserDefaults.standard.set(blockPopups, forKey: Keys.blockPopups) }
+    }
+
     // MARK: - Tabs
 
     var tabSleepEnabled: Bool {
@@ -305,6 +333,10 @@ final class SettingsManager {
             self.homepageTheme = .cherry
         }
 
+        // Downloads
+        let defaultDownloadsPath = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first!.path
+        self.downloadDirectory = defaults.string(forKey: Keys.downloadDirectory) ?? defaultDownloadsPath
+
         // Privacy
         self.adBlockEnabled = defaults.object(forKey: Keys.adBlockEnabled) as? Bool ?? true
         let savedDomains = defaults.stringArray(forKey: Keys.adBlockWhitelistedDomains) ?? []
@@ -320,6 +352,7 @@ final class SettingsManager {
         self.httpsOnlyMode = defaults.bool(forKey: Keys.httpsOnlyMode)
         self.sendDoNotTrack = defaults.bool(forKey: Keys.sendDoNotTrack)
         self.enableJavaScript = defaults.object(forKey: Keys.enableJavaScript) as? Bool ?? true
+        self.blockPopups = defaults.object(forKey: Keys.blockPopups) as? Bool ?? true
 
         // Tabs
         self.tabSleepEnabled = defaults.object(forKey: Keys.tabSleepEnabled) as? Bool ?? true
@@ -385,11 +418,13 @@ final class SettingsManager {
         static let httpsOnlyMode = "httpsOnlyMode"
         static let sendDoNotTrack = "sendDoNotTrack"
         static let enableJavaScript = "enableJavaScript"
+        static let blockPopups = "blockPopups"
         static let tabSleepEnabled = "tabSleepEnabled"
         static let tabSleepTimeout = "tabSleepTimeout"
         static let appearanceMode = "appearanceMode"
         static let accentColorHex = "accentColorHex"
         static let homepageTheme = "homepageTheme"
+        static let downloadDirectory = "downloadDirectory"
         static let adBlockEnabled = "adBlockEnabled"
         static let adBlockWhitelistedDomains = "adBlockWhitelistedDomains"
     }

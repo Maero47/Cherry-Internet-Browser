@@ -20,10 +20,14 @@ struct NavigationBarView: View {
     var onDownloads: (() -> Void)? = nil
     var onSettings: (() -> Void)? = nil
     var onToggleAdBlock: (() -> Void)? = nil
-    var isAdBlockPaused: Bool = false
     var isPrivateMode: Bool = false
     var onTogglePrivateMode: (() -> Void)? = nil
     var showWindowDragArea: Bool = false
+
+    /// Computed from the current tab's URL so it always reflects the correct per-domain state
+    private var isAdBlockPaused: Bool {
+        SettingsManager.shared.isAdBlockPaused(for: tab.url)
+    }
 
     @State private var addressText: String = ""
     @State private var isEditing: Bool = false
@@ -66,7 +70,7 @@ struct NavigationBarView: View {
         .padding(.trailing, 12)
         .padding(.vertical, 8)
         .padding(.top, showWindowDragArea ? 6 : 0)
-        .background(Color(nsColor: .windowBackgroundColor))
+        .background(isPrivateMode ? Color.purple.opacity(0.15) : Color(nsColor: .windowBackgroundColor))
         .overlay(alignment: .top) {
             if showWindowDragArea {
                 WindowDragAreaView()

@@ -189,7 +189,66 @@ final class PersistenceController: @unchecked Sendable {
             shortcutID, shortcutURL, shortcutTitle, shortcutFavicon, shortcutSortOrder
         ]
 
-        model.entities = [bookmarkEntity, historyEntity, shortcutEntity]
+        // Download Entity
+        let downloadEntity = NSEntityDescription()
+        downloadEntity.name = "DownloadEntity"
+        downloadEntity.managedObjectClassName = "DownloadEntity"
+
+        let downloadID = NSAttributeDescription()
+        downloadID.name = "id"
+        downloadID.attributeType = .UUIDAttributeType
+        downloadID.isOptional = false
+
+        let downloadURL = NSAttributeDescription()
+        downloadURL.name = "url"
+        downloadURL.attributeType = .stringAttributeType
+        downloadURL.isOptional = false
+
+        let downloadFilename = NSAttributeDescription()
+        downloadFilename.name = "filename"
+        downloadFilename.attributeType = .stringAttributeType
+        downloadFilename.isOptional = false
+
+        let downloadFilePath = NSAttributeDescription()
+        downloadFilePath.name = "filePath"
+        downloadFilePath.attributeType = .stringAttributeType
+        downloadFilePath.isOptional = true
+
+        let downloadTotalBytes = NSAttributeDescription()
+        downloadTotalBytes.name = "totalBytes"
+        downloadTotalBytes.attributeType = .integer64AttributeType
+        downloadTotalBytes.isOptional = false
+        downloadTotalBytes.defaultValue = Int64(0)
+
+        let downloadDownloadedBytes = NSAttributeDescription()
+        downloadDownloadedBytes.name = "downloadedBytes"
+        downloadDownloadedBytes.attributeType = .integer64AttributeType
+        downloadDownloadedBytes.isOptional = false
+        downloadDownloadedBytes.defaultValue = Int64(0)
+
+        let downloadStartDate = NSAttributeDescription()
+        downloadStartDate.name = "startDate"
+        downloadStartDate.attributeType = .dateAttributeType
+        downloadStartDate.isOptional = false
+
+        let downloadCompletionDate = NSAttributeDescription()
+        downloadCompletionDate.name = "completionDate"
+        downloadCompletionDate.attributeType = .dateAttributeType
+        downloadCompletionDate.isOptional = true
+
+        let downloadStatusRaw = NSAttributeDescription()
+        downloadStatusRaw.name = "statusRaw"
+        downloadStatusRaw.attributeType = .stringAttributeType
+        downloadStatusRaw.isOptional = false
+        downloadStatusRaw.defaultValue = "pending"
+
+        downloadEntity.properties = [
+            downloadID, downloadURL, downloadFilename, downloadFilePath,
+            downloadTotalBytes, downloadDownloadedBytes, downloadStartDate,
+            downloadCompletionDate, downloadStatusRaw
+        ]
+
+        model.entities = [bookmarkEntity, historyEntity, shortcutEntity, downloadEntity]
         return model
     }
 

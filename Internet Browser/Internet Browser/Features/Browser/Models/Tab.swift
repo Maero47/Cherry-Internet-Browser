@@ -90,8 +90,6 @@ final class Tab: Identifiable {
         return provider
     }
 
-    private static let modernUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15"
-
     func createWebView(configuration: WKWebViewConfiguration = WKWebViewConfiguration()) -> WKWebView {
         if let existing = webView {
             return existing
@@ -100,9 +98,14 @@ final class Tab: Identifiable {
         let wv = WKWebView(frame: .zero, configuration: configuration)
         wv.allowsBackForwardNavigationGestures = true
         wv.allowsMagnification = true
-        wv.customUserAgent = Self.modernUserAgent
+        // User agent is set via applicationNameForUserAgent on the configuration in WebViewWrapper
         self.webView = wv
         return wv
+    }
+
+    /// Adopt an externally-created WKWebView (e.g. from a popup)
+    func adoptWebView(_ wv: WKWebView) {
+        self.webView = wv
     }
 
     func loadURL(_ url: URL) {
@@ -165,3 +168,4 @@ extension Tab: Hashable {
         hasher.combine(id)
     }
 }
+

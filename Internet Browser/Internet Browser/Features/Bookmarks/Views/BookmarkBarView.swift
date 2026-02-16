@@ -8,6 +8,7 @@ import SwiftUI
 struct BookmarkBarView: View {
     @Bindable var repository: BookmarkRepository
     let onBookmarkClick: (Bookmark) -> Void
+    var isPrivateMode: Bool = false
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
@@ -28,7 +29,7 @@ struct BookmarkBarView: View {
             .padding(.horizontal, 8)
         }
         .frame(height: 28)
-        .background(Color(nsColor: .windowBackgroundColor))
+        .background(isPrivateMode ? Color.purple.opacity(0.15) : Color(nsColor: .windowBackgroundColor))
     }
 }
 

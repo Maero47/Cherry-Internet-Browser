@@ -7,6 +7,7 @@
 
 import SwiftUI
 import AppKit
+import WebKit
 
 @main
 struct Internet_BrowserApp: App {
@@ -75,6 +76,13 @@ struct Internet_BrowserApp: App {
                     NotificationCenter.default.post(name: .zoomOut, object: nil)
                 }
                 .keyboardShortcut("-", modifiers: .command)
+
+                Divider()
+
+                Button("Show Downloads") {
+                    NotificationCenter.default.post(name: .showDownloads, object: nil)
+                }
+                .keyboardShortcut("j", modifiers: [.command, .shift])
             }
 
             // History menu
@@ -151,6 +159,15 @@ struct Internet_BrowserApp: App {
 
 class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Pre-compile ad blocker rules so they're ready before the first tab loads.
+        // This ensures consent platform whitelists and Cloudflare exceptions are active
+        // from the very first page load.
+        if SettingsManager.shared.adBlockEnabled {
+            Task { @MainActor in
+                await AdBlockManager.shared.ensureRulesCompiled()
+            }
+        }
+
         for window in NSApplication.shared.windows {
             configureWindow(window)
         }
@@ -281,6 +298,7 @@ extension Notification.Name {
     static let showHistory = Notification.Name("showHistory")
     static let showBookmarks = Notification.Name("showBookmarks")
     static let addBookmark = Notification.Name("addBookmark")
+    static let showDownloads = Notification.Name("showDownloads")
     static let showWebInspector = Notification.Name("showWebInspector")
     static let showConsole = Notification.Name("showConsole")
     static let viewSource = Notification.Name("viewSource")

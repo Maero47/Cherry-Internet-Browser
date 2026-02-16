@@ -84,7 +84,7 @@ struct BrowserView: View {
                         onBookmark: { viewModel.showAddBookmark = true },
                         onToggleHistory: { viewModel.toggleHistory() },
                         onToggleBookmarks: { viewModel.toggleBookmarks() },
-                        onDownloads: {},
+                        onDownloads: { viewModel.toggleDownloads() },
                         onSettings: { viewModel.showSettings() },
                         onToggleAdBlock: { viewModel.toggleAdBlockForCurrentSite() },
                         onTogglePrivateMode: { viewModel.requestTogglePrivateMode() }
@@ -115,6 +115,13 @@ struct BrowserView: View {
                     BookmarksSidebarView(
                         repository: viewModel.bookmarkRepository,
                         onBookmarkClick: { viewModel.openBookmark($0) },
+                        onClose: { viewModel.closeSidebar() }
+                    )
+                    .frame(minWidth: 300, maxWidth: 300)
+                case .downloads:
+                    DownloadsSidebarView(
+                        repository: viewModel.downloadRepository,
+                        downloadManager: viewModel.downloadManager,
                         onClose: { viewModel.closeSidebar() }
                     )
                     .frame(minWidth: 300, maxWidth: 300)
@@ -184,6 +191,42 @@ struct BrowserView: View {
                     .padding(.top, 60)
 
                     Spacer()
+                }
+            }
+        }
+        .overlay(alignment: .topTrailing) {
+            if viewModel.showDownloadToast, let downloadID = viewModel.toastDownloadID {
+                DownloadToastView(
+                    downloadManager: viewModel.downloadManager,
+                    downloadRepository: viewModel.downloadRepository,
+                    downloadID: downloadID,
+                    isCompleted: viewModel.toastIsCompleted,
+                    onShowAll: { viewModel.showDownloadsFromToast() },
+                    onDismiss: { viewModel.dismissDownloadToast() }
+                )
+                .transition(.move(edge: .trailing).combined(with: .opacity))
+                .padding(.top, 50)
+                .zIndex(999)
+            }
+        }
+        .animation(.spring(duration: 0.3), value: viewModel.showDownloadToast)
+        .onChange(of: viewModel.downloadManager.downloadStartedTrigger) { _, _ in
+            guard let id = viewModel.downloadManager.latestDownloadID else { return }
+            viewModel.toastDismissTask?.cancel()
+            viewModel.toastIsCompleted = false
+            viewModel.toastDownloadID = id
+            viewModel.showDownloadToast = true
+        }
+        .onChange(of: viewModel.downloadManager.downloadCompletedTrigger) { _, _ in
+            guard let id = viewModel.downloadManager.lastCompletedDownloadID else { return }
+            viewModel.toastIsCompleted = true
+            viewModel.toastDownloadID = id
+            viewModel.toastDismissTask?.cancel()
+            viewModel.toastDismissTask = Task {
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                guard !Task.isCancelled else { return }
+                await MainActor.run {
+                    viewModel.showDownloadToast = false
                 }
             }
         }
@@ -271,6 +314,10 @@ struct BrowserView: View {
             Button("") { viewModel.toggleVerticalTabs() }
                 .keyboardShortcut("v", modifiers: [.command, .option])
 
+            // Downloads (Cmd+Shift+J)
+            Button("") { viewModel.toggleDownloads() }
+                .keyboardShortcut("j", modifiers: [.command, .shift])
+
             // New Private Window (Cmd+Shift+N)
             Button("") { viewModel.openPrivateWindow() }
                 .keyboardShortcut("n", modifiers: [.command, .shift])
@@ -324,7 +371,6 @@ struct BrowserContentView: View {
                 onDownloads: onDownloads,
                 onSettings: onSettings,
                 onToggleAdBlock: onToggleAdBlock,
-                isAdBlockPaused: SettingsManager.shared.isAdBlockPaused(for: tab.url),
                 isPrivateMode: viewModel.isPrivateMode,
                 onTogglePrivateMode: onTogglePrivateMode,
                 showWindowDragArea: viewModel.useVerticalTabs && !viewModel.isFullScreen
@@ -334,7 +380,8 @@ struct BrowserContentView: View {
             if viewModel.showBookmarkBar {
                 BookmarkBarView(
                     repository: viewModel.bookmarkRepository,
-                    onBookmarkClick: { viewModel.openBookmark($0) }
+                    onBookmarkClick: { viewModel.openBookmark($0) },
+                    isPrivateMode: viewModel.isPrivateMode
                 )
                 Divider()
             }
@@ -363,7 +410,17 @@ struct BrowserContentView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 // Web content - use urlVersion to force updates when URL changes
-                WebViewWrapper(tab: tab, urlVersion: urlVersion)
+                WebViewWrapper(
+                    tab: tab,
+                    urlVersion: urlVersion,
+                    onNewTab: { url in
+                        viewModel.newTab(url: url)
+                    },
+                    onNewTabWithWebView: { webView, url in
+                        viewModel.newTabWithWebView(webView, url: url)
+                    },
+                    viewModel: viewModel
+                )
                     .id(tab.id)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
