@@ -105,7 +105,7 @@ struct TabItemView: View {
             TabManager.draggedTabID = tab.id
             return tab.itemProvider()
         } preview: {
-            // Floating drag preview that follows cursor
+            // Compact drag preview
             HStack(spacing: 6) {
                 if let favicon = tab.favicon {
                     Image(nsImage: favicon)

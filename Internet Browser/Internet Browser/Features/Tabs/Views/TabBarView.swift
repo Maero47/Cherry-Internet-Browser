@@ -17,6 +17,9 @@ struct TabBarView: View {
 
     @Environment(\.colorScheme) private var colorScheme
 
+    /// ID of the tab that a drag is currently hovering over (for drop indicator)
+    @State private var dropTargetTabID: UUID? = nil
+
     private let pinnedTabWidth: CGFloat = 40
     private let tabSpacing: CGFloat = 2
     private let leadingPadding: CGFloat = 76
@@ -66,6 +69,7 @@ struct TabBarView: View {
                         tabItem(for: tab, width: regularTabWidth)
                     }
                 }
+                .animation(.easeInOut(duration: 0.2), value: tabManager.tabs.map(\.id))
 
                 Button(action: onNewTab) {
                     Image(systemName: "plus")
@@ -93,6 +97,8 @@ struct TabBarView: View {
 
     @ViewBuilder
     private func tabItem(for tab: Tab, width: CGFloat) -> some View {
+        let isDropTarget = dropTargetTabID == tab.id
+
         TabItemView(
             tab: tab,
             isSelected: tabManager.selectedTabID == tab.id,
@@ -129,8 +135,25 @@ struct TabBarView: View {
                 onDetachTab?(tab)
             }
         )
+        .overlay(alignment: .leading) {
+            // Drop insertion indicator
+            if isDropTarget {
+                RoundedRectangle(cornerRadius: 1)
+                    .fill(SettingsManager.shared.accentColor)
+                    .frame(width: 2)
+                    .padding(.vertical, 4)
+                    .transition(.opacity)
+            }
+        }
         // Each tab is a drop target for reorder / cross-window
-        .onDrop(of: [.cherryBrowserTab], isTargeted: nil) { providers in
+        .onDrop(of: [.cherryBrowserTab], isTargeted: Binding(
+            get: { dropTargetTabID == tab.id },
+            set: { isTargeted in
+                withAnimation(.easeInOut(duration: 0.15)) {
+                    dropTargetTabID = isTargeted ? tab.id : nil
+                }
+            }
+        )) { providers in
             handleTabDrop(onto: tab)
         }
     }
@@ -138,6 +161,7 @@ struct TabBarView: View {
     // MARK: - Drop Handlers
 
     private func handleTabDrop(onto targetTab: Tab) -> Bool {
+        dropTargetTabID = nil
         guard let draggedID = TabManager.draggedTabID else { return false }
         TabManager.draggedTabID = nil
 
@@ -145,7 +169,7 @@ struct TabBarView: View {
         if let fromIndex = tabManager.tabs.firstIndex(where: { $0.id == draggedID }),
            let toIndex = tabManager.tabs.firstIndex(where: { $0.id == targetTab.id }),
            fromIndex != toIndex {
-            withAnimation(.easeInOut(duration: 0.2)) {
+            withAnimation(.easeInOut(duration: 0.25)) {
                 tabManager.tabs.move(
                     fromOffsets: IndexSet(integer: fromIndex),
                     toOffset: toIndex > fromIndex ? toIndex + 1 : toIndex
@@ -164,6 +188,7 @@ struct TabBarView: View {
     }
 
     private func handleBarDrop() -> Bool {
+        dropTargetTabID = nil
         guard let draggedID = TabManager.draggedTabID else { return false }
         TabManager.draggedTabID = nil
 
