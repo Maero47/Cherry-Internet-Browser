@@ -20,6 +20,8 @@ struct NavigationBarView: View {
     var onDownloads: (() -> Void)? = nil
     var onSettings: (() -> Void)? = nil
     var onToggleAdBlock: (() -> Void)? = nil
+    var onAutoFill: (() -> Void)? = nil
+    var loginFormDetected: Bool = false
     var isPrivateMode: Bool = false
     var onTogglePrivateMode: (() -> Void)? = nil
     var showWindowDragArea: Bool = false
@@ -31,6 +33,8 @@ struct NavigationBarView: View {
 
     @State private var addressText: String = ""
     @State private var isEditing: Bool = false
+    @State private var suggestService = SearchSuggestService()
+    @State private var selectedSuggestionIndex: Int? = nil
 
     /// Extra leading padding when vertical tabs are collapsed so nav buttons don't overlap traffic lights
     private var verticalTabsCollapsedPadding: CGFloat {
@@ -52,16 +56,73 @@ struct NavigationBarView: View {
                 isLoading: tab.isLoading,
                 isSecure: tab.url?.scheme == "https",
                 onSubmit: { input in
-                    isEditing = false
-                    onNavigate(input)
+                    // If a suggestion is selected via keyboard, use that instead
+                    if let idx = selectedSuggestionIndex,
+                       idx < suggestService.suggestions.count {
+                        let item = suggestService.suggestions[idx]
+                        navigateToSuggestion(item)
+                    } else {
+                        isEditing = false
+                        selectedSuggestionIndex = nil
+                        suggestService.clear()
+                        onNavigate(input)
+                    }
                 },
                 onFocus: {
                     isEditing = true
+                    selectedSuggestionIndex = nil
                     // Update address text to full URL when focused
                     addressText = tab.url?.absoluteString ?? ""
+                },
+                onTextChange: { newText in
+                    selectedSuggestionIndex = nil
+                    suggestService.fetch(query: newText)
+                },
+                onBlur: {
+                    // Delay so click on a suggestion can register before dismissing
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                        isEditing = false
+                        selectedSuggestionIndex = nil
+                        suggestService.clear()
+                    }
+                },
+                onArrowDown: {
+                    let count = min(suggestService.suggestions.count, 8)
+                    guard count > 0 else { return }
+                    if let current = selectedSuggestionIndex {
+                        selectedSuggestionIndex = (current + 1) % count
+                    } else {
+                        selectedSuggestionIndex = 0
+                    }
+                },
+                onArrowUp: {
+                    let count = min(suggestService.suggestions.count, 8)
+                    guard count > 0 else { return }
+                    if let current = selectedSuggestionIndex {
+                        selectedSuggestionIndex = (current - 1 + count) % count
+                    } else {
+                        selectedSuggestionIndex = count - 1
+                    }
+                },
+                onEscape: {
+                    selectedSuggestionIndex = nil
+                    suggestService.clear()
                 }
             )
             .frame(maxWidth: .infinity)
+            .overlay(alignment: .top) {
+                if isEditing && !suggestService.suggestions.isEmpty {
+                    OmniboxSuggestionsView(
+                        suggestions: suggestService.suggestions,
+                        selectedIndex: selectedSuggestionIndex,
+                        onSelect: { item in
+                            navigateToSuggestion(item)
+                        }
+                    )
+                    .offset(y: 36) // position below the omnibox
+                }
+            }
+            .zIndex(1)
 
             // Action buttons
             actionButtons
@@ -91,6 +152,20 @@ struct NavigationBarView: View {
         }
         .onAppear {
             addressText = tab.url?.host ?? tab.url?.absoluteString ?? ""
+        }
+    }
+
+    private func navigateToSuggestion(_ item: SuggestionItem) {
+        isEditing = false
+        selectedSuggestionIndex = nil
+        suggestService.clear()
+        switch item {
+        case .history(_, let url):
+            addressText = url.absoluteString
+            onNavigate(url.absoluteString)
+        case .search(let text):
+            addressText = text
+            onNavigate(text)
         }
     }
 
@@ -154,6 +229,17 @@ struct NavigationBarView: View {
                 }
                 .buttonStyle(ToolbarButtonStyle())
                 .help("Add Bookmark (Cmd+D)")
+            }
+
+            // Password auto-fill key icon
+            if loginFormDetected, let onAutoFill = onAutoFill {
+                Button(action: onAutoFill) {
+                    Image(systemName: "key.fill")
+                        .font(.system(size: AppConstants.UI.toolbarIconSize, weight: .medium))
+                        .foregroundStyle(SettingsManager.shared.accentColor)
+                }
+                .buttonStyle(ToolbarButtonStyle())
+                .help("Auto-fill Password (Cmd+\\)")
             }
 
             // Ad blocker shield button

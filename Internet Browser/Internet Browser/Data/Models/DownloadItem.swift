@@ -17,6 +17,7 @@ public class DownloadEntity: NSManagedObject {
     @NSManaged public var startDate: Date
     @NSManaged public var completionDate: Date?
     @NSManaged public var statusRaw: String
+    @NSManaged public var errorMessage: String?
 }
 
 extension DownloadEntity {
@@ -48,6 +49,7 @@ struct DownloadItem: Identifiable, Hashable {
     var startDate: Date
     var completionDate: Date?
     var status: DownloadStatus
+    var errorMessage: String?
 
     var progress: Double {
         guard totalBytes > 0 else { return 0 }
@@ -78,7 +80,8 @@ struct DownloadItem: Identifiable, Hashable {
         downloadedBytes: Int64 = 0,
         startDate: Date = Date(),
         completionDate: Date? = nil,
-        status: DownloadStatus = .pending
+        status: DownloadStatus = .pending,
+        errorMessage: String? = nil
     ) {
         self.id = id
         self.url = url
@@ -89,6 +92,7 @@ struct DownloadItem: Identifiable, Hashable {
         self.startDate = startDate
         self.completionDate = completionDate
         self.status = status
+        self.errorMessage = errorMessage
     }
 
     init(entity: DownloadEntity) {
@@ -101,6 +105,7 @@ struct DownloadItem: Identifiable, Hashable {
         self.startDate = entity.startDate
         self.completionDate = entity.completionDate
         self.status = entity.status
+        self.errorMessage = entity.errorMessage
     }
 
     func hash(into hasher: inout Hasher) {

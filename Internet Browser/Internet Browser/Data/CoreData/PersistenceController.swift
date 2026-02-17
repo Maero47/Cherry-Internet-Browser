@@ -242,13 +242,63 @@ final class PersistenceController: @unchecked Sendable {
         downloadStatusRaw.isOptional = false
         downloadStatusRaw.defaultValue = "pending"
 
+        let downloadErrorMessage = NSAttributeDescription()
+        downloadErrorMessage.name = "errorMessage"
+        downloadErrorMessage.attributeType = .stringAttributeType
+        downloadErrorMessage.isOptional = true
+
         downloadEntity.properties = [
             downloadID, downloadURL, downloadFilename, downloadFilePath,
             downloadTotalBytes, downloadDownloadedBytes, downloadStartDate,
-            downloadCompletionDate, downloadStatusRaw
+            downloadCompletionDate, downloadStatusRaw, downloadErrorMessage
         ]
 
-        model.entities = [bookmarkEntity, historyEntity, shortcutEntity, downloadEntity]
+        // Password Entity
+        let passwordEntity = NSEntityDescription()
+        passwordEntity.name = "PasswordEntity"
+        passwordEntity.managedObjectClassName = "PasswordEntity"
+
+        let passwordID = NSAttributeDescription()
+        passwordID.name = "id"
+        passwordID.attributeType = .UUIDAttributeType
+        passwordID.isOptional = false
+
+        let passwordURL = NSAttributeDescription()
+        passwordURL.name = "url"
+        passwordURL.attributeType = .stringAttributeType
+        passwordURL.isOptional = false
+
+        let passwordUsername = NSAttributeDescription()
+        passwordUsername.name = "username"
+        passwordUsername.attributeType = .stringAttributeType
+        passwordUsername.isOptional = false
+
+        let passwordCreatedAt = NSAttributeDescription()
+        passwordCreatedAt.name = "createdAt"
+        passwordCreatedAt.attributeType = .dateAttributeType
+        passwordCreatedAt.isOptional = false
+
+        let passwordLastUsedAt = NSAttributeDescription()
+        passwordLastUsedAt.name = "lastUsedAt"
+        passwordLastUsedAt.attributeType = .dateAttributeType
+        passwordLastUsedAt.isOptional = true
+
+        let passwordNotes = NSAttributeDescription()
+        passwordNotes.name = "notes"
+        passwordNotes.attributeType = .stringAttributeType
+        passwordNotes.isOptional = true
+
+        let passwordFavicon = NSAttributeDescription()
+        passwordFavicon.name = "faviconData"
+        passwordFavicon.attributeType = .binaryDataAttributeType
+        passwordFavicon.isOptional = true
+
+        passwordEntity.properties = [
+            passwordID, passwordURL, passwordUsername, passwordCreatedAt,
+            passwordLastUsedAt, passwordNotes, passwordFavicon
+        ]
+
+        model.entities = [bookmarkEntity, historyEntity, shortcutEntity, downloadEntity, passwordEntity]
         return model
     }
 

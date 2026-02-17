@@ -21,6 +21,16 @@ final class DownloadManager: NSObject {
     /// Progress tracking: maps download id -> (downloadedBytes, totalBytes)
     private(set) var progressMap: [UUID: (downloaded: Int64, total: Int64)] = [:]
 
+    /// Speed tracking: bytes per second per download
+    private(set) var speedMap: [UUID: Int64] = [:]
+
+    /// ETA tracking: estimated seconds remaining per download
+    private(set) var etaMap: [UUID: TimeInterval] = [:]
+
+    /// Internal speed sampling state
+    private var lastSpeedCheckTime: [UUID: Date] = [:]
+    private var lastSpeedCheckBytes: [UUID: Int64] = [:]
+
     /// The most recently started download ID (for toast display)
     private(set) var latestDownloadID: UUID?
 
@@ -59,6 +69,8 @@ final class DownloadManager: NSObject {
 
         activeDownloads[item.id] = download
         progressMap[item.id] = (0, 0)
+        lastSpeedCheckTime[item.id] = Date()
+        lastSpeedCheckBytes[item.id] = 0
 
         // Observe the Foundation Progress on WKDownload
         let itemID = item.id
@@ -69,6 +81,7 @@ final class DownloadManager: NSObject {
                 let completed = progress.completedUnitCount
                 self.progressMap[itemID] = (completed, total)
                 self.repository.updateProgress(id: itemID, downloadedBytes: completed, totalBytes: total)
+                self.updateSpeed(id: itemID, downloadedBytes: completed, totalBytes: total)
             }
         }
         progressObservations[item.id] = observation
@@ -85,6 +98,7 @@ final class DownloadManager: NSObject {
             activeDownloads.removeValue(forKey: id)
             progressObservations.removeValue(forKey: id)
             progressMap.removeValue(forKey: id)
+            cleanupSpeedState(id: id)
         }
         repository.cancelDownload(id: id)
 
@@ -101,6 +115,7 @@ final class DownloadManager: NSObject {
         activeDownloads.removeValue(forKey: id)
         progressObservations.removeValue(forKey: id)
         progressMap.removeValue(forKey: id)
+        cleanupSpeedState(id: id)
         if let item = repository.downloads.first(where: { $0.id == id }) {
             repository.deleteDownload(item)
         }
@@ -133,6 +148,10 @@ final class DownloadManager: NSObject {
         activeDownloads.removeAll()
         progressObservations.removeAll()
         progressMap.removeAll()
+        speedMap.removeAll()
+        etaMap.removeAll()
+        lastSpeedCheckTime.removeAll()
+        lastSpeedCheckBytes.removeAll()
         repository.clearAllDownloads()
     }
 
@@ -157,6 +176,7 @@ final class DownloadManager: NSObject {
         activeDownloads.removeValue(forKey: id)
         progressObservations.removeValue(forKey: id)
         progressMap.removeValue(forKey: id)
+        cleanupSpeedState(id: id)
 
         lastCompletedDownloadID = id
         downloadCompletedTrigger += 1
@@ -167,20 +187,90 @@ final class DownloadManager: NSObject {
         activeDownloads.removeValue(forKey: id)
         progressObservations.removeValue(forKey: id)
         progressMap.removeValue(forKey: id)
+        cleanupSpeedState(id: id)
         lastCompletedDownloadID = id
         downloadCompletedTrigger += 1
     }
 
-    func downloadDidFail(id: UUID) {
+    func downloadDidFail(id: UUID, errorMessage: String? = nil) {
         activeDownloads.removeValue(forKey: id)
         progressObservations.removeValue(forKey: id)
         progressMap.removeValue(forKey: id)
-        repository.failDownload(id: id)
+        cleanupSpeedState(id: id)
+        repository.failDownload(id: id, errorMessage: errorMessage)
     }
 
     /// Find download item id for a given WKDownload instance
     func itemID(for download: WKDownload) -> UUID? {
         activeDownloads.first(where: { $0.value === download })?.key
+    }
+
+    // MARK: - Retry
+
+    func retryDownload(id: UUID) {
+        guard let item = repository.downloads.first(where: { $0.id == id }),
+              item.status == .failed else { return }
+        let url = item.url
+        // Remove the failed entry
+        repository.deleteDownload(item)
+        // Open the URL in the default browser webview to re-trigger the download
+        NSWorkspace.shared.open(url)
+    }
+
+    // MARK: - Speed & ETA
+
+    private func updateSpeed(id: UUID, downloadedBytes: Int64, totalBytes: Int64) {
+        let now = Date()
+        guard let lastTime = lastSpeedCheckTime[id],
+              let lastBytes = lastSpeedCheckBytes[id] else { return }
+
+        let elapsed = now.timeIntervalSince(lastTime)
+        guard elapsed >= 0.5 else { return }
+
+        let bytesDelta = downloadedBytes - lastBytes
+        let bytesPerSecond = Int64(Double(bytesDelta) / elapsed)
+
+        lastSpeedCheckTime[id] = now
+        lastSpeedCheckBytes[id] = downloadedBytes
+
+        speedMap[id] = max(bytesPerSecond, 0)
+
+        if bytesPerSecond > 0 && totalBytes > 0 {
+            let remaining = totalBytes - downloadedBytes
+            etaMap[id] = TimeInterval(remaining) / TimeInterval(bytesPerSecond)
+        } else {
+            etaMap[id] = nil
+        }
+    }
+
+    private func cleanupSpeedState(id: UUID) {
+        speedMap.removeValue(forKey: id)
+        etaMap.removeValue(forKey: id)
+        lastSpeedCheckTime.removeValue(forKey: id)
+        lastSpeedCheckBytes.removeValue(forKey: id)
+    }
+
+    func formattedSpeed(for id: UUID) -> String? {
+        guard let bps = speedMap[id], bps > 0 else { return nil }
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .file
+        return "\(formatter.string(fromByteCount: bps))/s"
+    }
+
+    func formattedETA(for id: UUID) -> String? {
+        guard let eta = etaMap[id], eta.isFinite, eta > 0 else { return nil }
+        let seconds = Int(eta)
+        if seconds < 60 {
+            return "\(seconds)s remaining"
+        } else if seconds < 3600 {
+            let mins = seconds / 60
+            let secs = seconds % 60
+            return "\(mins)m \(secs)s remaining"
+        } else {
+            let hours = seconds / 3600
+            let mins = (seconds % 3600) / 60
+            return "\(hours)h \(mins)m remaining"
+        }
     }
 
     // MARK: - Helpers

@@ -8,6 +8,7 @@ import SwiftUI
 enum SettingsSection: String, CaseIterable, Identifiable {
     case general = "General"
     case privacy = "Privacy"
+    case passwords = "Passwords"
     case about = "About"
 
     var id: String { rawValue }
@@ -16,6 +17,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         switch self {
         case .general: "gear"
         case .privacy: "lock.shield"
+        case .passwords: "key.fill"
         case .about: "info.circle"
         }
     }
@@ -121,18 +123,27 @@ struct SettingsPageView: View {
 
     @ViewBuilder
     private var settingsContent: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
-                switch selectedSection {
-                case .general:
-                    GeneralSettingsView()
-                case .privacy:
-                    PrivacySettingsView()
-                case .about:
-                    AboutSettingsView()
+        switch selectedSection {
+        case .passwords:
+            // PasswordsSettingsView has its own List — don't wrap in ScrollView
+            PasswordsSettingsView()
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        default:
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    switch selectedSection {
+                    case .general:
+                        GeneralSettingsView()
+                    case .privacy:
+                        PrivacySettingsView()
+                    case .about:
+                        AboutSettingsView()
+                    case .passwords:
+                        EmptyView() // handled above
+                    }
                 }
+                .frame(maxWidth: .infinity)
             }
-            .frame(maxWidth: .infinity)
         }
     }
 }

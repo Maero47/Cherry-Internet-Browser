@@ -53,9 +53,14 @@ struct DownloadToastView: View {
                             .font(.system(size: 10))
                             .foregroundStyle(.secondary)
                     } else {
-                        Text(progressText)
-                            .font(.system(size: 10))
-                            .foregroundStyle(.secondary)
+                        HStack(spacing: 4) {
+                            Text(progressText)
+                            if let speed = downloadManager.formattedSpeed(for: downloadID) {
+                                Text("— \(speed)")
+                            }
+                        }
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
                     }
                 }
 

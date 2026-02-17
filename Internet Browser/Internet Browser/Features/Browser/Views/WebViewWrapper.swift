@@ -47,6 +47,25 @@ struct WebViewWrapper: NSViewRepresentable {
             adBlocker.applyCosmeticRules(to: configuration)
         }
 
+        // Password auto-fill: inject form detection + capture scripts (skip in private mode)
+        if !tab.isPrivate {
+            let controller = configuration.userContentController
+            let detectScript = WKUserScript(
+                source: PasswordAutoFillScripts.formDetectionScript,
+                injectionTime: .atDocumentEnd,
+                forMainFrameOnly: true
+            )
+            let captureScript = WKUserScript(
+                source: PasswordAutoFillScripts.credentialCaptureScript,
+                injectionTime: .atDocumentEnd,
+                forMainFrameOnly: true
+            )
+            controller.addUserScript(detectScript)
+            controller.addUserScript(captureScript)
+            controller.add(context.coordinator, name: "cherryPasswordDetect")
+            controller.add(context.coordinator, name: "cherryPasswordCapture")
+        }
+
         // Check if the tab already has a webView (e.g. adopted popup)
         let isAdoptedWebView = tab.webView != nil
 
@@ -94,7 +113,7 @@ struct WebViewWrapper: NSViewRepresentable {
         Coordinator(self)
     }
 
-    class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKDownloadDelegate {
+    class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKDownloadDelegate, WKScriptMessageHandler {
         var parent: WebViewWrapper
         var webView: WKWebView?
         var tab: Tab?
@@ -217,6 +236,10 @@ struct WebViewWrapper: NSViewRepresentable {
 
         func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
             tab?.isLoading = true
+            // If credentials were captured on the previous page, the navigation
+            // confirms the login went through — show the save prompt now
+            PasswordManager.shared.onNavigationAfterCapture()
+            PasswordManager.shared.resetForNavigation()
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
@@ -380,7 +403,7 @@ struct WebViewWrapper: NSViewRepresentable {
         func download(_ download: WKDownload, didFailWithError error: Error, resumeData: Data?) {
             let manager = DownloadManager.shared
             guard let itemID = manager.itemID(for: download) else { return }
-            manager.downloadDidFail(id: itemID)
+            manager.downloadDidFail(id: itemID, errorMessage: error.localizedDescription)
             let key = ObjectIdentifier(download).hashValue
             if let tempFile = Self.tempFileLocations[key] {
                 try? FileManager.default.removeItem(at: tempFile)
@@ -519,6 +542,35 @@ struct WebViewWrapper: NSViewRepresentable {
                 return textField.stringValue
             }
             return nil
+        }
+
+        // MARK: - WKScriptMessageHandler
+
+        func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+            guard let body = message.body as? [String: Any] else { return }
+
+            switch message.name {
+            case "cherryPasswordDetect":
+                if body["type"] as? String == "loginFormDetected",
+                   let urlString = body["url"] as? String,
+                   let url = URL(string: urlString) {
+                    Task { @MainActor in
+                        PasswordManager.shared.onLoginFormDetected(url: url)
+                    }
+                }
+            case "cherryPasswordCapture":
+                if body["type"] as? String == "credentialsCaptured",
+                   let username = body["username"] as? String,
+                   let password = body["password"] as? String,
+                   let url = body["url"] as? String,
+                   !(self.tab?.isPrivate ?? false) {
+                    Task { @MainActor in
+                        PasswordManager.shared.onCredentialsCaptured(url: url, username: username, password: password)
+                    }
+                }
+            default:
+                break
+            }
         }
 
         // MARK: - Helpers

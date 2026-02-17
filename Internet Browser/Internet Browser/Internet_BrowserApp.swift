@@ -83,6 +83,13 @@ struct Internet_BrowserApp: App {
                     NotificationCenter.default.post(name: .showDownloads, object: nil)
                 }
                 .keyboardShortcut("j", modifiers: [.command, .shift])
+
+                Divider()
+
+                Button("Auto-Fill Password") {
+                    NotificationCenter.default.post(name: .autoFillPassword, object: nil)
+                }
+                .keyboardShortcut("\\", modifiers: .command)
             }
 
             // History menu
@@ -302,4 +309,5 @@ extension Notification.Name {
     static let showWebInspector = Notification.Name("showWebInspector")
     static let showConsole = Notification.Name("showConsole")
     static let viewSource = Notification.Name("viewSource")
+    static let autoFillPassword = Notification.Name("autoFillPassword")
 }

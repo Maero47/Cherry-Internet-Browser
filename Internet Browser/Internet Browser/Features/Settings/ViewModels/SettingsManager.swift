@@ -289,6 +289,24 @@ final class SettingsManager {
         didSet { UserDefaults.standard.set(blockPopups, forKey: Keys.blockPopups) }
     }
 
+    // MARK: - Passwords
+
+    var requireTouchIDForAutoFill: Bool {
+        didSet { UserDefaults.standard.set(requireTouchIDForAutoFill, forKey: Keys.requireTouchIDForAutoFill) }
+    }
+
+    var requireTouchIDForViewing: Bool {
+        didSet { UserDefaults.standard.set(requireTouchIDForViewing, forKey: Keys.requireTouchIDForViewing) }
+    }
+
+    var passwordGeneratorLength: Int {
+        didSet { UserDefaults.standard.set(passwordGeneratorLength, forKey: Keys.passwordGeneratorLength) }
+    }
+
+    var passwordGeneratorIncludeSymbols: Bool {
+        didSet { UserDefaults.standard.set(passwordGeneratorIncludeSymbols, forKey: Keys.passwordGeneratorIncludeSymbols) }
+    }
+
     // MARK: - Tabs
 
     var tabSleepEnabled: Bool {
@@ -353,6 +371,12 @@ final class SettingsManager {
         self.sendDoNotTrack = defaults.bool(forKey: Keys.sendDoNotTrack)
         self.enableJavaScript = defaults.object(forKey: Keys.enableJavaScript) as? Bool ?? true
         self.blockPopups = defaults.object(forKey: Keys.blockPopups) as? Bool ?? true
+
+        // Passwords
+        self.requireTouchIDForAutoFill = defaults.bool(forKey: Keys.requireTouchIDForAutoFill)
+        self.requireTouchIDForViewing = defaults.bool(forKey: Keys.requireTouchIDForViewing)
+        self.passwordGeneratorLength = defaults.object(forKey: Keys.passwordGeneratorLength) as? Int ?? 20
+        self.passwordGeneratorIncludeSymbols = defaults.object(forKey: Keys.passwordGeneratorIncludeSymbols) as? Bool ?? true
 
         // Tabs
         self.tabSleepEnabled = defaults.object(forKey: Keys.tabSleepEnabled) as? Bool ?? true
@@ -427,5 +451,9 @@ final class SettingsManager {
         static let downloadDirectory = "downloadDirectory"
         static let adBlockEnabled = "adBlockEnabled"
         static let adBlockWhitelistedDomains = "adBlockWhitelistedDomains"
+        static let requireTouchIDForAutoFill = "requireTouchIDForAutoFill"
+        static let requireTouchIDForViewing = "requireTouchIDForViewing"
+        static let passwordGeneratorLength = "passwordGeneratorLength"
+        static let passwordGeneratorIncludeSymbols = "passwordGeneratorIncludeSymbols"
     }
 }

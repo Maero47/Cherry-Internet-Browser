@@ -47,6 +47,10 @@ final class BrowserViewModel {
     let shortcutRepository = ShortcutRepository.shared
     let downloadRepository = DownloadRepository.shared
     let downloadManager = DownloadManager.shared
+    let passwordManager = PasswordManager.shared
+    let passwordRepository = PasswordRepository.shared
+
+    var showAutoFillPopup: Bool = false
 
     // Keep strong references to detached windows and their delegates
     static var detachedWindows: [NSWindow] = []
@@ -442,6 +446,44 @@ final class BrowserViewModel {
 
     func closeSidebar() {
         sidebarContent = .none
+    }
+
+    // MARK: - Passwords
+
+    func toggleAutoFillPopup() {
+        showAutoFillPopup.toggle()
+    }
+
+    func autoFillCurrentPage() {
+        guard let tab = currentTab, let webView = tab.webView else { return }
+        let credentials = passwordManager.matchingCredentials
+        if credentials.count == 1 {
+            passwordManager.fillCredentials(credentials[0], in: webView)
+        } else {
+            showAutoFillPopup = true
+        }
+    }
+
+    func fillCredential(_ credential: PasswordItem) {
+        guard let webView = currentTab?.webView else { return }
+        passwordManager.fillCredentials(credential, in: webView)
+        showAutoFillPopup = false
+    }
+
+    func generateAndFillPassword() {
+        guard let webView = currentTab?.webView else { return }
+        let settings = SettingsManager.shared
+        let generated = PasswordGenerator.generate(
+            length: settings.passwordGeneratorLength,
+            includeSymbols: settings.passwordGeneratorIncludeSymbols
+        )
+        let js = PasswordAutoFillScripts.autoFillScript(username: "", password: generated)
+        webView.evaluateJavaScript(js, completionHandler: nil)
+        showAutoFillPopup = false
+
+        // Copy to clipboard so user can paste it if needed
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(generated, forType: .string)
     }
 
     func openHistoryItem(_ item: HistoryItem) {

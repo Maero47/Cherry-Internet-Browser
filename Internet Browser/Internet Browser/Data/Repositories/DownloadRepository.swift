@@ -98,7 +98,7 @@ final class DownloadRepository {
         }
     }
 
-    func failDownload(id: UUID) {
+    func failDownload(id: UUID, errorMessage: String? = nil) {
         let context = persistence.viewContext
         let request = NSFetchRequest<DownloadEntity>(entityName: "DownloadEntity")
         request.predicate = NSPredicate(format: "id == %@", id as CVarArg)
@@ -107,6 +107,7 @@ final class DownloadRepository {
             if let entity = try context.fetch(request).first {
                 entity.status = .failed
                 entity.completionDate = Date()
+                entity.errorMessage = errorMessage
                 persistence.save()
                 fetchDownloads()
             }

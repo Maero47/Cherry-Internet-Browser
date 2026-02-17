@@ -4,6 +4,7 @@
 //
 
 import SwiftUI
+import Quartz
 
 struct DownloadsSidebarView: View {
     @Bindable var repository: DownloadRepository
@@ -86,10 +87,18 @@ struct DownloadsSidebarView: View {
                         DownloadItemRow(
                             item: item,
                             progress: downloadManager.progressMap[item.id],
+                            speedText: downloadManager.formattedSpeed(for: item.id),
+                            etaText: downloadManager.formattedETA(for: item.id),
                             onOpen: { downloadManager.openFile(id: item.id) },
                             onReveal: { downloadManager.revealInFinder(id: item.id) },
                             onCancel: { downloadManager.cancelDownload(id: item.id) },
-                            onRemove: { downloadManager.removeDownload(id: item.id) }
+                            onRemove: { downloadManager.removeDownload(id: item.id) },
+                            onQuickLook: {
+                                if let path = item.filePath {
+                                    DownloadQuickLookHelper.shared.previewFile(at: path)
+                                }
+                            },
+                            onRetry: { downloadManager.retryDownload(id: item.id) }
                         )
                     }
                 }
@@ -113,10 +122,14 @@ struct DownloadsSidebarView: View {
 struct DownloadItemRow: View {
     let item: DownloadItem
     let progress: (downloaded: Int64, total: Int64)?
+    let speedText: String?
+    let etaText: String?
     let onOpen: () -> Void
     let onReveal: () -> Void
     let onCancel: () -> Void
     let onRemove: () -> Void
+    let onQuickLook: () -> Void
+    let onRetry: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -134,6 +147,11 @@ struct DownloadItemRow: View {
                         Text(progressText)
                             .font(.system(size: 10))
                             .foregroundStyle(.secondary)
+                    } else if item.status == .failed, let errorMsg = item.errorMessage {
+                        Text(errorMsg)
+                            .font(.system(size: 10))
+                            .foregroundStyle(.red)
+                            .lineLimit(2)
                     } else {
                         // Status text
                         Text(statusText)
@@ -144,6 +162,17 @@ struct DownloadItemRow: View {
 
                 Spacer()
 
+                // Quick Look button for completed downloads
+                if item.status == .completed, item.filePath != nil {
+                    Button(action: onQuickLook) {
+                        Image(systemName: "eye")
+                            .foregroundStyle(.secondary)
+                            .font(.system(size: 12))
+                    }
+                    .buttonStyle(.plain)
+                    .help("Quick Look")
+                }
+
                 statusIcon
             }
 
@@ -152,6 +181,18 @@ struct DownloadItemRow: View {
                 ProgressView(value: Double(prog.downloaded), total: Double(prog.total))
                     .progressViewStyle(.linear)
                     .tint(SettingsManager.shared.accentColor)
+
+                // Speed & ETA
+                if let speed = speedText {
+                    HStack(spacing: 0) {
+                        Text(speed)
+                        if let eta = etaText {
+                            Text(" — \(eta)")
+                        }
+                    }
+                    .font(.system(size: 9))
+                    .foregroundStyle(.secondary)
+                }
             }
         }
         .padding(.vertical, 4)
@@ -164,7 +205,12 @@ struct DownloadItemRow: View {
         .contextMenu {
             if item.status == .completed {
                 Button("Open") { onOpen() }
+                Button("Quick Look") { onQuickLook() }
                 Button("Reveal in Finder") { onReveal() }
+                Divider()
+            }
+            if item.status == .failed {
+                Button("Retry") { onRetry() }
                 Divider()
             }
             if item.isActive {

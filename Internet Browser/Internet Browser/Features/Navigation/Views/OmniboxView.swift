@@ -11,6 +11,11 @@ struct OmniboxView: View {
     let isSecure: Bool
     let onSubmit: (String) -> Void
     let onFocus: () -> Void
+    var onTextChange: ((String) -> Void)? = nil
+    var onBlur: (() -> Void)? = nil
+    var onArrowDown: (() -> Void)? = nil
+    var onArrowUp: (() -> Void)? = nil
+    var onEscape: (() -> Void)? = nil
 
     @FocusState private var isFocused: Bool
 
@@ -37,7 +42,26 @@ struct OmniboxView: View {
                             NSApp.keyWindow?.firstResponder?
                                 .tryToPerform(#selector(NSText.selectAll(_:)), with: nil)
                         }
+                    } else {
+                        onBlur?()
                     }
+                }
+                .onChange(of: text) { _, newValue in
+                    if isFocused {
+                        onTextChange?(newValue)
+                    }
+                }
+                .onKeyPress(.downArrow) {
+                    onArrowDown?()
+                    return onArrowDown != nil ? .handled : .ignored
+                }
+                .onKeyPress(.upArrow) {
+                    onArrowUp?()
+                    return onArrowUp != nil ? .handled : .ignored
+                }
+                .onKeyPress(.escape) {
+                    onEscape?()
+                    return onEscape != nil ? .handled : .ignored
                 }
 
             // Loading indicator or reload button

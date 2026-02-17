@@ -18,11 +18,16 @@ struct SettingsView: View {
                     Label("Privacy", systemImage: "lock.shield")
                 }
 
+            PasswordsSettingsView()
+                .tabItem {
+                    Label("Passwords", systemImage: "key.fill")
+                }
+
             AboutSettingsView()
                 .tabItem {
                     Label("About", systemImage: "info.circle")
                 }
         }
-        .frame(width: 480, height: 400)
+        .frame(width: 520, height: 460)
     }
 }
