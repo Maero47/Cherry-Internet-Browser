@@ -7,6 +7,7 @@ Cherry is a privacy-focused, local-only macOS web browser built with SwiftUI and
 - **UI Framework**: SwiftUI (macOS 26.2+)
 - **Rendering Engine**: WKWebView
 - **Data Persistence**: Core Data (local only)
+- **Password Storage**: macOS Keychain (encrypted)
 - **Architecture**: MVVM with @Observable
 
 ---
@@ -270,43 +271,158 @@ Internet Browser/
 
 ---
 
-## Phase 6: Downloads Manager ⏳ PENDING
+## Phase 6: Theme Settings, Ad Blocker & UI Refinements ✅ COMPLETE
 
-### Planned Features
-- [ ] Download progress tracking
-- [ ] Pause/resume/cancel
-- [ ] Download history
-- [ ] Quick Look integration
+### Implemented Features
+- [x] Theme/accent color selection in settings
+- [x] Ad blocker with cosmetic filtering
+- [x] Per-site ad blocker pause/resume (shield icon in toolbar)
+- [x] 3-dot menu in navigation bar (Bookmarks, History, Downloads, Settings)
+- [x] Settings page redesign with sidebar navigation
+- [x] UI refinements and polish
+
+### Files Modified
+```
+Internet Browser/
+├── Features/
+│   ├── Settings/
+│   │   └── Views/
+│   │       └── SettingsPageView.swift       (NEW)
+│   ├── Navigation/
+│   │   └── Views/
+│   │       └── NavigationBarView.swift      (MODIFIED - 3-dot menu, ad block toggle)
+│   └── Browser/
+│       └── Views/
+│           └── WebViewWrapper.swift         (MODIFIED - ad blocker integration)
+```
 
 ---
 
-## Phase 7: Password Manager ⏳ PENDING
+## Phase 7: Incognito Mode, Drag-and-Drop & Performance ✅ COMPLETE
 
-### Planned Features
-- [ ] Keychain integration
-- [ ] Auto-fill login forms
-- [ ] Password generator
-- [ ] Touch ID integration
+### Implemented Features
+- [x] Chrome-like tab drag-and-drop with animated insertion indicator
+- [x] Incognito/private browsing mode toggle in toolbar
+- [x] Dock menu integration
+- [x] Performance optimizations for tab management
+- [x] Animated tab insertion indicator during drag reorder
 
 ---
 
-## Phase 8: Developer Tools ⏳ PENDING
+## Phase 8: Download Manager ✅ COMPLETE
 
-### Planned Features
+### Implemented Features
+- [x] Cosmetic ad blocking improvements
+- [x] Download manager with progress tracking
+- [x] Download sidebar with file list
+- [x] Download toast notifications
+- [x] Pause/resume/cancel downloads
+- [x] Open downloaded files / show in Finder
+
+### Files Created/Modified
+```
+Internet Browser/
+├── Data/
+│   ├── Models/
+│   │   └── DownloadItem.swift               (NEW)
+│   └── Repositories/
+│       └── DownloadRepository.swift         (NEW)
+├── Features/
+│   └── Downloads/
+│       ├── ViewModels/
+│       │   └── DownloadManager.swift        (NEW)
+│       └── Views/
+│           ├── DownloadsSidebarView.swift   (NEW)
+│           └── DownloadToastView.swift      (NEW)
+```
+
+---
+
+## Phase 9: Password Manager, Omnibox Autocomplete & Downloads ✅ COMPLETE
+
+### Implemented Features
+
+#### Password Manager
+- [x] Keychain-backed secure password storage (no plaintext on disk)
+- [x] Password auto-fill detection for login forms
+- [x] Auto-fill popup with matching credentials
+- [x] Save password banner when new credentials detected
+- [x] Password generator (configurable length, uppercase, numbers, symbols)
+- [x] Passwords settings/management UI
+- [x] Key icon in toolbar when login form detected (Cmd+\)
+- [x] Core Data metadata + Keychain hybrid storage
+
+#### Omnibox Autocomplete
+- [x] Google search suggestions (autocomplete API)
+- [x] History-based suggestions (show previously visited URLs)
+- [x] History suggestions appear instantly, search suggestions debounced (300ms)
+- [x] Floating dropdown with material background and shadow
+- [x] Keyboard navigation (Up/Down arrows to cycle, Enter to select, Escape to dismiss)
+- [x] Mouse hover highlighting
+- [x] URL detection (skips search suggestions for URL-like input, still shows history)
+- [x] History items shown with clock icon + page title + URL subtitle
+- [x] Search items shown with magnifying glass icon
+
+#### Download Improvements
+- [x] QuickLook preview support for downloaded files
+
+### Keyboard Shortcuts (Phase 9)
+| Shortcut | Action |
+|----------|--------|
+| Cmd+\ | Auto-fill Password |
+| Up/Down | Navigate suggestions in omnibox |
+| Escape | Dismiss suggestions |
+
+### Files Created/Modified
+```
+Internet Browser/
+├── Core/
+│   └── Security/
+│       └── KeychainHelper.swift                  (NEW)
+├── Data/
+│   ├── Models/
+│   │   └── PasswordItem.swift                    (NEW)
+│   └── Repositories/
+│       └── PasswordRepository.swift              (NEW)
+├── Features/
+│   ├── Passwords/
+│   │   ├── ViewModels/
+│   │   │   ├── PasswordManager.swift             (NEW)
+│   │   │   ├── PasswordGenerator.swift           (NEW)
+│   │   │   └── PasswordAutoFillScripts.swift     (NEW)
+│   │   └── Views/
+│   │       ├── PasswordAutoFillPopup.swift       (NEW)
+│   │       ├── PasswordsSettingsView.swift       (NEW)
+│   │       └── SavePasswordBanner.swift          (NEW)
+│   ├── Navigation/
+│   │   ├── ViewModels/
+│   │   │   └── SearchSuggestService.swift        (NEW)
+│   │   └── Views/
+│   │       ├── OmniboxSuggestionsView.swift      (NEW)
+│   │       ├── OmniboxView.swift                 (MODIFIED - onTextChange, onBlur, arrow key callbacks)
+│   │       └── NavigationBarView.swift           (MODIFIED - suggestion integration, keyboard nav)
+│   └── Downloads/
+│       └── ViewModels/
+│           └── DownloadQuickLookHelper.swift     (NEW)
+```
+
+---
+
+## Future Phases ⏳ PENDING
+
+### Developer Tools
 - [ ] WebKit Inspector integration
 - [ ] Console access
 - [ ] Network panel
 
----
-
-## Phase 9: Additional Features ⏳ PENDING
-
-### Planned Features
+### Additional Features
 - [ ] Reading mode
 - [ ] Screenshots (visible area, full page)
 - [ ] Print/PDF
 - [ ] Picture-in-Picture
 - [ ] QR code generation
+- [ ] Extensions/plugin system
+- [ ] Touch ID for password access
 
 ---
 
@@ -329,10 +445,13 @@ Internet Browser/
 
 ## Data Storage
 
-All data is stored locally in:
+All data is stored locally:
 ```
 ~/Library/Application Support/Cherry/
-└── Cherry.sqlite
+└── CherryBrowser.sqlite       (bookmarks, history, shortcuts, download metadata, password metadata)
+
+macOS Keychain
+└── com.cherry.browser.passwords   (encrypted passwords)
 ```
 
 No cloud sync. No accounts. Your data stays on your device.

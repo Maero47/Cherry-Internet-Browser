@@ -37,25 +37,45 @@ final class PasswordManager {
         return pendingSaveURL ?? ""
     }
 
+    // Authentication session: once authenticated, stays valid for the entire app session
+    private var isAuthSessionValid: Bool = false
+
     private init() {}
 
     // MARK: - Touch ID
 
     func authenticateWithTouchID(reason: String, completion: @escaping (Bool) -> Void) {
-        let context = LAContext()
-        var error: NSError?
-
-        guard context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &error) else {
-            // No biometrics available, allow access
+        // If recently authenticated, skip the prompt
+        if isAuthSessionValid {
             completion(true)
             return
         }
 
-        context.evaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, localizedReason: reason) { success, _ in
-            DispatchQueue.main.async {
+        let context = LAContext()
+        context.localizedFallbackTitle = "Use Password"
+        var error: NSError?
+
+        // Use deviceOwnerAuthentication which tries Touch ID first, then falls back
+        // to system password if Touch ID fails or is unavailable
+        guard context.canEvaluatePolicy(.deviceOwnerAuthentication, error: &error) else {
+            // No authentication available at all, allow access
+            completion(true)
+            return
+        }
+
+        context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: reason) { success, _ in
+            DispatchQueue.main.async { [self] in
+                if success {
+                    isAuthSessionValid = true
+                }
                 completion(success)
             }
         }
+    }
+
+    /// Clears the authentication session so next access requires re-authentication
+    func invalidateAuthSession() {
+        isAuthSessionValid = false
     }
 
     // MARK: - Auto-Fill

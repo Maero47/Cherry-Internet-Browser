@@ -22,6 +22,47 @@ struct PasswordsSettingsView: View {
     }
 
     var body: some View {
+        Group {
+            if isAuthenticated {
+                passwordsContent
+            } else {
+                authGateView
+            }
+        }
+        .onAppear {
+            authenticate()
+        }
+    }
+
+    private var authGateView: some View {
+        VStack(spacing: 16) {
+            Image(systemName: "lock.shield")
+                .font(.system(size: 40))
+                .foregroundStyle(.secondary)
+
+            Text("Passwords are locked")
+                .font(.headline)
+
+            Text("Authenticate to view your saved passwords")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+
+            Button("Unlock Passwords") {
+                authenticate()
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func authenticate() {
+        PasswordManager.shared.authenticateWithTouchID(reason: "Access saved passwords") { success in
+            isAuthenticated = success
+        }
+    }
+
+    private var passwordsContent: some View {
         VStack(spacing: 0) {
             // Search + Add bar — fixed height, never resizes
             HStack {
