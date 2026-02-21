@@ -48,8 +48,14 @@ enum KeychainHelper {
             return nil
         }
 
-        guard let data = result as? Data else { return nil }
-        return String(data: data, encoding: .utf8)
+        guard let data = result as? Data,
+              let password = String(data: data, encoding: .utf8) else { return nil }
+
+        // Re-save to update the Keychain ACL to the current app signature,
+        // so future reads won't prompt for Keychain access
+        save(password: password, for: id)
+
+        return password
     }
 
     @discardableResult

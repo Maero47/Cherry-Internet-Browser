@@ -129,13 +129,8 @@ struct PasswordsSettingsView: View {
 
             Divider()
 
-            // Touch ID + Generator settings — fixed height at bottom
+            // Generator settings — fixed height at bottom
             VStack(alignment: .leading, spacing: 8) {
-                Toggle("Require Touch ID to auto-fill passwords", isOn: $settings.requireTouchIDForAutoFill)
-                Toggle("Require Touch ID to view passwords", isOn: $settings.requireTouchIDForViewing)
-
-                Divider()
-
                 HStack {
                     Text("Password length: \(settings.passwordGeneratorLength)")
                     Slider(value: Binding(
@@ -426,7 +421,7 @@ struct AddPasswordSheet: View {
                     .textFieldStyle(.roundedBorder)
 
                 HStack {
-                    SecureField("Password", text: $password)
+                    TextField("Password", text: $password)
                         .textFieldStyle(.roundedBorder)
 
                     Button("Generate") {

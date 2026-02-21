@@ -52,6 +52,27 @@ final class BrowserViewModel {
 
     var showAutoFillPopup: Bool = false
 
+    // MARK: - Find in Page
+    var showFindInPage: Bool = false
+    var findQuery: String = ""
+    var findCurrentMatch: Int = 0
+    var findTotalMatches: Int = 0
+    private var findDebounceTask: Task<Void, Never>?
+
+    // MARK: - Reader Mode
+    var showReaderMode: Bool = false
+    var readerContent: ReaderContent? = nil
+
+    // MARK: - QR Code
+    var showQRCode: Bool = false
+
+    // MARK: - PDF detection
+    var isViewingPDF: Bool = false
+
+    // MARK: - Screenshot toast
+    var showScreenshotToast: Bool = false
+    var screenshotToastMessage: String = ""
+
     // Keep strong references to detached windows and their delegates
     static var detachedWindows: [NSWindow] = []
     static var detachedWindowDelegates: [DetachedWindowDelegate] = []
@@ -126,10 +147,7 @@ final class BrowserViewModel {
     }
 
     func goHome() {
-        guard let tab = currentTab else { return }
-        tab.showHomePage = true
-        tab.showSettingsPage = false
-        tab.title = "New Tab"
+        newTab()
     }
 
     func showSettings() {
@@ -493,6 +511,445 @@ final class BrowserViewModel {
             newTab(url: item.url)
         }
     }
+
+    // MARK: - Find in Page
+
+    private var findHelperInjected = false
+
+    /// Injects the find helper JS once per page. Uses querySelectorAll to clear
+    /// old marks so it never loses track of highlights even if called again.
+    private func injectFindHelperIfNeeded(in webView: WKWebView, completion: @escaping () -> Void) {
+        if findHelperInjected {
+            completion()
+            return
+        }
+        let js = """
+        window.__cherryFind = {
+            marks: [],
+            current: -1,
+            clear: function() {
+                // Always query DOM directly so we never lose old marks
+                document.querySelectorAll('mark[data-cherry-find]').forEach(function(m) {
+                    var parent = m.parentNode;
+                    if (parent) {
+                        parent.replaceChild(document.createTextNode(m.textContent), m);
+                        parent.normalize();
+                    }
+                });
+                this.marks = [];
+                this.current = -1;
+            },
+            _isVisible: function(el) {
+                // Walk up the DOM tree checking visibility
+                while (el && el !== document.body) {
+                    if (el.nodeType !== 1) { el = el.parentNode; continue; }
+                    if (el.hidden || el.getAttribute('aria-hidden') === 'true') return false;
+                    var s = window.getComputedStyle(el);
+                    if (s.display === 'none' || s.visibility === 'hidden' || s.opacity === '0') return false;
+                    // Check if element has zero dimensions (off-screen/collapsed)
+                    if (el.offsetWidth === 0 && el.offsetHeight === 0 && s.overflow === 'hidden') return false;
+                    el = el.parentNode;
+                }
+                return true;
+            },
+            highlight: function(query) {
+                this.clear();
+                if (!query || query.length === 0) return 0;
+                var lowerQ = query.toLowerCase();
+                var skip = {'SCRIPT':1,'STYLE':1,'NOSCRIPT':1,'TEXTAREA':1,'TEMPLATE':1,'SVG':1,'INPUT':1,'SELECT':1};
+                var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
+                    acceptNode: function(node) {
+                        var p = node.parentElement;
+                        if (!p) return NodeFilter.FILTER_REJECT;
+                        if (skip[p.tagName]) return NodeFilter.FILTER_REJECT;
+                        return NodeFilter.FILTER_ACCEPT;
+                    }
+                });
+                var nodes = [];
+                while (walker.nextNode()) nodes.push(walker.currentNode);
+                var self = this;
+                nodes.forEach(function(node) {
+                    var text = node.textContent;
+                    if (!text || text.trim().length === 0) return;
+                    var lower = text.toLowerCase();
+                    var idx = lower.indexOf(lowerQ);
+                    if (idx === -1) return;
+                    // Check if the parent element is actually visible on screen
+                    if (!self._isVisible(node.parentElement)) return;
+                    var frag = document.createDocumentFragment();
+                    var last = 0;
+                    while (idx !== -1) {
+                        if (idx > last) frag.appendChild(document.createTextNode(text.substring(last, idx)));
+                        var mark = document.createElement('mark');
+                        mark.setAttribute('data-cherry-find', '1');
+                        mark.style.cssText = 'background:#FDFF00;color:#000;padding:0;margin:0;border-radius:2px;';
+                        mark.textContent = text.substring(idx, idx + query.length);
+                        frag.appendChild(mark);
+                        self.marks.push(mark);
+                        last = idx + query.length;
+                        idx = lower.indexOf(lowerQ, last);
+                    }
+                    if (last < text.length) frag.appendChild(document.createTextNode(text.substring(last)));
+                    node.parentNode.replaceChild(frag, node);
+                });
+                if (this.marks.length > 0) { this.current = 0; this._focus(); }
+                return this.marks.length;
+            },
+            next: function() {
+                if (this.marks.length === 0) return {c:0,t:0};
+                this._unfocus();
+                this.current = (this.current + 1) % this.marks.length;
+                this._focus();
+                return {c: this.current + 1, t: this.marks.length};
+            },
+            prev: function() {
+                if (this.marks.length === 0) return {c:0,t:0};
+                this._unfocus();
+                this.current = (this.current - 1 + this.marks.length) % this.marks.length;
+                this._focus();
+                return {c: this.current + 1, t: this.marks.length};
+            },
+            _focus: function() {
+                var m = this.marks[this.current];
+                if (!m) return;
+                m.style.background = '#FF9632';
+                m.scrollIntoView({block:'center',behavior:'smooth'});
+            },
+            _unfocus: function() {
+                var m = this.marks[this.current];
+                if (!m) return;
+                m.style.background = '#FDFF00';
+            }
+        };
+        true;
+        """
+        webView.evaluateJavaScript(js) { [weak self] _, _ in
+            self?.findHelperInjected = true
+            completion()
+        }
+    }
+
+    func toggleFindInPage() {
+        showFindInPage.toggle()
+        if !showFindInPage {
+            dismissFind()
+        }
+    }
+
+    private func escapeFindQuery(_ query: String) -> String {
+        query
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "'", with: "\\'")
+            .replacingOccurrences(of: "\n", with: "\\n")
+            .replacingOccurrences(of: "\r", with: "\\r")
+    }
+
+    func findNext() {
+        guard let webView = currentTab?.webView, !findQuery.isEmpty else { return }
+        webView.evaluateJavaScript("window.__cherryFind.next();") { [weak self] result, _ in
+            guard let self, let dict = result as? [String: Any],
+                  let c = dict["c"] as? Int, let t = dict["t"] as? Int else { return }
+            self.findCurrentMatch = c
+            self.findTotalMatches = t
+        }
+    }
+
+    func findPrevious() {
+        guard let webView = currentTab?.webView, !findQuery.isEmpty else { return }
+        webView.evaluateJavaScript("window.__cherryFind.prev();") { [weak self] result, _ in
+            guard let self, let dict = result as? [String: Any],
+                  let c = dict["c"] as? Int, let t = dict["t"] as? Int else { return }
+            self.findCurrentMatch = c
+            self.findTotalMatches = t
+        }
+    }
+
+    func performFind() {
+        findDebounceTask?.cancel()
+
+        guard !findQuery.isEmpty else {
+            clearFindHighlights()
+            findCurrentMatch = 0
+            findTotalMatches = 0
+            return
+        }
+
+        let query = findQuery
+        findDebounceTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            guard !Task.isCancelled, let self, self.findQuery == query else { return }
+            self.executeHighlightFind(query: query)
+        }
+    }
+
+    private func executeHighlightFind(query: String) {
+        guard let webView = currentTab?.webView else { return }
+        let escaped = escapeFindQuery(query)
+        injectFindHelperIfNeeded(in: webView) { [weak self] in
+            let js = "window.__cherryFind.highlight('\(escaped)');"
+            webView.evaluateJavaScript(js) { [weak self] result, _ in
+                guard let self else { return }
+                if let count = result as? Int {
+                    self.findTotalMatches = count
+                    self.findCurrentMatch = count > 0 ? 1 : 0
+                } else {
+                    self.findTotalMatches = 0
+                    self.findCurrentMatch = 0
+                }
+            }
+        }
+    }
+
+    private func clearFindHighlights() {
+        guard let webView = currentTab?.webView else { return }
+        if findHelperInjected {
+            webView.evaluateJavaScript(
+                "window.__cherryFind.clear();", completionHandler: nil)
+        }
+    }
+
+    func dismissFind() {
+        findDebounceTask?.cancel()
+        clearFindHighlights()
+        findQuery = ""
+        findCurrentMatch = 0
+        findTotalMatches = 0
+        findHelperInjected = false
+    }
+
+    // MARK: - Print / Save as PDF
+
+    func printCurrentPage() {
+        guard let webView = currentTab?.webView else { return }
+        guard let window = webView.window ?? NSApp.keyWindow else { return }
+        let printInfo = NSPrintInfo.shared.copy() as! NSPrintInfo
+        printInfo.isHorizontallyCentered = true
+        printInfo.isVerticallyCentered = false
+        printInfo.horizontalPagination = .fit
+        printInfo.verticalPagination = .automatic
+        printInfo.topMargin = 36
+        printInfo.bottomMargin = 36
+        printInfo.leftMargin = 36
+        printInfo.rightMargin = 36
+        let printOp = webView.printOperation(with: printInfo)
+        printOp.showsPrintPanel = true
+        printOp.showsProgressPanel = true
+        // Initialize WKPrintingView frame to paper size to prevent the
+        // "frame was not initialized before knowsPageRange:" crash
+        let paperSize = printInfo.paperSize
+        printOp.view?.frame = NSRect(x: 0, y: 0, width: paperSize.width, height: paperSize.height)
+        printOp.runModal(for: window, delegate: nil, didRun: nil, contextInfo: nil)
+    }
+
+    // MARK: - Reader Mode
+
+    func toggleReaderMode() {
+        if showReaderMode {
+            showReaderMode = false
+            readerContent = nil
+            return
+        }
+        guard let webView = currentTab?.webView else { return }
+        Task { @MainActor in
+            if let content = await ReaderModeExtractor.extract(from: webView) {
+                self.readerContent = content
+                self.showReaderMode = true
+            }
+        }
+    }
+
+    // MARK: - Picture-in-Picture
+
+    static var pipWindow: NSPanel?
+    static var pipSourceTab: Tab?
+    static var pipCloseObserver: Any?
+
+    static func cleanupPiP() {
+        // Remove the hide-UI CSS from the webView
+        if let webView = pipSourceTab?.webView {
+            webView.evaluateJavaScript("""
+            (function() {
+                var s = document.getElementById('__cherry-pip-style');
+                if (s) s.remove();
+            })();
+            """, completionHandler: nil)
+        }
+        pipSourceTab = nil
+        pipWindow = nil
+        if let observer = pipCloseObserver {
+            NotificationCenter.default.removeObserver(observer)
+            pipCloseObserver = nil
+        }
+    }
+
+    func togglePictureInPicture() {
+        // If PiP window already open, close it and return webView to tab
+        if let existing = BrowserViewModel.pipWindow {
+            // Move webView back to the tab (SwiftUI will reclaim it via WebViewWrapper)
+            existing.contentView = nil
+            existing.close()
+            BrowserViewModel.cleanupPiP()
+            return
+        }
+
+        guard let tab = currentTab, let webView = tab.webView else { return }
+
+        // Delay slightly so the menu fully dismisses
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+            guard let self else { return }
+
+            // Inject CSS to hide everything except video
+            let hideJS = """
+            (function() {
+                var s = document.createElement('style');
+                s.id = '__cherry-pip-style';
+                var isYT = location.hostname.includes('youtube.com');
+                if (isYT) {
+                    s.textContent = `
+                        #masthead, #below, #secondary, #comments, #related,
+                        ytd-masthead, #guide, #guide-button, tp-yt-app-drawer,
+                        ytd-mini-guide-renderer, #header, #page-manager > *:not(ytd-watch-flexy),
+                        .ytp-chrome-top, .ytp-pause-overlay, .ytp-gradient-top,
+                        ytd-watch-metadata, #meta, #info, #ticket-shelf,
+                        #description, #actions, #menu, #subscribe-button,
+                        .ytd-watch-flexy > #columns > #secondary,
+                        #chat, #above-the-fold, #bottom-row {
+                            display: none !important;
+                        }
+                        body { overflow: hidden !important; background: #000 !important; }
+                        #player, #movie_player, .html5-main-video, video {
+                            position: fixed !important; top: 0 !important; left: 0 !important;
+                            width: 100vw !important; height: 100vh !important;
+                            max-width: 100vw !important; max-height: 100vh !important;
+                            object-fit: contain !important;
+                        }
+                        #columns { padding: 0 !important; margin: 0 !important; }
+                        ytd-watch-flexy { padding: 0 !important; margin: 0 !important; }
+                    `;
+                } else {
+                    s.textContent = `
+                        body > *:not(video) { opacity: 0 !important; pointer-events: none !important; }
+                        body { background: #000 !important; overflow: hidden !important; margin: 0 !important; }
+                        video {
+                            position: fixed !important; top: 0 !important; left: 0 !important;
+                            width: 100vw !important; height: 100vh !important;
+                            max-width: 100vw !important; max-height: 100vh !important;
+                            object-fit: contain !important; z-index: 2147483647 !important;
+                            opacity: 1 !important; pointer-events: auto !important;
+                        }
+                    `;
+                }
+                document.head.appendChild(s);
+                var v = document.querySelector('video');
+                var w = (v && v.videoWidth) || 640;
+                var h = (v && v.videoHeight) || 360;
+                return { w: w, h: h };
+            })();
+            """
+            webView.evaluateJavaScript(hideJS) { [weak self] result, _ in
+                guard let self else { return }
+                let info = result as? [String: Any]
+                let videoW = info?["w"] as? Int ?? 640
+                let videoH = info?["h"] as? Int ?? 360
+
+                // Detach webView from its current superview and put into floating panel
+                webView.removeFromSuperview()
+
+                let maxWidth: CGFloat = 480
+                let aspect = videoH > 0 ? CGFloat(videoW) / CGFloat(videoH) : 16.0 / 9.0
+                let pipWidth = min(maxWidth, CGFloat(videoW))
+                let pipHeight = pipWidth / aspect
+
+                let panel = NSPanel(
+                    contentRect: NSRect(x: 0, y: 0, width: pipWidth, height: pipHeight),
+                    styleMask: [.titled, .closable, .resizable, .nonactivatingPanel, .utilityWindow, .hudWindow],
+                    backing: .buffered,
+                    defer: false
+                )
+                panel.contentView = webView
+                panel.isFloatingPanel = true
+                panel.level = .floating
+                panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+                panel.titlebarAppearsTransparent = true
+                panel.titleVisibility = .hidden
+                panel.isMovableByWindowBackground = true
+                panel.backgroundColor = .black
+                panel.hasShadow = true
+                panel.animationBehavior = .utilityWindow
+                panel.aspectRatio = NSSize(width: aspect, height: 1)
+
+                if let screen = NSScreen.main {
+                    let screenFrame = screen.visibleFrame
+                    let x = screenFrame.maxX - pipWidth - 20
+                    let y = screenFrame.minY + 20
+                    panel.setFrameOrigin(NSPoint(x: x, y: y))
+                }
+
+                BrowserViewModel.pipWindow = panel
+                BrowserViewModel.pipSourceTab = tab
+
+                BrowserViewModel.pipCloseObserver = NotificationCenter.default.addObserver(
+                    forName: NSWindow.willCloseNotification,
+                    object: panel,
+                    queue: .main
+                ) { _ in
+                    // Return webView to tab by removing hide CSS (SwiftUI will re-add it)
+                    panel.contentView = nil
+                    BrowserViewModel.cleanupPiP()
+                }
+
+                panel.makeKeyAndOrderFront(nil)
+            }
+        }
+    }
+
+    // MARK: - Screenshot
+
+    // MARK: - Save PDF
+
+    func savePDF() {
+        guard let webView = currentTab?.webView, let url = webView.url else { return }
+        // Use WebKit's own networking stack and route through the existing
+        // WKDownloadDelegate (WebViewWrapper.Coordinator) for save panel + history
+        webView.startDownload(using: URLRequest(url: url)) { download in
+            download.delegate = webView.navigationDelegate as? WKDownloadDelegate
+        }
+    }
+
+    // MARK: - Screenshot
+
+    func captureScreenshot() {
+        guard let webView = currentTab?.webView else { return }
+        let config = WKSnapshotConfiguration()
+        webView.takeSnapshot(with: config) { image, error in
+            guard let image = image, error == nil else { return }
+            // Convert to PNG
+            guard let tiffData = image.tiffRepresentation,
+                  let bitmap = NSBitmapImageRep(data: tiffData),
+                  let pngData = bitmap.representation(using: .png, properties: [:]) else { return }
+
+            // Save to Downloads
+            let downloadsURL = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first!
+            let formatter = DateFormatter()
+            formatter.dateFormat = "yyyy-MM-dd_HH-mm-ss"
+            let filename = "Screenshot_\(formatter.string(from: Date())).png"
+            let fileURL = downloadsURL.appendingPathComponent(filename)
+
+            do {
+                try pngData.write(to: fileURL)
+                DispatchQueue.main.async {
+                    self.screenshotToastMessage = "Screenshot saved to Downloads"
+                    self.showScreenshotToast = true
+                    // Auto-dismiss after 3 seconds
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                        self.showScreenshotToast = false
+                    }
+                }
+            } catch {
+                // Silently fail
+            }
+        }
+    }
 }
 
 // MARK: - Detached Window
@@ -524,3 +981,4 @@ class DetachedWindowDelegate: NSObject, NSWindowDelegate {
         }
     }
 }
+

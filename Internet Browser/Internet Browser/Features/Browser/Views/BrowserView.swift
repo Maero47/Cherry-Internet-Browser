@@ -79,8 +79,19 @@ struct BrowserView: View {
             .overlay { tabSearchOverlay }
             .overlay(alignment: .topTrailing) { downloadToastOverlay }
             .overlay(alignment: .top) { savePasswordOverlay }
+            .overlay(alignment: .bottom) { findInPageOverlay }
+            .overlay { readerModeOverlay }
+            .overlay { qrCodeOverlay }
+            .overlay(alignment: .bottom) { screenshotToastOverlay }
             .animation(.spring(duration: 0.3), value: viewModel.passwordManager.showSavePrompt)
             .animation(.spring(duration: 0.3), value: viewModel.showDownloadToast)
+            .animation(.spring(duration: 0.3), value: viewModel.showFindInPage)
+            .animation(.spring(duration: 0.3), value: viewModel.showReaderMode)
+            .animation(.spring(duration: 0.3), value: viewModel.showQRCode)
+            .animation(.spring(duration: 0.3), value: viewModel.showScreenshotToast)
+            .onChange(of: viewModel.findQuery) { _, _ in
+                viewModel.performFind()
+            }
             .onChange(of: viewModel.downloadManager.downloadStartedTrigger) { _, _ in
                 guard let id = viewModel.downloadManager.latestDownloadID else { return }
                 viewModel.toastDismissTask?.cancel()
@@ -159,7 +170,13 @@ struct BrowserView: View {
                         onToggleAdBlock: { viewModel.toggleAdBlockForCurrentSite() },
                         onTogglePrivateMode: { viewModel.requestTogglePrivateMode() },
                         onAutoFill: { viewModel.toggleAutoFillPopup() },
-                        onGeneratePassword: { viewModel.generateAndFillPassword() }
+                        onGeneratePassword: { viewModel.generateAndFillPassword() },
+                        onPrint: { viewModel.printCurrentPage() },
+                        onToggleReaderMode: { viewModel.toggleReaderMode() },
+                        onPictureInPicture: { viewModel.togglePictureInPicture() },
+                        onScreenshot: { viewModel.captureScreenshot() },
+                        onQRCode: { viewModel.showQRCode = true },
+                        onSavePDF: { viewModel.savePDF() }
                     )
                     .onDrop(of: [.cherryBrowserTab], isTargeted: nil) { providers in
                         viewModel.handleContentAreaDrop()
@@ -260,6 +277,72 @@ struct BrowserView: View {
     }
 
     @ViewBuilder
+    private var findInPageOverlay: some View {
+        if viewModel.showFindInPage {
+            FindInPageBar(
+                query: $viewModel.findQuery,
+                currentMatch: viewModel.findCurrentMatch,
+                totalMatches: viewModel.findTotalMatches,
+                onNext: { viewModel.findNext() },
+                onPrevious: { viewModel.findPrevious() },
+                onDismiss: {
+                    viewModel.showFindInPage = false
+                    viewModel.dismissFind()
+                }
+            )
+            .transition(.move(edge: .bottom).combined(with: .opacity))
+            .zIndex(997)
+        }
+    }
+
+    @ViewBuilder
+    private var readerModeOverlay: some View {
+        if viewModel.showReaderMode, let content = viewModel.readerContent {
+            ReaderModeView(
+                content: content,
+                onDismiss: { viewModel.toggleReaderMode() }
+            )
+            .transition(.opacity)
+            .zIndex(996)
+        }
+    }
+
+    @ViewBuilder
+    private var qrCodeOverlay: some View {
+        if viewModel.showQRCode, let tab = viewModel.currentTab, let url = tab.url {
+            QRCodePopup(
+                url: url,
+                pageTitle: tab.title,
+                onDismiss: { viewModel.showQRCode = false }
+            )
+            .transition(.opacity)
+            .zIndex(1000)
+        }
+    }
+
+    @ViewBuilder
+    private var screenshotToastOverlay: some View {
+        if viewModel.showScreenshotToast {
+            HStack(spacing: 8) {
+                Image(systemName: "camera.fill")
+                    .foregroundStyle(.green)
+                Text(viewModel.screenshotToastMessage)
+                    .font(.system(size: 13))
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .background(
+                RoundedRectangle(cornerRadius: 10)
+                    .fill(.regularMaterial)
+                    .shadow(color: .black.opacity(0.15), radius: 8, y: 2)
+            )
+            .padding(.bottom, 16)
+            .transition(.move(edge: .bottom).combined(with: .opacity))
+            .zIndex(997)
+        }
+    }
+
+    @ViewBuilder
     private var emptyState: some View {
         VStack(spacing: 16) {
             Image(systemName: "globe")
@@ -353,6 +436,31 @@ struct BrowserView: View {
             Button("") { viewModel.openPrivateWindow() }
                 .keyboardShortcut("n", modifiers: [.command, .shift])
 
+            // Find in Page (Cmd+F)
+            Button("") { viewModel.toggleFindInPage() }
+                .keyboardShortcut("f", modifiers: .command)
+
+            // Escape to dismiss Find in Page
+            Button("") {
+                if viewModel.showFindInPage {
+                    viewModel.showFindInPage = false
+                    viewModel.dismissFind()
+                }
+            }
+            .keyboardShortcut(.escape, modifiers: [])
+
+            // Print / Save as PDF (Cmd+P)
+            Button("") { viewModel.printCurrentPage() }
+                .keyboardShortcut("p", modifiers: .command)
+
+            // Reader Mode (Cmd+Shift+R)
+            Button("") { viewModel.toggleReaderMode() }
+                .keyboardShortcut("r", modifiers: [.command, .shift])
+
+            // Screenshot (Cmd+Shift+4)
+            Button("") { viewModel.captureScreenshot() }
+                .keyboardShortcut("4", modifiers: [.command, .shift])
+
             // Tab selection 1-9
             ForEach(1...9, id: \.self) { index in
                 Button("") { viewModel.selectTab(at: index) }
@@ -383,6 +491,12 @@ struct BrowserContentView: View {
     var onTogglePrivateMode: (() -> Void)? = nil
     var onAutoFill: (() -> Void)? = nil
     var onGeneratePassword: (() -> Void)? = nil
+    var onPrint: (() -> Void)? = nil
+    var onToggleReaderMode: (() -> Void)? = nil
+    var onPictureInPicture: (() -> Void)? = nil
+    var onScreenshot: (() -> Void)? = nil
+    var onQRCode: (() -> Void)? = nil
+    var onSavePDF: (() -> Void)? = nil
 
     // Track URL changes to force WebViewWrapper updates
     @State private var urlVersion: Int = 0
@@ -408,7 +522,15 @@ struct BrowserContentView: View {
                 loginFormDetected: viewModel.passwordManager.loginFormDetected,
                 isPrivateMode: viewModel.isPrivateMode,
                 onTogglePrivateMode: onTogglePrivateMode,
-                showWindowDragArea: viewModel.useVerticalTabs && !viewModel.isFullScreen
+                showWindowDragArea: viewModel.useVerticalTabs && !viewModel.isFullScreen,
+                onPrint: onPrint,
+                onToggleReaderMode: onToggleReaderMode,
+                showReaderMode: viewModel.showReaderMode,
+                onPictureInPicture: onPictureInPicture,
+                onScreenshot: onScreenshot,
+                onQRCode: onQRCode,
+                isViewingPDF: viewModel.isViewingPDF,
+                onSavePDF: onSavePDF
             )
             .overlay(alignment: .topTrailing) {
                 if viewModel.showAutoFillPopup {

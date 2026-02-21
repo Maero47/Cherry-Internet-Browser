@@ -118,6 +118,8 @@ struct WebViewWrapper: NSViewRepresentable {
         var webView: WKWebView?
         var tab: Tab?
         var lastLoadedURL: URL?
+        /// URL of the PDF currently rendered in the viewer (set after didFinish)
+        var displayedPDFURL: URL?
         /// Tracks whether cosmetic ad blocking is currently active for this web view
         var cosmeticAdBlockEnabled: Bool = false
         private var observations: [NSKeyValueObservation] = []
@@ -247,6 +249,12 @@ struct WebViewWrapper: NSViewRepresentable {
             tab?.loadingProgress = 1.0
             fetchFavicon(for: webView)
             saveHistory(for: webView)
+
+            // Track if we're displaying a PDF so the save button can appear
+            let isPDF = webView.url?.pathExtension.lowercased() == "pdf"
+            DispatchQueue.main.async { [weak self] in
+                self?.parent.viewModel?.isViewingPDF = isPDF
+            }
 
             // If cosmetic ad blocking was re-enabled after scripts were removed,
             // the WKUserScripts may not be present. Run the JS directly as a fallback.

@@ -291,13 +291,8 @@ final class SettingsManager {
 
     // MARK: - Passwords
 
-    var requireTouchIDForAutoFill: Bool {
-        didSet { UserDefaults.standard.set(requireTouchIDForAutoFill, forKey: Keys.requireTouchIDForAutoFill) }
-    }
-
-    var requireTouchIDForViewing: Bool {
-        didSet { UserDefaults.standard.set(requireTouchIDForViewing, forKey: Keys.requireTouchIDForViewing) }
-    }
+    let requireTouchIDForAutoFill: Bool = true
+    let requireTouchIDForViewing: Bool = true
 
     var passwordGeneratorLength: Int {
         didSet { UserDefaults.standard.set(passwordGeneratorLength, forKey: Keys.passwordGeneratorLength) }
@@ -373,8 +368,7 @@ final class SettingsManager {
         self.blockPopups = defaults.object(forKey: Keys.blockPopups) as? Bool ?? true
 
         // Passwords
-        self.requireTouchIDForAutoFill = defaults.bool(forKey: Keys.requireTouchIDForAutoFill)
-        self.requireTouchIDForViewing = defaults.bool(forKey: Keys.requireTouchIDForViewing)
+        // requireTouchIDForAutoFill and requireTouchIDForViewing are always true
         self.passwordGeneratorLength = defaults.object(forKey: Keys.passwordGeneratorLength) as? Int ?? 20
         self.passwordGeneratorIncludeSymbols = defaults.object(forKey: Keys.passwordGeneratorIncludeSymbols) as? Bool ?? true
 

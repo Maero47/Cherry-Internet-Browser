@@ -25,6 +25,14 @@ struct NavigationBarView: View {
     var isPrivateMode: Bool = false
     var onTogglePrivateMode: (() -> Void)? = nil
     var showWindowDragArea: Bool = false
+    var onPrint: (() -> Void)? = nil
+    var onToggleReaderMode: (() -> Void)? = nil
+    var showReaderMode: Bool = false
+    var onPictureInPicture: (() -> Void)? = nil
+    var onScreenshot: (() -> Void)? = nil
+    var onQRCode: (() -> Void)? = nil
+    var isViewingPDF: Bool = false
+    var onSavePDF: (() -> Void)? = nil
 
     /// Computed from the current tab's URL so it always reflects the correct per-domain state
     private var isAdBlockPaused: Bool {
@@ -231,6 +239,17 @@ struct NavigationBarView: View {
                 .help("Add Bookmark (Cmd+D)")
             }
 
+            // Save PDF button — appears when viewing a PDF
+            if isViewingPDF, let onSavePDF = onSavePDF {
+                Button(action: onSavePDF) {
+                    Image(systemName: "arrow.down.doc")
+                        .font(.system(size: AppConstants.UI.toolbarIconSize, weight: .medium))
+                        .foregroundStyle(SettingsManager.shared.accentColor)
+                }
+                .buttonStyle(ToolbarButtonStyle())
+                .help("Save PDF")
+            }
+
             // Password auto-fill key icon
             if loginFormDetected, let onAutoFill = onAutoFill {
                 Button(action: onAutoFill) {
@@ -251,6 +270,17 @@ struct NavigationBarView: View {
                 }
                 .buttonStyle(ToolbarButtonStyle())
                 .help(isAdBlockPaused ? "Ad blocker paused for this site" : "Ad blocker active — click to pause for this site")
+            }
+
+            // Reader mode button
+            if let onToggleReaderMode = onToggleReaderMode {
+                Button(action: onToggleReaderMode) {
+                    Image(systemName: showReaderMode ? "book.fill" : "book")
+                        .font(.system(size: AppConstants.UI.toolbarIconSize, weight: .medium))
+                        .foregroundStyle(showReaderMode ? SettingsManager.shared.accentColor : .primary)
+                }
+                .buttonStyle(ToolbarButtonStyle())
+                .help("Reader Mode (Cmd+Shift+R)")
             }
 
             // Incognito mode button
@@ -282,6 +312,32 @@ struct NavigationBarView: View {
                     onDownloads?()
                 } label: {
                     Label("Downloads", systemImage: "arrow.down.circle")
+                }
+
+                Divider()
+
+                Button {
+                    onPrint?()
+                } label: {
+                    Label("Print Page", systemImage: "printer")
+                }
+
+                Button {
+                    onPictureInPicture?()
+                } label: {
+                    Label("Picture in Picture", systemImage: "pip.fill")
+                }
+
+                Button {
+                    onScreenshot?()
+                } label: {
+                    Label("Take Screenshot", systemImage: "camera")
+                }
+
+                Button {
+                    onQRCode?()
+                } label: {
+                    Label("QR Code", systemImage: "qrcode")
                 }
 
                 Divider()

@@ -4,6 +4,7 @@
 //
 
 import SwiftUI
+import WebKit
 import Observation
 
 @Observable
@@ -90,6 +91,11 @@ final class TabManager {
         if recentlyClosedTabs.count > maxRecentlyClosedTabs {
             recentlyClosedTabs.removeLast()
         }
+
+        // Stop media and release the webView before removing the tab
+        tab.webView?.stopLoading()
+        tab.webView?.loadHTMLString("", baseURL: nil)
+        tab.webView = nil
 
         // Remove the tab
         tabs.remove(at: index)
