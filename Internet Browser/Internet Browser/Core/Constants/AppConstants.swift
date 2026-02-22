@@ -29,12 +29,6 @@ enum AppConstants {
     enum Colors {
         static var accent: Color { Color(hex: SettingsManager.shared.accentColorHex) }
         static var accentBlue: Color { Color(hex: SettingsManager.shared.accentColorHex) }
-        static let lightBackground = Color(hex: "F5F5F5")
-        static let darkBackground = Color(hex: "1C1C1E")
-        static let tabBackground = Color(hex: "E5E5E5")
-        static let tabBackgroundDark = Color(hex: "2C2C2E")
-        static let selectedTabBackground = Color.white
-        static let selectedTabBackgroundDark = Color(hex: "3A3A3C")
     }
 }
 

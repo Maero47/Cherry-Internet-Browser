@@ -13,8 +13,6 @@ struct VerticalTabBarView: View {
     var onDetachTab: ((Tab) -> Void)? = nil
     var onReceiveTab: ((UUID) -> Void)? = nil
 
-    @Environment(\.colorScheme) private var colorScheme
-
     private let expandedWidth: CGFloat = 240
     private let collapsedWidth: CGFloat = 44
 
@@ -121,7 +119,7 @@ struct VerticalTabBarView: View {
             .buttonStyle(.plain)
             .help("New Tab (Cmd+T)")
         }
-        .background(sidebarBackground)
+        .background(.bar)
     }
 
     @ViewBuilder
@@ -153,12 +151,6 @@ struct VerticalTabBarView: View {
         .padding(.horizontal, 4)
     }
 
-    @ViewBuilder
-    private var sidebarBackground: some View {
-        colorScheme == .dark
-            ? AppConstants.Colors.darkBackground
-            : Color(nsColor: .controlBackgroundColor)
-    }
 }
 
 // Separate view so @State works correctly for hover tracking

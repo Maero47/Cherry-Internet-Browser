@@ -75,11 +75,14 @@ struct OmniboxView: View {
         .padding(.vertical, 6)
         .background(
             RoundedRectangle(cornerRadius: 8)
-                .fill(Color(nsColor: .textBackgroundColor))
+                .fill(.regularMaterial)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 8)
-                .stroke(isFocused ? SettingsManager.shared.accentColor : Color.clear, lineWidth: 2)
+                .stroke(
+                    isFocused ? SettingsManager.shared.accentColor : Color.primary.opacity(0.12),
+                    lineWidth: isFocused ? 2 : 0.5
+                )
                 .animation(.easeInOut(duration: 0.15), value: isFocused)
         )
     }

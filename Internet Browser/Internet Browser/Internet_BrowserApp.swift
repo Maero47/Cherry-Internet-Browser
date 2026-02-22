@@ -267,7 +267,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         window.titleVisibility = .hidden
         window.isMovableByWindowBackground = false
         window.isMovable = false
-        window.backgroundColor = .windowBackgroundColor
+        window.backgroundColor = .clear
+        window.isOpaque = false
         window.titlebarSeparatorStyle = .none
 
         window.standardWindowButton(.closeButton)?.isHidden = false

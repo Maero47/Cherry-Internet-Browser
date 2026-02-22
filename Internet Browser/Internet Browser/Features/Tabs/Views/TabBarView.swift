@@ -15,8 +15,6 @@ struct TabBarView: View {
     var onDetachTab: ((Tab) -> Void)? = nil
     var onReceiveTab: ((UUID) -> Void)? = nil
 
-    @Environment(\.colorScheme) private var colorScheme
-
     /// ID of the tab that a drag is currently hovering over (for drop indicator)
     @State private var dropTargetTabID: UUID? = nil
 
@@ -233,14 +231,12 @@ struct TabBarView: View {
 
     @ViewBuilder
     private var tabBarBackground: some View {
-        if isPrivateMode {
-            colorScheme == .dark
-                ? Color(hex: "2D1B3D")
-                : Color(hex: "E8D5F5")
-        } else {
-            colorScheme == .dark
-                ? AppConstants.Colors.darkBackground
-                : AppConstants.Colors.lightBackground
+        ZStack(alignment: .top) {
+            Rectangle().fill(.bar)
+            if isPrivateMode { Color.purple.opacity(0.12) }
+            // Specular highlight — light catching the top edge of the glass
+            Color.white.opacity(0.12)
+                .frame(height: 1)
         }
     }
 }

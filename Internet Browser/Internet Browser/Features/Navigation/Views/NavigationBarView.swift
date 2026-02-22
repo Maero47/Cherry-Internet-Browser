@@ -139,7 +139,12 @@ struct NavigationBarView: View {
         .padding(.trailing, 12)
         .padding(.vertical, 8)
         .padding(.top, showWindowDragArea ? 6 : 0)
-        .background(isPrivateMode ? Color.purple.opacity(0.15) : Color(nsColor: .windowBackgroundColor))
+        .background {
+            ZStack {
+                Rectangle().fill(.bar)
+                if isPrivateMode { Color.purple.opacity(0.12) }
+            }
+        }
         .overlay(alignment: .top) {
             if showWindowDragArea {
                 WindowDragAreaView()

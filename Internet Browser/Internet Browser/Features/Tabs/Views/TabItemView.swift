@@ -25,7 +25,6 @@ struct TabItemView: View {
     @State private var isHovering = false
     @State private var showPreview = false
     @State private var previewTask: Task<Void, Never>?
-    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         HStack(spacing: 8) {
@@ -153,11 +152,16 @@ struct TabItemView: View {
     @ViewBuilder
     private var tabBackground: some View {
         if isSelected {
-            colorScheme == .dark
-                ? AppConstants.Colors.selectedTabBackgroundDark
-                : AppConstants.Colors.selectedTabBackground
+            RoundedRectangle(cornerRadius: AppConstants.UI.tabCornerRadius)
+                .fill(.regularMaterial)
+                .shadow(color: .black.opacity(0.18), radius: 6, y: 2)
+                .overlay {
+                    RoundedRectangle(cornerRadius: AppConstants.UI.tabCornerRadius)
+                        .stroke(Color.white.opacity(0.25), lineWidth: 0.5)
+                }
         } else if isHovering {
-            Color.gray.opacity(0.15)
+            RoundedRectangle(cornerRadius: AppConstants.UI.tabCornerRadius)
+                .fill(Color.primary.opacity(0.06))
         } else {
             Color.clear
         }

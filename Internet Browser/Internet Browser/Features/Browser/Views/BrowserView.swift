@@ -33,23 +33,7 @@ struct BrowserView: View {
     }
 
     var body: some View {
-        browserLayout
-            .frame(minWidth: 1000, minHeight: 600)
-            .ignoresSafeArea(.all, edges: .top)
-            .background(Color(nsColor: .windowBackgroundColor))
-            .background { WindowConfigurator() }
-            .preferredColorScheme(SettingsManager.shared.resolvedColorScheme)
-            .tint(SettingsManager.shared.accentColor)
-            .focusable()
-            .focusEffectDisabled()
-            .onKeyPress(.return) { .ignored }
-            .background { keyboardShortcutButtons }
-            .onReceive(NotificationCenter.default.publisher(for: NSWindow.willEnterFullScreenNotification)) { _ in
-                viewModel.isFullScreen = true
-            }
-            .onReceive(NotificationCenter.default.publisher(for: NSWindow.willExitFullScreenNotification)) { _ in
-                viewModel.isFullScreen = false
-            }
+        configuredLayout
             .sheet(isPresented: $viewModel.showAddBookmark) {
                 if let tab = viewModel.currentTab, let url = tab.url {
                     AddBookmarkView(
@@ -89,6 +73,17 @@ struct BrowserView: View {
             .animation(.spring(duration: 0.3), value: viewModel.showReaderMode)
             .animation(.spring(duration: 0.3), value: viewModel.showQRCode)
             .animation(.spring(duration: 0.3), value: viewModel.showScreenshotToast)
+            .onChange(of: viewModel.showQRCode) { _, newValue in
+                // When the QR popup is dismissed, the WKWebView has lost first responder
+                // because the full-screen dimmed overlay captured all input while it was
+                // visible. Restore focus after the spring animation finishes (~0.35 s).
+                guard !newValue else { return }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                    if let webView = viewModel.currentTab?.webView {
+                        NSApp.keyWindow?.makeFirstResponder(webView)
+                    }
+                }
+            }
             .onChange(of: viewModel.findQuery) { _, _ in
                 viewModel.performFind()
             }
@@ -114,6 +109,27 @@ struct BrowserView: View {
             }
     }
 
+    // Split from body to keep the modifier chain short enough for the Swift type-checker
+    private var configuredLayout: some View {
+        browserLayout
+            .frame(minWidth: 1000, minHeight: 600)
+            .ignoresSafeArea(.all, edges: .top)
+            .background(Color(nsColor: .windowBackgroundColor))
+            .background { WindowConfigurator() }
+            .preferredColorScheme(SettingsManager.shared.resolvedColorScheme)
+            .tint(SettingsManager.shared.accentColor)
+            .focusable()
+            .focusEffectDisabled()
+            .onKeyPress(.return) { .ignored }
+            .background { keyboardShortcutButtons }
+            .onReceive(NotificationCenter.default.publisher(for: NSWindow.willEnterFullScreenNotification)) { _ in
+                viewModel.isFullScreen = true
+            }
+            .onReceive(NotificationCenter.default.publisher(for: NSWindow.willExitFullScreenNotification)) { _ in
+                viewModel.isFullScreen = false
+            }
+    }
+
     // MARK: - Extracted Sub-Views
 
     @ViewBuilder
@@ -133,8 +149,6 @@ struct BrowserView: View {
                     minWidth: viewModel.verticalTabBarCollapsed ? 44 : 240,
                     maxWidth: viewModel.verticalTabBarCollapsed ? 44 : 240
                 )
-                Divider()
-                    .padding(.top, viewModel.showBookmarkBar ? 73 : 43)
             }
 
             VStack(spacing: 0) {
@@ -149,7 +163,9 @@ struct BrowserView: View {
                             _ = BrowserViewModel.transferTab(tabID: tabID, to: viewModel)
                         }
                     )
-                    Divider()
+                    Rectangle()
+                        .fill(Color.primary.opacity(0.08))
+                        .frame(height: 0.5)
                 }
 
                 if let currentTab = viewModel.currentTab {
@@ -560,14 +576,15 @@ struct BrowserContentView: View {
                     onBookmarkClick: { viewModel.openBookmark($0) },
                     isPrivateMode: viewModel.isPrivateMode
                 )
-                Divider()
             }
 
             // Loading progress bar
             if tab.isLoading {
                 ProgressBarView(progress: tab.loadingProgress)
             } else {
-                Divider()
+                Rectangle()
+                    .fill(Color.primary.opacity(0.08))
+                    .frame(height: 0.5)
             }
 
             // Content - show settings, homepage, or web view

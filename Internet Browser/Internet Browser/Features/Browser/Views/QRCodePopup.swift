@@ -132,6 +132,12 @@ struct QRCodePopup: View {
             if response == .OK, let saveURL = panel.url {
                 try? pngData.write(to: saveURL)
             }
+            // Dismiss the popup from the save panel callback. This fires the onChange
+            // in BrowserView which restores WKWebView first responder. Without this,
+            // if the user had already tapped X before closing the save panel the
+            // showQRCode flag is already false so onChange never fires — leaving the
+            // browser unresponsive until the next user interaction.
+            DispatchQueue.main.async { onDismiss() }
         }
     }
 }
