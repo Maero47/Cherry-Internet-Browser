@@ -99,31 +99,6 @@ struct TabItemView: View {
         .onTapGesture {
             onSelect()
         }
-        .onDrag {
-            showPreview = false
-            TabManager.draggedTabID = tab.id
-            return tab.itemProvider()
-        } preview: {
-            // Compact drag preview
-            HStack(spacing: 6) {
-                if let favicon = tab.favicon {
-                    Image(nsImage: favicon)
-                        .resizable()
-                        .frame(width: 14, height: 14)
-                } else {
-                    Image(systemName: "globe")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                }
-                Text(tab.displayTitle)
-                    .font(.system(size: 11))
-                    .lineLimit(1)
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .background(.regularMaterial)
-            .clipShape(RoundedRectangle(cornerRadius: 6))
-        }
         .contextMenu {
             tabContextMenu
         }

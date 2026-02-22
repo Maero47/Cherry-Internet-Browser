@@ -15,8 +15,16 @@ struct TabBarView: View {
     var onDetachTab: ((Tab) -> Void)? = nil
     var onReceiveTab: ((UUID) -> Void)? = nil
 
-    /// ID of the tab that a drag is currently hovering over (for drop indicator)
-    @State private var dropTargetTabID: UUID? = nil
+    /// ID of the tab currently being reordered via DragGesture
+    @State private var draggingTabID: UUID? = nil
+    /// Reference X position (global) used to compute cross-boundary reorders
+    @State private var lastReorderX: CGFloat = 0
+
+    /// Tear-off ghost state — when the tab is dragged out of the bar it floats freely
+    @State private var isTearingOff: Bool = false
+    @State private var tearOffTabID: UUID? = nil
+    @State private var tearOffDragTranslation: CGSize = .zero
+    @State private var tearOffStartTranslation: CGSize = .zero
 
     private let pinnedTabWidth: CGFloat = 40
     private let tabSpacing: CGFloat = 2
@@ -67,7 +75,7 @@ struct TabBarView: View {
                         tabItem(for: tab, width: regularTabWidth)
                     }
                 }
-                .animation(.easeInOut(duration: 0.2), value: tabManager.tabs.map(\.id))
+                .animation(.spring(response: 0.25, dampingFraction: 0.8), value: tabManager.tabs.map(\.id))
 
                 Button(action: onNewTab) {
                     Image(systemName: "plus")
@@ -91,11 +99,12 @@ struct TabBarView: View {
         }
     }
 
-    // MARK: - Tab Item with Drop Target
+    // MARK: - Tab Item with Gesture Reorder
 
     @ViewBuilder
     private func tabItem(for tab: Tab, width: CGFloat) -> some View {
-        let isDropTarget = dropTargetTabID == tab.id
+        let isDragging = draggingTabID == tab.id
+        let isTearingOffThisTab = isTearingOff && tearOffTabID == tab.id
 
         TabItemView(
             tab: tab,
@@ -133,25 +142,86 @@ struct TabBarView: View {
                 onDetachTab?(tab)
             }
         )
-        .overlay(alignment: .leading) {
-            // Drop insertion indicator
-            if isDropTarget {
-                RoundedRectangle(cornerRadius: 1)
-                    .fill(SettingsManager.shared.accentColor)
-                    .frame(width: 2)
-                    .padding(.vertical, 4)
-                    .transition(.opacity)
+        // Dim the slot when the tab is floating as a ghost
+        .opacity(isTearingOffThisTab ? 0.35 : 1.0)
+        // Subtle lift effect while reordering
+        .scaleEffect(isDragging ? CGSize(width: 1.0, height: 1.05) : .init(width: 1, height: 1))
+        .shadow(color: isDragging ? .black.opacity(0.22) : .clear, radius: 8, y: 3)
+        .zIndex(isDragging || isTearingOffThisTab ? 2 : 0)
+        .animation(.spring(response: 0.15, dampingFraction: 0.85), value: isDragging)
+        // Floating ghost that follows the cursor once the tab is dragged out of the bar
+        .overlay {
+            if isTearingOffThisTab {
+                TabItemView(
+                    tab: tab,
+                    isSelected: tabManager.selectedTabID == tab.id,
+                    fixedWidth: width,
+                    onSelect: {},
+                    onClose: {}
+                )
+                .offset(tearOffDragTranslation)
+                .shadow(color: .black.opacity(0.28), radius: 14, y: 6)
+                .scaleEffect(1.04)
+                .allowsHitTesting(false)
             }
         }
-        // Each tab is a drop target for reorder / cross-window
-        .onDrop(of: [.cherryBrowserTab], isTargeted: Binding(
-            get: { dropTargetTabID == tab.id },
-            set: { isTargeted in
-                withAnimation(.easeInOut(duration: 0.15)) {
-                    dropTargetTabID = isTargeted ? tab.id : nil
+        // DragGesture fires immediately (2 px threshold) — Chrome-like real-time reorder.
+        // Vertical drag > 30 pt switches to free "tear-off" mode with a ghost that floats.
+        .simultaneousGesture(
+            DragGesture(minimumDistance: 2, coordinateSpace: .global)
+                .onChanged { value in
+                    guard !tab.isPinned else { return }
+
+                    // Already in tear-off mode — update ghost position and return
+                    if isTearingOff && tearOffTabID == tab.id {
+                        tearOffDragTranslation = CGSize(
+                            width: value.translation.width - tearOffStartTranslation.width,
+                            height: value.translation.height - tearOffStartTranslation.height
+                        )
+                        return
+                    }
+
+                    // Switch to tear-off once the tab is dragged far enough downward
+                    if value.translation.height > 30 {
+                        isTearingOff = true
+                        tearOffTabID = tab.id
+                        tearOffStartTranslation = value.translation
+                        tearOffDragTranslation = .zero
+                        draggingTabID = nil          // hand off from reorder to ghost
+                        TabManager.draggedTabID = tab.id
+                        return
+                    }
+
+                    // Horizontal reorder within the tab bar
+                    reorderOnDrag(tab: tab, x: value.location.x, tabWidth: width)
                 }
-            }
-        )) { providers in
+                .onEnded { value in
+                    // Clean up tear-off ghost state
+                    if isTearingOff && tearOffTabID == tab.id {
+                        isTearingOff = false
+                        tearOffTabID = nil
+                        tearOffDragTranslation = .zero
+                        tearOffStartTranslation = .zero
+                    }
+
+                    guard !tab.isPinned else {
+                        finishDrag()
+                        return
+                    }
+
+                    let mouseLocation = NSEvent.mouseLocation
+                    let sourceFrame = NSApp.keyWindow?.frame ?? .zero
+                    let leftSourceWindow = !sourceFrame.contains(mouseLocation)
+
+                    if leftSourceWindow || value.translation.height > 44 {
+                        triggerDetach(tab: tab)
+                    } else {
+                        finishDrag()
+                    }
+                }
+        )
+        // Kept for cross-window tab receives; same-window reorder is handled above
+        .onDrop(of: [.cherryBrowserTab], isTargeted: nil) { _ in
             handleTabDrop(onto: tab)
         }
     }
@@ -159,42 +229,95 @@ struct TabBarView: View {
     // MARK: - Drop Handlers
 
     private func handleTabDrop(onto targetTab: Tab) -> Bool {
-        dropTargetTabID = nil
         guard let draggedID = TabManager.draggedTabID else { return false }
-        TabManager.draggedTabID = nil
 
-        // Same window reorder
+        // Cross-window receive: always handle regardless of gesture flag
+        if !tabManager.tabs.contains(where: { $0.id == draggedID }) {
+            TabManager.draggedTabID = nil
+            TabManager.reorderedByGesture = false
+            onReceiveTab?(draggedID)
+            return true
+        }
+
+        // Same-window: DragGesture already reordered — skip to avoid double-move
+        if TabManager.reorderedByGesture {
+            TabManager.reorderedByGesture = false
+            return true
+        }
+
+        // Fallback same-window reorder (e.g. when drag came from system drag session)
+        TabManager.draggedTabID = nil
         if let fromIndex = tabManager.tabs.firstIndex(where: { $0.id == draggedID }),
            let toIndex = tabManager.tabs.firstIndex(where: { $0.id == targetTab.id }),
            fromIndex != toIndex {
-            withAnimation(.easeInOut(duration: 0.25)) {
+            withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
                 tabManager.tabs.move(
                     fromOffsets: IndexSet(integer: fromIndex),
                     toOffset: toIndex > fromIndex ? toIndex + 1 : toIndex
                 )
             }
-            return true
         }
-
-        // Cross-window transfer (tab not in our manager)
-        if !tabManager.tabs.contains(where: { $0.id == draggedID }) {
-            onReceiveTab?(draggedID)
-            return true
-        }
-
         return true
     }
 
     private func handleBarDrop() -> Bool {
-        dropTargetTabID = nil
         guard let draggedID = TabManager.draggedTabID else { return false }
         TabManager.draggedTabID = nil
-
-        if tabManager.tabs.contains(where: { $0.id == draggedID }) {
-            return true
-        }
+        TabManager.reorderedByGesture = false
+        if tabManager.tabs.contains(where: { $0.id == draggedID }) { return true }
         onReceiveTab?(draggedID)
         return true
+    }
+
+    // MARK: - Gesture Reorder
+
+    /// Called on every DragGesture.onChanged. Moves the tab one slot when the
+    /// cursor crosses half a tab-width boundary — exactly how Chrome does it.
+    private func reorderOnDrag(tab: Tab, x: CGFloat, tabWidth: CGFloat) {
+        if draggingTabID == nil {
+            draggingTabID = tab.id
+            lastReorderX = x
+            TabManager.draggedTabID = tab.id
+        }
+        guard draggingTabID == tab.id else { return }
+
+        let dx = x - lastReorderX
+        let threshold = tabWidth * 0.5
+        guard abs(dx) >= threshold else { return }
+
+        let direction = dx > 0 ? 1 : -1
+        guard let fromIndex = tabManager.tabs.firstIndex(where: { $0.id == tab.id }) else { return }
+
+        // Keep regular tabs from sliding into the pinned section
+        let firstRegularIndex = tabManager.tabs.firstIndex(where: { !$0.isPinned }) ?? 0
+        let toIndex = fromIndex + direction
+        guard toIndex >= firstRegularIndex && toIndex < tabManager.tabs.count else { return }
+
+        tabManager.tabs.move(
+            fromOffsets: IndexSet(integer: fromIndex),
+            toOffset: direction > 0 ? toIndex + 1 : toIndex
+        )
+        // Shift reference point so next threshold is relative to the new slot
+        lastReorderX += CGFloat(direction) * tabWidth
+    }
+
+    private func finishDrag() {
+        draggingTabID = nil
+        TabManager.reorderedByGesture = true
+        // draggedTabID stays set so a cross-window onDrop can still read it.
+        // Clean up after a short window in case no drop event fires.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+            TabManager.reorderedByGesture = false
+            TabManager.draggedTabID = nil
+        }
+    }
+
+    /// Fires when the user drags a tab out of the tab bar — tears it off into a new window.
+    private func triggerDetach(tab: Tab) {
+        draggingTabID = nil
+        TabManager.draggedTabID = nil
+        TabManager.reorderedByGesture = false
+        onDetachTab?(tab)
     }
 
     // MARK: - Collapsed Groups

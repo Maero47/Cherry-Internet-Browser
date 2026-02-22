@@ -16,6 +16,8 @@ final class TabManager {
 
     /// Shared drag state for native drag-and-drop across windows
     static var draggedTabID: UUID?
+    /// Set by DragGesture reorder so the onDrop fallback doesn't double-reorder
+    static var reorderedByGesture: Bool = false
 
     private let maxRecentlyClosedTabs = 25
     private let sleepTimeout: TimeInterval = 30 * 60 // 30 minutes

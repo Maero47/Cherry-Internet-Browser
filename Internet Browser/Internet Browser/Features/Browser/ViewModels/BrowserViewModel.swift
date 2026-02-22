@@ -81,6 +81,9 @@ final class BrowserViewModel {
     private let instanceID = UUID()
     static var windowViewModels: [UUID: BrowserViewModel] = [:]
 
+    /// The NSWindow hosting this view model. Set by BrowserView on appear.
+    weak var associatedWindow: NSWindow?
+
     init(withDefaultTab: Bool = true) {
         if !withDefaultTab {
             tabManager = TabManager(createDefaultTab: false)
@@ -281,10 +284,24 @@ final class BrowserViewModel {
     func detachTab(_ tab: Tab) {
         let title = tab.title
 
-        // Don't detach if it's the only tab
+        let mouseLocation = NSEvent.mouseLocation
+
+        // If the cursor is over an existing browser window, always re-attach there
+        // (even when this is the only remaining tab — removeTab closes the source window).
+        for (_, targetVM) in BrowserViewModel.windowViewModels {
+            guard targetVM !== self else { continue }
+            guard let targetWindow = targetVM.associatedWindow, targetWindow.isVisible else { continue }
+            guard targetWindow.frame.contains(mouseLocation) else { continue }
+            _ = tabManager.removeTab(tab)
+            targetVM.tabManager.addExistingTab(tab)
+            targetWindow.makeKeyAndOrderFront(nil)
+            return
+        }
+
+        // No existing window under cursor — only create a new window if this isn't the last tab
         guard tabManager.tabs.count > 1 else { return }
 
-        // Remove tab from source window (preserves webView state)
+        // Tear off into a new window
         _ = tabManager.removeTab(tab)
 
         // Create a new window with the existing tab (no reload)
@@ -305,16 +322,21 @@ final class BrowserViewModel {
         window.titleVisibility = .hidden
         window.isMovableByWindowBackground = false
         window.isMovable = false
-        window.backgroundColor = .windowBackgroundColor
+        window.backgroundColor = .clear
+        window.isOpaque = false
         window.titlebarSeparatorStyle = .none
         window.title = title
 
-        // Position centered on screen, clamped to screen bounds
+        // Position so the tab bar appears under the cursor (tab bar is at the very top of the window).
+        // macOS screen coordinates: origin is bottom-left, so frame.maxY is the top of the window.
+        let tabBarHeight: CGFloat = 36
         if let screen = NSScreen.main {
             let screenFrame = screen.visibleFrame
             let mouseLocation = NSEvent.mouseLocation
+            // Horizontally: center window on cursor
             var originX = mouseLocation.x - windowWidth / 2
-            var originY = mouseLocation.y - windowHeight / 2
+            // Vertically: place window so cursor lands ~midway through the tab bar
+            var originY = mouseLocation.y - windowHeight + tabBarHeight / 2
             originX = max(screenFrame.minX, min(originX, screenFrame.maxX - windowWidth))
             originY = max(screenFrame.minY, min(originY, screenFrame.maxY - windowHeight))
             window.setFrameOrigin(NSPoint(x: originX, y: originY))

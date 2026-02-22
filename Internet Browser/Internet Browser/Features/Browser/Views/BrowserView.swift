@@ -116,6 +116,7 @@ struct BrowserView: View {
             .ignoresSafeArea(.all, edges: .top)
             .background(Color(nsColor: .windowBackgroundColor))
             .background { WindowConfigurator() }
+            .background { WindowRegistrar(viewModel: viewModel) }
             .preferredColorScheme(SettingsManager.shared.resolvedColorScheme)
             .tint(SettingsManager.shared.accentColor)
             .focusable()
@@ -621,6 +622,30 @@ struct BrowserContentView: View {
         }
         .onChange(of: tab.url) { _, _ in
             urlVersion += 1
+        }
+    }
+}
+
+// MARK: - Window Registrar
+
+/// Captures the hosting NSWindow and registers it on the BrowserViewModel so
+/// cross-window tab transfer can find the right destination window.
+private struct WindowRegistrar: NSViewRepresentable {
+    let viewModel: BrowserViewModel
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        DispatchQueue.main.async {
+            viewModel.associatedWindow = view.window
+        }
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        DispatchQueue.main.async {
+            if viewModel.associatedWindow == nil {
+                viewModel.associatedWindow = nsView.window
+            }
         }
     }
 }
