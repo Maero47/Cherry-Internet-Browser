@@ -73,6 +73,9 @@ final class BrowserViewModel {
     var showScreenshotToast: Bool = false
     var screenshotToastMessage: String = ""
 
+    // MARK: - Command Palette
+    var showCommandPalette: Bool = false
+
     // Keep strong references to detached windows and their delegates
     static var detachedWindows: [NSWindow] = []
     static var detachedWindowDelegates: [DetachedWindowDelegate] = []
@@ -923,6 +926,56 @@ final class BrowserViewModel {
                 panel.makeKeyAndOrderFront(nil)
             }
         }
+    }
+
+    // MARK: - Command Palette
+
+    func toggleCommandPalette() {
+        showCommandPalette.toggle()
+    }
+
+    // MARK: - Session Restore
+
+    /// Restores the previous session if the setting is enabled and a saved session exists.
+    func restoreSessionIfNeeded() {
+        guard !isPrivateMode,
+              SettingsManager.shared.restorePreviousSession,
+              SessionRestoreManager.shared.hasSavedSession else { return }
+
+        let entries = SessionRestoreManager.shared.loadSavedTabs()
+        let selectedIndex = SessionRestoreManager.shared.loadSelectedIndex()
+        SessionRestoreManager.shared.clearSession()
+
+        guard !entries.isEmpty else { return }
+
+        // Replace the default blank tab with the restored session
+        let hadOnlyBlankTab = tabManager.tabs.count == 1 && tabManager.tabs.first?.url == nil
+
+        for (i, entry) in entries.enumerated() {
+            guard let url = URL(string: entry.urlString) else { continue }
+            if i == 0 && hadOnlyBlankTab, let firstTab = tabManager.tabs.first {
+                // Re-use the existing blank tab for the first restored URL
+                firstTab.title = entry.title
+                firstTab.showHomePage = false
+                firstTab.loadURL(url)
+            } else {
+                let tab = tabManager.newTab(url: url)
+                tab.title = entry.title
+                tab.showHomePage = false
+                tab.loadURL(url)
+            }
+        }
+
+        // Select the previously active tab
+        let clampedIndex = min(selectedIndex, tabManager.tabs.count - 1)
+        tabManager.selectTab(at: clampedIndex)
+    }
+
+    /// Saves the current session for restore on next launch.
+    func saveSessionForRestore() {
+        guard !isPrivateMode else { return }
+        let selectedIndex = tabManager.tabs.firstIndex(where: { $0.id == tabManager.selectedTabID })
+        SessionRestoreManager.shared.saveSession(tabs: tabManager.tabs, selectedIndex: selectedIndex)
     }
 
     // MARK: - Screenshot

@@ -46,6 +46,11 @@ struct Internet_BrowserApp: App {
                     NotificationCenter.default.post(name: .findInPage, object: nil)
                 }
                 .keyboardShortcut("f", modifiers: .command)
+
+                Button("Command Palette...") {
+                    NotificationCenter.default.post(name: .showCommandPalette, object: nil)
+                }
+                .keyboardShortcut("k", modifiers: .command)
             }
 
             // View menu
@@ -193,6 +198,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         )
     }
 
+    func applicationWillTerminate(_ notification: Notification) {
+        // Save session for all non-private windows
+        for (_, vm) in BrowserViewModel.windowViewModels {
+            guard !vm.isPrivateMode else { continue }
+            vm.saveSessionForRestore()
+            break  // Only save the primary (first) window's session
+        }
+    }
+
     func applicationDidBecomeActive(_ notification: Notification) {
         for window in NSApplication.shared.windows {
             guard window.contentView != nil else { continue }
@@ -311,4 +325,5 @@ extension Notification.Name {
     static let showConsole = Notification.Name("showConsole")
     static let viewSource = Notification.Name("viewSource")
     static let autoFillPassword = Notification.Name("autoFillPassword")
+    static let showCommandPalette = Notification.Name("showCommandPalette")
 }

@@ -312,6 +312,10 @@ final class SettingsManager {
         didSet { UserDefaults.standard.set(tabSleepTimeout, forKey: Keys.tabSleepTimeout) }
     }
 
+    var restorePreviousSession: Bool {
+        didSet { UserDefaults.standard.set(restorePreviousSession, forKey: Keys.restorePreviousSession) }
+    }
+
     // MARK: - Init
 
     private init() {
@@ -375,6 +379,7 @@ final class SettingsManager {
         // Tabs
         self.tabSleepEnabled = defaults.object(forKey: Keys.tabSleepEnabled) as? Bool ?? true
         self.tabSleepTimeout = defaults.object(forKey: Keys.tabSleepTimeout) as? Int ?? 30
+        self.restorePreviousSession = defaults.object(forKey: Keys.restorePreviousSession) as? Bool ?? true
     }
 
     // MARK: - Cookie Policy
@@ -449,5 +454,6 @@ final class SettingsManager {
         static let requireTouchIDForViewing = "requireTouchIDForViewing"
         static let passwordGeneratorLength = "passwordGeneratorLength"
         static let passwordGeneratorIncludeSymbols = "passwordGeneratorIncludeSymbols"
+        static let restorePreviousSession = "restorePreviousSession"
     }
 }

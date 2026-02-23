@@ -408,6 +408,127 @@ Internet Browser/
 
 ---
 
+## Phase 10: Find in Page, Print, Reader Mode, PiP, Screenshots, QR Code, PDF ✅ COMPLETE
+
+### Implemented Features
+- [x] Find in Page (Cmd+F) with match highlighting and prev/next navigation
+- [x] Print / Save as PDF (Cmd+P)
+- [x] Reader Mode (Cmd+Shift+R) — extracts article content and renders distraction-free
+- [x] Picture-in-Picture for video — floats video in a resizing panel
+- [x] Screenshot capture (Cmd+Shift+4) — saves to Downloads folder with toast
+- [x] QR Code generation for current page URL
+- [x] PDF download via WKDownload
+
+### Keyboard Shortcuts (Phase 10)
+| Shortcut | Action |
+|----------|--------|
+| Cmd+F | Find in Page |
+| Cmd+P | Print / Save as PDF |
+| Cmd+Shift+R | Toggle Reader Mode |
+| Cmd+Shift+4 | Capture Screenshot |
+
+### Files Created/Modified
+```
+Internet Browser/
+├── Features/
+│   └── Browser/
+│       └── Views/
+│           ├── FindInPageBar.swift           (NEW)
+│           ├── ReaderModeView.swift          (NEW)
+│           └── QRCodePopup.swift             (NEW)
+│   └── Browser/
+│       └── ViewModels/
+│           └── ReaderModeExtractor.swift     (NEW)
+```
+
+---
+
+## Phase 11: Glass UI, Tab Tear-Off & Cross-Window Transfer ✅ COMPLETE
+
+### Implemented Features
+- [x] Glassmorphism UI — `.ultraThinMaterial`/`.thinMaterial` for tab bar, nav bar, omnibox, sidebar
+- [x] Transparent window background for true vibrancy
+- [x] Hairline dividers (0.5pt, adaptive opacity) replacing hard Divider()
+- [x] Tab tear-off: drag tab vertically out of bar to open in new window
+- [x] Ghost drag visual: tab slot dims to 35%, floating copy follows cursor
+- [x] Cross-window re-attach: drop torn-off tab onto existing window to merge
+- [x] Window registry (`windowViewModels` dict, `associatedWindow`) for cursor-based window hit-testing
+- [x] `WindowRegistrar` NSViewRepresentable to capture NSWindow reference in SwiftUI
+
+### Files Created/Modified
+```
+Internet Browser/
+├── Features/
+│   ├── Browser/
+│   │   └── Views/
+│   │       └── BrowserView.swift             (MODIFIED - WindowRegistrar, glass dividers, onDrop)
+│   │   └── ViewModels/
+│   │       └── BrowserViewModel.swift        (MODIFIED - associatedWindow, detachTab rewrite)
+│   ├── Tabs/
+│   │   └── Views/
+│   │       ├── TabBarView.swift              (MODIFIED - ghost drag states, DragGesture tear-off)
+│   │       ├── TabItemView.swift             (MODIFIED - glass tabBackground, removed onDrag)
+│   │       └── VerticalTabBarView.swift      (MODIFIED - glass sidebar)
+│   └── Navigation/
+│       └── Views/
+│           ├── NavigationBarView.swift       (MODIFIED - glass nav bar)
+│           └── OmniboxView.swift             (MODIFIED - glass pill)
+```
+
+---
+
+## Phase 12: Session Restore & Command Palette ✅ COMPLETE
+
+### Implemented Features
+
+#### Session Restore
+- [x] Automatically saves all non-private tabs on quit (`applicationWillTerminate`)
+- [x] Restores previous session on launch if setting is enabled
+- [x] Restores previously active tab index
+- [x] Setting toggle in General → Tabs preferences
+- [x] Private/incognito windows excluded from session save
+- [x] Persisted via `UserDefaults` as a JSON-encoded array of `SavedTabEntry`
+
+#### Command Palette (Cmd+K)
+- [x] Full-screen dimmed overlay with glass card (`.regularMaterial`)
+- [x] Auto-focused search field with live filtering
+- [x] Grouped result sections: Open Tabs, Bookmarks, History, Actions
+- [x] Keyboard navigation: Up/Down arrows to move, Enter to execute, Escape to close
+- [x] `ScrollViewReader` keeps selected row visible
+- [x] "No results" empty state when query has no matches
+- [x] Accent-tinted selection highlight row
+
+### Keyboard Shortcuts (Phase 12)
+| Shortcut | Action |
+|----------|--------|
+| Cmd+K | Open Command Palette |
+| Up/Down | Navigate results |
+| Enter | Execute selected result |
+| Escape | Close palette |
+
+### Files Created/Modified
+```
+Internet Browser/
+├── Data/
+│   └── Repositories/
+│       └── SessionRestoreManager.swift       (NEW)
+├── Features/
+│   ├── Browser/
+│   │   ├── ViewModels/
+│   │   │   └── BrowserViewModel.swift        (MODIFIED - showCommandPalette, restoreSessionIfNeeded, saveSessionForRestore)
+│   │   └── Views/
+│   │       ├── BrowserView.swift             (MODIFIED - commandPaletteOverlay, Cmd+K, Escape, onAppear restore)
+│   │       └── CommandPaletteView.swift      (NEW)
+│   └── Settings/
+│       ├── ViewModels/
+│       │   └── SettingsManager.swift         (MODIFIED - restorePreviousSession)
+│       └── Views/
+│           └── GeneralSettingsView.swift     (MODIFIED - restore session toggle)
+└── Internet_BrowserApp.swift                 (MODIFIED - applicationWillTerminate, Cmd+K menu item, notification name)
+```
+
+---
+
 ## Future Phases ⏳ PENDING
 
 ### Developer Tools
@@ -416,13 +537,7 @@ Internet Browser/
 - [ ] Network panel
 
 ### Additional Features
-- [ ] Reading mode
-- [ ] Screenshots (visible area, full page)
-- [ ] Print/PDF
-- [ ] Picture-in-Picture
-- [ ] QR code generation
 - [ ] Extensions/plugin system
-- [ ] Touch ID for password access
 
 ---
 

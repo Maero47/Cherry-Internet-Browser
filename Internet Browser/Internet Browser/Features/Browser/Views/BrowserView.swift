@@ -67,12 +67,14 @@ struct BrowserView: View {
             .overlay { readerModeOverlay }
             .overlay { qrCodeOverlay }
             .overlay(alignment: .bottom) { screenshotToastOverlay }
+            .overlay { commandPaletteOverlay }
             .animation(.spring(duration: 0.3), value: viewModel.passwordManager.showSavePrompt)
             .animation(.spring(duration: 0.3), value: viewModel.showDownloadToast)
             .animation(.spring(duration: 0.3), value: viewModel.showFindInPage)
             .animation(.spring(duration: 0.3), value: viewModel.showReaderMode)
             .animation(.spring(duration: 0.3), value: viewModel.showQRCode)
             .animation(.spring(duration: 0.3), value: viewModel.showScreenshotToast)
+            .animation(.spring(duration: 0.25), value: viewModel.showCommandPalette)
             .onChange(of: viewModel.showQRCode) { _, newValue in
                 // When the QR popup is dismissed, the WKWebView has lost first responder
                 // because the full-screen dimmed overlay captured all input while it was
@@ -128,6 +130,21 @@ struct BrowserView: View {
             }
             .onReceive(NotificationCenter.default.publisher(for: NSWindow.willExitFullScreenNotification)) { _ in
                 viewModel.isFullScreen = false
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .showCommandPalette)) { _ in
+                viewModel.showCommandPalette = true
+            }
+            .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
+                viewModel.saveSessionForRestore()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: NSWindow.willCloseNotification)) { notification in
+                guard let closing = notification.object as? NSWindow,
+                      closing === viewModel.associatedWindow,
+                      !viewModel.isPrivateMode else { return }
+                viewModel.saveSessionForRestore()
+            }
+            .onAppear {
+                viewModel.restoreSessionIfNeeded()
             }
     }
 
@@ -338,6 +355,15 @@ struct BrowserView: View {
     }
 
     @ViewBuilder
+    private var commandPaletteOverlay: some View {
+        if viewModel.showCommandPalette {
+            CommandPaletteView(viewModel: viewModel)
+                .transition(.opacity.combined(with: .scale(scale: 0.96, anchor: .top)))
+                .zIndex(1001)
+        }
+    }
+
+    @ViewBuilder
     private var screenshotToastOverlay: some View {
         if viewModel.showScreenshotToast {
             HStack(spacing: 8) {
@@ -457,9 +483,15 @@ struct BrowserView: View {
             Button("") { viewModel.toggleFindInPage() }
                 .keyboardShortcut("f", modifiers: .command)
 
-            // Escape to dismiss Find in Page
+            // Command Palette (Cmd+K)
+            Button("") { viewModel.toggleCommandPalette() }
+                .keyboardShortcut("k", modifiers: .command)
+
+            // Escape to dismiss Find in Page or Command Palette
             Button("") {
-                if viewModel.showFindInPage {
+                if viewModel.showCommandPalette {
+                    viewModel.showCommandPalette = false
+                } else if viewModel.showFindInPage {
                     viewModel.showFindInPage = false
                     viewModel.dismissFind()
                 }

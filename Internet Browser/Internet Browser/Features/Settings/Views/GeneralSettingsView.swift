@@ -131,6 +131,8 @@ struct GeneralSettingsView: View {
                     }
                     .pickerStyle(.menu)
                 }
+
+                Toggle("Restore previous session on launch", isOn: $settings.restorePreviousSession)
             }
         }
         .formStyle(.grouped)
