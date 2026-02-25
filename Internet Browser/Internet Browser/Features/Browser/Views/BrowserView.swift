@@ -68,6 +68,7 @@ struct BrowserView: View {
             .overlay { qrCodeOverlay }
             .overlay(alignment: .bottom) { screenshotToastOverlay }
             .overlay { commandPaletteOverlay }
+            .overlay(alignment: .trailing) { viewSourceOverlay }
             .animation(.spring(duration: 0.3), value: viewModel.passwordManager.showSavePrompt)
             .animation(.spring(duration: 0.3), value: viewModel.showDownloadToast)
             .animation(.spring(duration: 0.3), value: viewModel.showFindInPage)
@@ -75,6 +76,8 @@ struct BrowserView: View {
             .animation(.spring(duration: 0.3), value: viewModel.showQRCode)
             .animation(.spring(duration: 0.3), value: viewModel.showScreenshotToast)
             .animation(.spring(duration: 0.25), value: viewModel.showCommandPalette)
+            .animation(.spring(duration: 0.25), value: viewModel.showDevToolsPanel)
+            .animation(.spring(duration: 0.3), value: viewModel.showViewSource)
             .onChange(of: viewModel.showQRCode) { _, newValue in
                 // When the QR popup is dismissed, the WKWebView has lost first responder
                 // because the full-screen dimmed overlay captured all input while it was
@@ -133,6 +136,15 @@ struct BrowserView: View {
             }
             .onReceive(NotificationCenter.default.publisher(for: .showCommandPalette)) { _ in
                 viewModel.showCommandPalette = true
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .showWebInspector)) { _ in
+                viewModel.toggleDevTools()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .showConsole)) { _ in
+                viewModel.showDevToolsPanel = true
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .viewSource)) { _ in
+                viewModel.fetchAndShowViewSource()
             }
             .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
                 viewModel.saveSessionForRestore()
@@ -364,6 +376,19 @@ struct BrowserView: View {
     }
 
     @ViewBuilder
+    private var viewSourceOverlay: some View {
+        if viewModel.showViewSource {
+            ViewSourcePanel(
+                html: viewModel.viewSourceHTML,
+                pageTitle: viewModel.currentTab?.title ?? "Page Source",
+                onDismiss: { viewModel.showViewSource = false }
+            )
+            .transition(.move(edge: .trailing).combined(with: .opacity))
+            .zIndex(995)
+        }
+    }
+
+    @ViewBuilder
     private var screenshotToastOverlay: some View {
         if viewModel.showScreenshotToast {
             HStack(spacing: 8) {
@@ -487,10 +512,22 @@ struct BrowserView: View {
             Button("") { viewModel.toggleCommandPalette() }
                 .keyboardShortcut("k", modifiers: .command)
 
-            // Escape to dismiss Find in Page or Command Palette
+            // Dev Tools (Cmd+Option+I)
+            Button("") { viewModel.toggleDevTools() }
+                .keyboardShortcut("i", modifiers: [.command, .option])
+
+            // JS Console (Cmd+Option+C)
+            Button("") { viewModel.showDevToolsPanel = true }
+                .keyboardShortcut("c", modifiers: [.command, .option])
+
+            // Escape — dismiss in priority order
             Button("") {
                 if viewModel.showCommandPalette {
                     viewModel.showCommandPalette = false
+                } else if viewModel.showViewSource {
+                    viewModel.showViewSource = false
+                } else if viewModel.showDevToolsPanel {
+                    viewModel.showDevToolsPanel = false
                 } else if viewModel.showFindInPage {
                     viewModel.showFindInPage = false
                     viewModel.dismissFind()
@@ -654,6 +691,19 @@ struct BrowserContentView: View {
         }
         .onChange(of: tab.url) { _, _ in
             urlVersion += 1
+        }
+
+        if viewModel.showDevToolsPanel {
+            Rectangle()
+                .fill(Color.primary.opacity(0.08))
+                .frame(height: 0.5)
+            DevToolsPanelView(
+                onEvaluateJS: { js, cb in viewModel.evaluateJSForDevTools(js, completion: cb) },
+                onHighlightElement: { sel in viewModel.highlightElementInDevTools(selector: sel) },
+                onApplyHTML: { sel, b64, cb in viewModel.applyHTMLInDevTools(selector: sel, base64HTML: b64, completion: cb) },
+                onDismiss: { viewModel.showDevToolsPanel = false }
+            )
+            .transition(.move(edge: .bottom).combined(with: .opacity))
         }
     }
 }

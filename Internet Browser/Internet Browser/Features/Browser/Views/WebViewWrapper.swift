@@ -6,6 +6,89 @@
 import SwiftUI
 import WebKit
 
+// MARK: - CherryWebView (adds "Inspect Element" to the right-click context menu)
+
+final class CherryWebView: WKWebView {
+    private var lastRightClickLocation: CGPoint = .zero
+
+    override func willOpenMenu(_ menu: NSMenu, with event: NSEvent) {
+        // Capture position before the menu opens
+        lastRightClickLocation = convert(event.locationInWindow, from: nil)
+        // WKWebView is a flipped view (y=0 at top), so no coordinate flip needed
+
+        let item = NSMenuItem(
+            title: "Inspect Element",
+            action: #selector(cherryInspect),
+            keyEquivalent: ""
+        )
+        item.target = self
+        menu.addItem(.separator())
+        menu.addItem(item)
+
+        super.willOpenMenu(menu, with: event)
+    }
+
+    @objc private func cherryInspect() {
+        let x = lastRightClickLocation.x
+        let y = lastRightClickLocation.y
+
+        let js = """
+        (function(){
+            var el=document.elementFromPoint(\(x),\(y));
+            if(!el||el===document.documentElement||el===document.body)
+                el=document.body||document.documentElement;
+            function getPath(n){
+                var path=[];
+                while(n&&n.tagName&&n!==document.documentElement){
+                    var seg=n.tagName.toLowerCase();
+                    if(n.id){seg+='#'+n.id;path.unshift(seg);break;}
+                    var sibs=Array.from(n.parentNode?n.parentNode.children:[]);
+                    var same=sibs.filter(function(s){return s.tagName===n.tagName;});
+                    if(same.length>1)seg+=':nth-of-type('+(same.indexOf(n)+1)+')';
+                    path.unshift(seg);n=n.parentNode;
+                }
+                return path.join(' > ');
+            }
+            var cs=window.getComputedStyle(el);
+            var props=['display','position','width','height',
+                'margin-top','margin-right','margin-bottom','margin-left',
+                'padding-top','padding-right','padding-bottom','padding-left',
+                'color','background-color','font-size','font-family','font-weight',
+                'border-top','border-radius','opacity','z-index','overflow',
+                'flex','grid-template-columns','box-sizing','text-align',
+                'line-height','letter-spacing','white-space','cursor'];
+            var styles={};
+            props.forEach(function(p){styles[p]=cs.getPropertyValue(p);});
+            var attrs={};
+            Array.from(el.attributes||[]).forEach(function(a){attrs[a.name]=a.value;});
+            return JSON.stringify({
+                tag:el.tagName.toLowerCase(),
+                id:el.id||'',
+                classes:typeof el.className==='string'?el.className:'',
+                outerHTML:el.outerHTML.slice(0,10000),
+                selector:getPath(el),
+                styles:styles,
+                attrs:attrs
+            });
+        })();
+        """
+
+        evaluateJavaScript(js) { result, _ in
+            guard let jsonStr = result as? String,
+                  let data    = jsonStr.data(using: .utf8),
+                  let dict    = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            else { return }
+            DispatchQueue.main.async {
+                DevToolsManager.shared.selectElement(from: dict)
+                // Open the dev tools panel if not already open
+                NotificationCenter.default.post(name: .showConsole, object: nil)
+            }
+        }
+    }
+}
+
+// MARK: - WebViewWrapper
+
 struct WebViewWrapper: NSViewRepresentable {
     @Bindable var tab: Tab
     var urlVersion: Int = 0
@@ -66,12 +149,51 @@ struct WebViewWrapper: NSViewRepresentable {
             controller.add(context.coordinator, name: "cherryPasswordCapture")
         }
 
+        // Developer Tools: inject console bridge + XHR/fetch network interceptor
+        // Also register a permissive TrustedTypePolicy so the Elements editor can
+        // apply HTML changes on TT-enforcing sites (Google, YouTube, etc.)
+        let devController = configuration.userContentController
+        devController.addUserScript(WKUserScript(
+            source: ConsoleScripts.devToolsPolicyScript,
+            injectionTime: .atDocumentStart,
+            forMainFrameOnly: false   // iframes too, so nested elements are inspectable
+        ))
+        devController.addUserScript(WKUserScript(
+            source: ConsoleScripts.consoleInterceptScript,
+            injectionTime: .atDocumentStart,
+            forMainFrameOnly: true
+        ))
+        devController.addUserScript(WKUserScript(
+            source: ConsoleScripts.networkInterceptScript,
+            injectionTime: .atDocumentStart,
+            forMainFrameOnly: true
+        ))
+        devController.add(context.coordinator, name: "cherryConsole")
+        devController.add(context.coordinator, name: "cherryNetwork")
+
         // Check if the tab already has a webView (e.g. adopted popup)
         let isAdoptedWebView = tab.webView != nil
 
-        let webView = tab.createWebView(configuration: configuration)
+        // Use CherryWebView for new tabs (right-click Inspect support)
+        // For adopted popups keep the existing WKWebView as-is
+        let webView: WKWebView
+        if isAdoptedWebView {
+            webView = tab.webView!
+        } else {
+            let cherry = CherryWebView(frame: .zero, configuration: configuration)
+            cherry.allowsBackForwardNavigationGestures = true
+            cherry.allowsMagnification = true
+            tab.webView = cherry
+            webView = cherry
+        }
+
         webView.navigationDelegate = context.coordinator
         webView.uiDelegate = context.coordinator
+
+        // Enable Safari Web Inspector attachment (Develop > Show Web Inspector in menu bar)
+        if #available(macOS 13.3, *) {
+            webView.isInspectable = true
+        }
 
         context.coordinator.webView = webView
         context.coordinator.tab = tab
@@ -125,6 +247,8 @@ struct WebViewWrapper: NSViewRepresentable {
         private var observations: [NSKeyValueObservation] = []
         private var progressThrottleTask: Task<Void, Never>?
         private var settingsObservation: (any NSObjectProtocol)?
+        /// Maps URL string -> DevTools network entry key for main-frame navigation timing
+        private var pendingNetworkKeys: [String: String] = [:]
 
         init(_ parent: WebViewWrapper) {
             self.parent = parent
@@ -296,6 +420,15 @@ struct WebViewWrapper: NSViewRepresentable {
                 if navigationAction.targetFrame == nil {
                     return .allow
                 }
+
+                // Track main-frame HTTP navigations for the network panel
+                if navigationAction.targetFrame?.isMainFrame == true,
+                   scheme == "https" || scheme == "http" {
+                    let method = navigationAction.request.httpMethod ?? "GET"
+                    let urlStr = url.absoluteString
+                    let key = DevToolsManager.shared.networkRequestStarted(url: urlStr, method: method)
+                    pendingNetworkKeys[urlStr] = key
+                }
             }
 
             return .allow
@@ -305,6 +438,19 @@ struct WebViewWrapper: NSViewRepresentable {
             if let response = navigationResponse.response as? HTTPURLResponse {
                 let contentDisposition = response.value(forHTTPHeaderField: "Content-Disposition") ?? ""
                 let mimeType = response.mimeType ?? ""
+
+                // Finalize network entry for this main-frame response
+                if let url = response.url {
+                    let urlStr = url.absoluteString
+                    if let key = pendingNetworkKeys.removeValue(forKey: urlStr) {
+                        DevToolsManager.shared.networkRequestFinished(
+                            key: key,
+                            statusCode: response.statusCode,
+                            mimeType: mimeType.isEmpty ? nil : mimeType,
+                            isError: response.statusCode >= 400
+                        )
+                    }
+                }
 
                 let isAttachment = contentDisposition.lowercased().contains("attachment")
                 let isRenderableMIME = [
@@ -576,6 +722,32 @@ struct WebViewWrapper: NSViewRepresentable {
                         PasswordManager.shared.onCredentialsCaptured(url: url, username: username, password: password)
                     }
                 }
+            case "cherryConsole":
+                let levelStr = body["level"] as? String ?? "log"
+                let message  = body["message"] as? String ?? ""
+                let level    = ConsoleLevel(rawValue: levelStr) ?? .log
+                let entry    = ConsoleEntry(level: level, message: message)
+                Task { @MainActor in
+                    DevToolsManager.shared.appendConsole(entry)
+                }
+
+            case "cherryNetwork":
+                let type     = body["type"] as? String ?? "start"
+                let url      = body["url"] as? String ?? ""
+                let method   = body["method"] as? String ?? "GET"
+                Task { @MainActor in
+                    if type == "start" {
+                        _ = DevToolsManager.shared.networkRequestStarted(url: url, method: method)
+                    } else {
+                        let status  = body["status"] as? Int ?? 0
+                        let mime    = body["mimeType"] as? String
+                        DevToolsManager.shared.finalizeByURL(
+                            url: url, statusCode: status,
+                            mimeType: mime, isError: status >= 400
+                        )
+                    }
+                }
+
             default:
                 break
             }

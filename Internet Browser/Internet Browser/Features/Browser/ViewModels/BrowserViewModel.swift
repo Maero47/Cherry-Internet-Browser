@@ -76,6 +76,9 @@ final class BrowserViewModel {
     // MARK: - Command Palette
     var showCommandPalette: Bool = false
 
+    // MARK: - Developer Tools
+    var showDevToolsPanel: Bool = false
+
     // Keep strong references to detached windows and their delegates
     static var detachedWindows: [NSWindow] = []
     static var detachedWindowDelegates: [DetachedWindowDelegate] = []
@@ -932,6 +935,75 @@ final class BrowserViewModel {
 
     func toggleCommandPalette() {
         showCommandPalette.toggle()
+    }
+
+    // MARK: - Developer Tools
+
+    func toggleDevTools() {
+        showDevToolsPanel.toggle()
+    }
+
+    /// Execute arbitrary JS in the active tab and return a formatted result string.
+    func evaluateJSForDevTools(_ js: String, completion: @escaping (String?) -> Void) {
+        guard let webView = currentTab?.webView else { completion(nil); return }
+        webView.evaluateJavaScript(js) { result, error in
+            DispatchQueue.main.async {
+                if let error {
+                    completion("Error: \(error.localizedDescription)")
+                    return
+                }
+                switch result {
+                case let s as String:   completion("\"\(s)\"")
+                case let n as Double:
+                    completion(n.truncatingRemainder(dividingBy: 1) == 0
+                               ? String(Int(n)) : String(n))
+                case let b as Bool:     completion(b ? "true" : "false")
+                case let d as [String: Any]:
+                    if let data = try? JSONSerialization.data(withJSONObject: d, options: .prettyPrinted),
+                       let str  = String(data: data, encoding: .utf8) { completion(str) }
+                    else { completion(String(describing: d)) }
+                case let a as [Any]:
+                    if let data = try? JSONSerialization.data(withJSONObject: a, options: .prettyPrinted),
+                       let str  = String(data: data, encoding: .utf8) { completion(str) }
+                    else { completion(String(describing: a)) }
+                case .none:             completion("undefined")
+                default:                completion(String(describing: result!))
+                }
+            }
+        }
+    }
+
+    /// Flash a blue outline around the element matching `selector`.
+    func highlightElementInDevTools(selector: String) {
+        guard let webView = currentTab?.webView else { return }
+        let js = DevToolsManager.highlightScript(for: selector)
+        webView.evaluateJavaScript(js, completionHandler: nil)
+    }
+
+    /// Apply edited outer HTML to the element matching `selector` (base64-encoded).
+    func applyHTMLInDevTools(selector: String, base64HTML: String,
+                             completion: @escaping (String?) -> Void) {
+        guard let webView = currentTab?.webView else { completion("no webview"); return }
+        let js = DevToolsManager.applyScript(selector: selector, base64HTML: base64HTML)
+        webView.evaluateJavaScript(js) { result, _ in
+            DispatchQueue.main.async { completion(result as? String) }
+        }
+    }
+
+    // MARK: - View Source
+
+    var showViewSource: Bool = false
+    var viewSourceHTML: String = ""
+
+    func fetchAndShowViewSource() {
+        guard let webView = currentTab?.webView else { return }
+        webView.evaluateJavaScript("document.documentElement.outerHTML") { [weak self] result, _ in
+            guard let self, let html = result as? String else { return }
+            Task { @MainActor in
+                self.viewSourceHTML = html
+                self.showViewSource = true
+            }
+        }
     }
 
     // MARK: - Session Restore
