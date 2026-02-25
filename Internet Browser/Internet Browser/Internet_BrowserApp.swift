@@ -326,4 +326,6 @@ extension Notification.Name {
     static let viewSource = Notification.Name("viewSource")
     static let autoFillPassword = Notification.Name("autoFillPassword")
     static let showCommandPalette = Notification.Name("showCommandPalette")
+    static let siteBlocked = Notification.Name("CherrySiteBlocked")
+    static let focusModeSessionEnded = Notification.Name("CherryFocusModeSessionEnded")
 }

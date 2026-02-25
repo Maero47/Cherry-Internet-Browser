@@ -421,6 +421,22 @@ struct WebViewWrapper: NSViewRepresentable {
                     return .allow
                 }
 
+                // Focus Mode: block main-frame navigations to blocked domains
+                if navigationAction.targetFrame?.isMainFrame == true,
+                   (scheme == "https" || scheme == "http"),
+                   let host = url.host,
+                   FocusModeManager.shared.isDomainBlocked(host) {
+                    let blockedURL = url
+                    DispatchQueue.main.async {
+                        NotificationCenter.default.post(
+                            name: .siteBlocked,
+                            object: nil,
+                            userInfo: ["host": host, "url": blockedURL.absoluteString]
+                        )
+                    }
+                    return .cancel
+                }
+
                 // Track main-frame HTTP navigations for the network panel
                 if navigationAction.targetFrame?.isMainFrame == true,
                    scheme == "https" || scheme == "http" {

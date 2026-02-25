@@ -69,6 +69,7 @@ struct BrowserView: View {
             .overlay(alignment: .bottom) { screenshotToastOverlay }
             .overlay { commandPaletteOverlay }
             .overlay(alignment: .trailing) { viewSourceOverlay }
+            .overlay { focusBlockOverlay }
             .animation(.spring(duration: 0.3), value: viewModel.passwordManager.showSavePrompt)
             .animation(.spring(duration: 0.3), value: viewModel.showDownloadToast)
             .animation(.spring(duration: 0.3), value: viewModel.showFindInPage)
@@ -78,6 +79,7 @@ struct BrowserView: View {
             .animation(.spring(duration: 0.25), value: viewModel.showCommandPalette)
             .animation(.spring(duration: 0.25), value: viewModel.showDevToolsPanel)
             .animation(.spring(duration: 0.3), value: viewModel.showViewSource)
+            .animation(.spring(duration: 0.25), value: viewModel.showFocusBlock)
             .onChange(of: viewModel.showQRCode) { _, newValue in
                 // When the QR popup is dismissed, the WKWebView has lost first responder
                 // because the full-screen dimmed overlay captured all input while it was
@@ -145,6 +147,16 @@ struct BrowserView: View {
             }
             .onReceive(NotificationCenter.default.publisher(for: .viewSource)) { _ in
                 viewModel.fetchAndShowViewSource()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .siteBlocked)) { notification in
+                let host = notification.userInfo?["host"] as? String ?? ""
+                let urlString = notification.userInfo?["url"] as? String ?? ""
+                viewModel.focusBlockedHost = host
+                viewModel.focusBlockedURL = URL(string: urlString)
+                viewModel.showFocusBlock = true
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .focusModeSessionEnded)) { _ in
+                viewModel.showFocusBlock = false
             }
             .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
                 viewModel.saveSessionForRestore()
@@ -222,7 +234,8 @@ struct BrowserView: View {
                         onPictureInPicture: { viewModel.togglePictureInPicture() },
                         onScreenshot: { viewModel.captureScreenshot() },
                         onQRCode: { viewModel.showQRCode = true },
-                        onSavePDF: { viewModel.savePDF() }
+                        onSavePDF: { viewModel.savePDF() },
+                        onToggleFocusMode: { viewModel.toggleFocusMode() }
                     )
                     .onDrop(of: [.cherryBrowserTab], isTargeted: nil) { providers in
                         viewModel.handleContentAreaDrop()
@@ -389,6 +402,34 @@ struct BrowserView: View {
     }
 
     @ViewBuilder
+    private var focusBlockOverlay: some View {
+        if viewModel.showFocusBlock {
+            FocusBlockView(
+                blockedHost: viewModel.focusBlockedHost,
+                onOverride: {
+                    FocusModeManager.shared.overrideDomain(viewModel.focusBlockedHost)
+                    viewModel.showFocusBlock = false
+                    if let url = viewModel.focusBlockedURL {
+                        viewModel.navigate(to: url.absoluteString)
+                    }
+                },
+                onDisableFocus: {
+                    FocusModeManager.shared.stopFocusMode()
+                    viewModel.showFocusBlock = false
+                    if let url = viewModel.focusBlockedURL {
+                        viewModel.navigate(to: url.absoluteString)
+                    }
+                },
+                onDismiss: {
+                    viewModel.showFocusBlock = false
+                }
+            )
+            .transition(.opacity)
+            .zIndex(1003)
+        }
+    }
+
+    @ViewBuilder
     private var screenshotToastOverlay: some View {
         if viewModel.showScreenshotToast {
             HStack(spacing: 8) {
@@ -543,6 +584,10 @@ struct BrowserView: View {
             Button("") { viewModel.toggleReaderMode() }
                 .keyboardShortcut("r", modifiers: [.command, .shift])
 
+            // Focus Mode (Cmd+Shift+F)
+            Button("") { viewModel.toggleFocusMode() }
+                .keyboardShortcut("f", modifiers: [.command, .shift])
+
             // Screenshot (Cmd+Shift+4)
             Button("") { viewModel.captureScreenshot() }
                 .keyboardShortcut("4", modifiers: [.command, .shift])
@@ -583,6 +628,7 @@ struct BrowserContentView: View {
     var onScreenshot: (() -> Void)? = nil
     var onQRCode: (() -> Void)? = nil
     var onSavePDF: (() -> Void)? = nil
+    var onToggleFocusMode: (() -> Void)? = nil
 
     // Track URL changes to force WebViewWrapper updates
     @State private var urlVersion: Int = 0
@@ -616,7 +662,8 @@ struct BrowserContentView: View {
                 onScreenshot: onScreenshot,
                 onQRCode: onQRCode,
                 isViewingPDF: viewModel.isViewingPDF,
-                onSavePDF: onSavePDF
+                onSavePDF: onSavePDF,
+                onToggleFocusMode: onToggleFocusMode
             )
             .overlay(alignment: .topTrailing) {
                 if viewModel.showAutoFillPopup {

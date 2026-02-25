@@ -9,6 +9,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     case general = "General"
     case privacy = "Privacy"
     case passwords = "Passwords"
+    case focus = "Focus"
     case about = "About"
 
     var id: String { rawValue }
@@ -18,6 +19,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         case .general: "gear"
         case .privacy: "lock.shield"
         case .passwords: "key.fill"
+        case .focus: "brain.head.profile"
         case .about: "info.circle"
         }
     }
@@ -136,6 +138,8 @@ struct SettingsPageView: View {
                         GeneralSettingsView()
                     case .privacy:
                         PrivacySettingsView()
+                    case .focus:
+                        FocusModeSettingsView()
                     case .about:
                         AboutSettingsView()
                     case .passwords:

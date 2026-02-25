@@ -23,11 +23,16 @@ struct SettingsView: View {
                     Label("Passwords", systemImage: "key.fill")
                 }
 
+            FocusModeSettingsView()
+                .tabItem {
+                    Label("Focus", systemImage: "brain.head.profile")
+                }
+
             AboutSettingsView()
                 .tabItem {
                     Label("About", systemImage: "info.circle")
                 }
         }
-        .frame(width: 520, height: 460)
+        .frame(width: 520, height: 520)
     }
 }

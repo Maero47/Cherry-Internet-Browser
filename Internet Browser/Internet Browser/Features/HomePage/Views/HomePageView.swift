@@ -23,7 +23,6 @@ struct AnimatedGradientBackground: View {
             ],
             colors: colors
         )
-        .ignoresSafeArea()
         .drawingGroup()
         .onAppear {
             isVisible = true

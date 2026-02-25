@@ -990,6 +990,16 @@ final class BrowserViewModel {
         }
     }
 
+    // MARK: - Focus Mode
+
+    var showFocusBlock: Bool = false
+    var focusBlockedHost: String = ""
+    var focusBlockedURL: URL? = nil
+
+    func toggleFocusMode() {
+        FocusModeManager.shared.toggleFocusMode()
+    }
+
     // MARK: - View Source
 
     var showViewSource: Bool = false

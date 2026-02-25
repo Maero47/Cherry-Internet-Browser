@@ -529,15 +529,101 @@ Internet Browser/
 
 ---
 
-## Future Phases ⏳ PENDING
+## Phase 13: Developer Tools ✅ COMPLETE
 
-### Developer Tools
-- [ ] WebKit Inspector integration
-- [ ] Console access
-- [ ] Network panel
+### Implemented Features
+- [x] Web Inspector enabled — `isInspectable = true` on every WKWebView; attach via Develop > Show Web Inspector in macOS menu bar
+- [x] JS Console panel — captures `console.log/info/warn/error` via injected WKUserScript bridge; live-scrolling list with monospaced output, color-coded by level, timestamp per entry, filter pills (All / Log / Info / Warn / Error), clear button
+- [x] Network log panel — captures main-frame HTTP navigations (method, URL, status code, response time) via WKNavigationDelegate; XHR + fetch subresource tracking via injected JS interceptor; color-coded method + status columns, URL filter, timing display
+- [x] Bottom-docked panel, 240pt tall, full-width inside browser content area
+- [x] Cmd+Option+I to toggle Dev Tools panel, Cmd+Option+C to open Console tab
+- [x] Escape closes panel (after Command Palette, before Find in Page)
+- [x] View Page Source (Cmd+U) — opens `view-source:` URL in a new tab
+- [x] Wired up existing "Show Web Inspector" and "Show JavaScript Console" menu items
+
+### Keyboard Shortcuts (Phase 13)
+| Shortcut | Action |
+|----------|--------|
+| Cmd+Option+I | Toggle Dev Tools panel |
+| Cmd+Option+C | Open Console tab |
+| Cmd+U | View Page Source |
+| Escape | Close Dev Tools panel |
+
+### Files Created/Modified
+```
+Internet Browser/
+├── Data/
+│   └── Models/
+│       ├── ConsoleEntry.swift                (NEW)
+│       └── NetworkEntry.swift                (NEW)
+├── Features/
+│   └── Browser/
+│       ├── ViewModels/
+│       │   ├── DevToolsManager.swift         (NEW)
+│       │   └── ConsoleScripts.swift          (NEW)
+│       └── Views/
+│           ├── DevToolsPanelView.swift       (NEW)
+│           ├── WebViewWrapper.swift          (MODIFIED - isInspectable, console/network scripts, message handlers, nav timing)
+│           └── BrowserView.swift             (MODIFIED - panel in BrowserContentView, shortcuts, notifications)
+│   └── Browser/
+│       └── ViewModels/
+│           └── BrowserViewModel.swift        (MODIFIED - showDevToolsPanel, toggleDevTools)
+```
+
+---
+
+## Phase 14: Focus Mode / Site Blocker ✅ COMPLETE
+
+### Implemented Features
+- [x] `FocusModeManager` — `@Observable` singleton with UserDefaults persistence
+- [x] Per-domain block list — add/remove domains, wildcard subdomain matching
+- [x] Focus mode toggle — Cmd+Shift+F keyboard shortcut + brain icon in toolbar
+- [x] Session timer — optional countdown (15/25/30/45/60/90/120 min), auto-stops focus mode on expiry
+- [x] 5-minute override — "Allow for 5 minutes" bypasses a specific domain temporarily
+- [x] Full-screen block page — dark glass overlay with countdown timer, override and disable buttons
+- [x] Navigation interception — `decidePolicyFor` in WebViewWrapper cancels blocked navigations
+- [x] Focus Settings tab — full blocked sites manager, quick-add for common social/video sites
+- [x] Quick-block grid — toggle Twitter, Reddit, YouTube, Instagram, Facebook, TikTok, Netflix, LinkedIn with one tap
+- [x] Re-navigation on override/disable — navigates to the originally blocked URL after unblocking
+
+### Keyboard Shortcuts (Phase 14)
+| Shortcut | Action |
+|----------|--------|
+| Cmd+Shift+F | Toggle Focus Mode |
+
+### Files Created/Modified
+```
+Internet Browser/
+├── Features/
+│   └── Focus/
+│       ├── ViewModels/
+│       │   └── FocusModeManager.swift          (NEW)
+│       └── Views/
+│           ├── FocusBlockView.swift             (NEW)
+│           └── FocusModeSettingsView.swift      (NEW)
+├── Features/
+│   ├── Settings/
+│   │   └── Views/
+│   │       └── SettingsView.swift               (MODIFIED - Focus tab added)
+│   ├── Navigation/
+│   │   └── Views/
+│   │       └── NavigationBarView.swift          (MODIFIED - brain icon button)
+│   └── Browser/
+│       ├── ViewModels/
+│       │   └── BrowserViewModel.swift           (MODIFIED - showFocusBlock, focusBlockedHost/URL, toggleFocusMode)
+│       └── Views/
+│           ├── BrowserView.swift                (MODIFIED - focusBlockOverlay, siteBlocked notification, Cmd+Shift+F)
+│           └── WebViewWrapper.swift             (MODIFIED - decidePolicyFor blocks Focus domains)
+└── Internet_BrowserApp.swift                    (MODIFIED - siteBlocked, focusModeSessionEnded notification names)
+```
+
+---
+
+## Future Phases ⏳ PENDING
 
 ### Additional Features
 - [ ] Extensions/plugin system
+- [ ] Tab workspaces
 
 ---
 

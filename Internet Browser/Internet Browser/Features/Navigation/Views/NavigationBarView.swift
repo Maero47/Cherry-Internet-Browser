@@ -33,6 +33,7 @@ struct NavigationBarView: View {
     var onQRCode: (() -> Void)? = nil
     var isViewingPDF: Bool = false
     var onSavePDF: (() -> Void)? = nil
+    var onToggleFocusMode: (() -> Void)? = nil
 
     /// Computed from the current tab's URL so it always reflects the correct per-domain state
     private var isAdBlockPaused: Bool {
@@ -275,6 +276,19 @@ struct NavigationBarView: View {
                 }
                 .buttonStyle(ToolbarButtonStyle())
                 .help(isAdBlockPaused ? "Ad blocker paused for this site" : "Ad blocker active — click to pause for this site")
+            }
+
+            // Focus mode button
+            if let onToggleFocusMode = onToggleFocusMode {
+                let isFocusOn = FocusModeManager.shared.focusModeEnabled
+                Button(action: onToggleFocusMode) {
+                    Image(systemName: "brain.head.profile")
+                        .font(.system(size: AppConstants.UI.toolbarIconSize, weight: .medium))
+                        .foregroundStyle(isFocusOn ? SettingsManager.shared.accentColor : .primary)
+                        .symbolVariant(isFocusOn ? .fill : .none)
+                }
+                .buttonStyle(ToolbarButtonStyle())
+                .help(isFocusOn ? "Focus Mode On — click to disable (Cmd+Shift+F)" : "Enable Focus Mode (Cmd+Shift+F)")
             }
 
             // Reader mode button
