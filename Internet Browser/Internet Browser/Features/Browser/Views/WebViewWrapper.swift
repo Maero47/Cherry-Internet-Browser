@@ -90,6 +90,7 @@ final class CherryWebView: WKWebView {
 // MARK: - WebViewWrapper
 
 struct WebViewWrapper: NSViewRepresentable {
+
     @Bindable var tab: Tab
     var urlVersion: Int = 0
     var onNewTab: ((URL) -> Void)? = nil
@@ -356,6 +357,34 @@ struct WebViewWrapper: NSViewRepresentable {
                     }
                 }
             )
+
+            // macOS 13+: observe fullscreenState for granular enter/exit events.
+            // .enteringFullscreen → hide chrome early (during animation).
+            // .inFullscreen → animation complete, WKWebView is in fullscreen window;
+            //                 this is the reliable moment to resize it.
+            if #available(macOS 13.0, *) {
+                observations.append(
+                    webView.observe(\.fullscreenState, options: [.new]) { [weak self] webView, _ in
+                        Task { @MainActor in
+                            guard let self else { return }
+                            switch webView.fullscreenState {
+                            case .enteringFullscreen:
+                                self.parent.viewModel?.isVideoFullscreen = true
+                            case .inFullscreen:
+                                self.parent.viewModel?.isVideoFullscreen = true
+                                // Reparenting is complete — expand to fill the window now.
+                                self.expandViewsForVideoFullscreen(webView)
+                            case .exitingFullscreen:
+                                self.parent.viewModel?.isVideoFullscreen = false
+                            case .notInFullscreen:
+                                self.parent.viewModel?.isVideoFullscreen = false
+                            @unknown default:
+                                break
+                            }
+                        }
+                    }
+                )
+            }
         }
 
         // MARK: - WKNavigationDelegate
@@ -405,46 +434,58 @@ struct WebViewWrapper: NSViewRepresentable {
         }
 
         func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction) async -> WKNavigationActionPolicy {
-            if let url = navigationAction.request.url {
-                let scheme = url.scheme?.lowercased() ?? ""
+            guard let url = navigationAction.request.url else { return .allow }
 
-                if !["http", "https", "about", "file", "blob"].contains(scheme) {
+            let scheme = url.scheme?.lowercased() ?? ""
+            let isMainFrame = navigationAction.targetFrame?.isMainFrame == true
+            let isNewWindow = navigationAction.targetFrame == nil
+
+            // Non-standard schemes (tel:, mailto:, custom app schemes, etc.)
+            // Only intercept on main-frame or new-window navigations.
+            // Sub-frame navigations (iframes, media sources) must be left alone —
+            // video players use blob:, data:, and other schemes internally.
+            if isMainFrame || isNewWindow {
+                if !["http", "https", "about", "file", "blob", "data"].contains(scheme) {
                     NSWorkspace.shared.open(url)
                     return .cancel
                 }
+            }
 
-                if navigationAction.shouldPerformDownload {
-                    return .download
-                }
+            // Download intent — only trigger for main-frame navigations.
+            // Sub-frame video/audio sources sometimes set shouldPerformDownload but
+            // must be rendered inline, not handed to the download manager.
+            if isMainFrame && navigationAction.shouldPerformDownload {
+                return .download
+            }
 
-                if navigationAction.targetFrame == nil {
-                    return .allow
-                }
+            // New-window request with no target frame: let it through so
+            // createWebViewWith can decide whether to open a tab or block it.
+            if isNewWindow {
+                return .allow
+            }
 
-                // Focus Mode: block main-frame navigations to blocked domains
-                if navigationAction.targetFrame?.isMainFrame == true,
-                   (scheme == "https" || scheme == "http"),
-                   let host = url.host,
-                   FocusModeManager.shared.isDomainBlocked(host) {
-                    let blockedURL = url
-                    DispatchQueue.main.async {
-                        NotificationCenter.default.post(
-                            name: .siteBlocked,
-                            object: nil,
-                            userInfo: ["host": host, "url": blockedURL.absoluteString]
-                        )
-                    }
-                    return .cancel
+            // Focus Mode: block main-frame navigations to blocked domains
+            if isMainFrame,
+               (scheme == "https" || scheme == "http"),
+               let host = url.host,
+               FocusModeManager.shared.isDomainBlocked(host) {
+                let blockedURL = url
+                DispatchQueue.main.async {
+                    NotificationCenter.default.post(
+                        name: .siteBlocked,
+                        object: nil,
+                        userInfo: ["host": host, "url": blockedURL.absoluteString]
+                    )
                 }
+                return .cancel
+            }
 
-                // Track main-frame HTTP navigations for the network panel
-                if navigationAction.targetFrame?.isMainFrame == true,
-                   scheme == "https" || scheme == "http" {
-                    let method = navigationAction.request.httpMethod ?? "GET"
-                    let urlStr = url.absoluteString
-                    let key = DevToolsManager.shared.networkRequestStarted(url: urlStr, method: method)
-                    pendingNetworkKeys[urlStr] = key
-                }
+            // Track main-frame HTTP navigations for the network panel
+            if isMainFrame, scheme == "https" || scheme == "http" {
+                let method = navigationAction.request.httpMethod ?? "GET"
+                let urlStr = url.absoluteString
+                let key = DevToolsManager.shared.networkRequestStarted(url: urlStr, method: method)
+                pendingNetworkKeys[urlStr] = key
             }
 
             return .allow
@@ -583,6 +624,78 @@ struct WebViewWrapper: NSViewRepresentable {
         }
 
         // MARK: - WKUIDelegate
+
+        // MARK: - Element / Video Fullscreen
+
+        /// Saved browser-window frame when we expand it ourselves for fullscreen.
+        var videoFullscreenSavedFrame: NSRect = .zero
+
+        func webViewDidEnterFullscreen(_ webView: WKWebView) {
+            Task { @MainActor in
+                self.parent.viewModel?.isVideoFullscreen = true
+            }
+            // WebKit places the WKWebView in a screen-covering window but does NOT
+            // resize the WKWebView itself — it stays at the original browser-content
+            // position and size. Attempt the resize at t=0, 100 ms, and 350 ms so
+            // we catch whichever moment the reparenting actually completes.
+            for delay in [0.0, 0.1, 0.35] {
+                DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self, weak webView] in
+                    guard let self, let webView else { return }
+                    Task { @MainActor in self.expandViewsForVideoFullscreen(webView) }
+                }
+            }
+        }
+
+        @MainActor
+        private func expandViewsForVideoFullscreen(_ webView: WKWebView) {
+            guard let window = webView.window,
+                  let screen = window.screen ?? NSScreen.main else { return }
+
+            // If WebKit hasn't moved the webView into its fullscreen window yet,
+            // the view is still in the small browser window — expand that window.
+            if window.frame.width < screen.frame.width - 20 {
+                if videoFullscreenSavedFrame == .zero {
+                    videoFullscreenSavedFrame = window.frame
+                }
+                window.setFrame(screen.frame, display: true, animate: false)
+            }
+
+            guard let contentView = window.contentView else { return }
+            let fill = contentView.bounds  // e.g. {0,0,2560,1600}
+
+            // Walk every view from WKWebView up to (but not including) contentView
+            // and expand it to fill the window. This unblocks any intermediate views
+            // that would otherwise clip the WKWebView.
+            var v: NSView = webView
+            while v !== contentView {
+                if abs(v.frame.width - fill.width) > 10 || abs(v.frame.height - fill.height) > 10 {
+                    v.translatesAutoresizingMaskIntoConstraints = true
+                    v.frame = fill
+                    v.autoresizingMask = [.width, .height]
+                }
+                guard let sv = v.superview else { break }
+                v = sv
+            }
+
+            // Tell page JS (YouTube player etc.) to recalculate for the new viewport.
+            webView.evaluateJavaScript(
+                "window.dispatchEvent(new Event('resize'))",
+                completionHandler: nil
+            )
+        }
+
+        func webViewDidExitFullscreen(_ webView: WKWebView) {
+            Task { @MainActor in
+                self.parent.viewModel?.isVideoFullscreen = false
+                // Restore the browser window if we expanded it ourselves.
+                guard videoFullscreenSavedFrame != .zero else { return }
+                let saved = videoFullscreenSavedFrame
+                videoFullscreenSavedFrame = .zero
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                    webView.window?.setFrame(saved, display: true, animate: true)
+                }
+            }
+        }
 
         func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
             let url = navigationAction.request.url

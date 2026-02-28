@@ -76,6 +76,9 @@ final class BrowserViewModel {
     // MARK: - Command Palette
     var showCommandPalette: Bool = false
 
+    // MARK: - Video / Element Fullscreen
+    var isVideoFullscreen: Bool = false
+
     // MARK: - Developer Tools
     var showDevToolsPanel: Bool = false
 

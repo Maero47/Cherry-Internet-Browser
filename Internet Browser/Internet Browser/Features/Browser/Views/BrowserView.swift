@@ -177,7 +177,7 @@ struct BrowserView: View {
     @ViewBuilder
     private var browserLayout: some View {
         HStack(spacing: 0) {
-            if viewModel.useVerticalTabs {
+            if viewModel.useVerticalTabs && !viewModel.isVideoFullscreen {
                 VerticalTabBarView(
                     tabManager: viewModel.tabManager,
                     isCollapsed: $viewModel.verticalTabBarCollapsed,
@@ -194,7 +194,7 @@ struct BrowserView: View {
             }
 
             VStack(spacing: 0) {
-                if !viewModel.useVerticalTabs {
+                if !viewModel.useVerticalTabs && !viewModel.isVideoFullscreen {
                     TabBarView(
                         tabManager: viewModel.tabManager,
                         isFullScreen: viewModel.isFullScreen,
@@ -246,7 +246,7 @@ struct BrowserView: View {
             }
             .frame(maxWidth: .infinity)
 
-            if viewModel.isSidebarVisible {
+            if viewModel.isSidebarVisible && !viewModel.isVideoFullscreen {
                 Divider()
                 sidebarView
             }
@@ -635,59 +635,61 @@ struct BrowserContentView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            NavigationBarView(
-                tab: tab,
-                isBookmarked: viewModel.isCurrentPageBookmarked(),
-                onNavigate: onNavigate,
-                onBack: onBack,
-                onForward: onForward,
-                onReload: onReload,
-                onStop: onStop,
-                onHome: onHome,
-                onBookmark: onBookmark,
-                onToggleHistory: onToggleHistory,
-                onToggleBookmarks: onToggleBookmarks,
-                onDownloads: onDownloads,
-                onSettings: onSettings,
-                onToggleAdBlock: onToggleAdBlock,
-                onAutoFill: onAutoFill,
-                loginFormDetected: viewModel.passwordManager.loginFormDetected,
-                isPrivateMode: viewModel.isPrivateMode,
-                onTogglePrivateMode: onTogglePrivateMode,
-                showWindowDragArea: viewModel.useVerticalTabs && !viewModel.isFullScreen,
-                onPrint: onPrint,
-                onToggleReaderMode: onToggleReaderMode,
-                showReaderMode: viewModel.showReaderMode,
-                onPictureInPicture: onPictureInPicture,
-                onScreenshot: onScreenshot,
-                onQRCode: onQRCode,
-                isViewingPDF: viewModel.isViewingPDF,
-                onSavePDF: onSavePDF,
-                onToggleFocusMode: onToggleFocusMode
-            )
-            .overlay(alignment: .topTrailing) {
-                if viewModel.showAutoFillPopup {
-                    PasswordAutoFillPopup(
-                        credentials: viewModel.passwordManager.matchingCredentials,
-                        onSelect: { credential in
-                            viewModel.fillCredential(credential)
-                        },
-                        onGenerate: {
-                            onGeneratePassword?()
-                        },
-                        onDismiss: {
-                            viewModel.showAutoFillPopup = false
-                        }
-                    )
-                    .padding(.trailing, 80)
-                    .offset(y: 36)
-                    .zIndex(100)
+            if !viewModel.isVideoFullscreen {
+                NavigationBarView(
+                    tab: tab,
+                    isBookmarked: viewModel.isCurrentPageBookmarked(),
+                    onNavigate: onNavigate,
+                    onBack: onBack,
+                    onForward: onForward,
+                    onReload: onReload,
+                    onStop: onStop,
+                    onHome: onHome,
+                    onBookmark: onBookmark,
+                    onToggleHistory: onToggleHistory,
+                    onToggleBookmarks: onToggleBookmarks,
+                    onDownloads: onDownloads,
+                    onSettings: onSettings,
+                    onToggleAdBlock: onToggleAdBlock,
+                    onAutoFill: onAutoFill,
+                    loginFormDetected: viewModel.passwordManager.loginFormDetected,
+                    isPrivateMode: viewModel.isPrivateMode,
+                    onTogglePrivateMode: onTogglePrivateMode,
+                    showWindowDragArea: viewModel.useVerticalTabs && !viewModel.isFullScreen,
+                    onPrint: onPrint,
+                    onToggleReaderMode: onToggleReaderMode,
+                    showReaderMode: viewModel.showReaderMode,
+                    onPictureInPicture: onPictureInPicture,
+                    onScreenshot: onScreenshot,
+                    onQRCode: onQRCode,
+                    isViewingPDF: viewModel.isViewingPDF,
+                    onSavePDF: onSavePDF,
+                    onToggleFocusMode: onToggleFocusMode
+                )
+                .overlay(alignment: .topTrailing) {
+                    if viewModel.showAutoFillPopup {
+                        PasswordAutoFillPopup(
+                            credentials: viewModel.passwordManager.matchingCredentials,
+                            onSelect: { credential in
+                                viewModel.fillCredential(credential)
+                            },
+                            onGenerate: {
+                                onGeneratePassword?()
+                            },
+                            onDismiss: {
+                                viewModel.showAutoFillPopup = false
+                            }
+                        )
+                        .padding(.trailing, 80)
+                        .offset(y: 36)
+                        .zIndex(100)
+                    }
                 }
+                .zIndex(200)
             }
-            .zIndex(200)
 
             // Bookmark bar
-            if viewModel.showBookmarkBar {
+            if viewModel.showBookmarkBar && !viewModel.isVideoFullscreen {
                 BookmarkBarView(
                     repository: viewModel.bookmarkRepository,
                     onBookmarkClick: { viewModel.openBookmark($0) },
@@ -696,9 +698,9 @@ struct BrowserContentView: View {
             }
 
             // Loading progress bar
-            if tab.isLoading {
+            if tab.isLoading && !viewModel.isVideoFullscreen {
                 ProgressBarView(progress: tab.loadingProgress)
-            } else {
+            } else if !viewModel.isVideoFullscreen {
                 Rectangle()
                     .fill(Color.primary.opacity(0.08))
                     .frame(height: 0.5)
@@ -740,7 +742,7 @@ struct BrowserContentView: View {
             urlVersion += 1
         }
 
-        if viewModel.showDevToolsPanel {
+        if viewModel.showDevToolsPanel && !viewModel.isVideoFullscreen {
             Rectangle()
                 .fill(Color.primary.opacity(0.08))
                 .frame(height: 0.5)
