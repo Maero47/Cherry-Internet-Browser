@@ -1038,8 +1038,16 @@ final class BrowserViewModel {
 
     // MARK: - Session Restore
 
+    /// Session restore must only ever run for the first window of the process.
+    /// Windows created later (detached tabs, dock-menu windows) also hit
+    /// onAppear; without this guard they would restore a session saved when an
+    /// earlier window closed during this run, importing its tabs.
+    private static var sessionRestoreAttempted = false
+
     /// Restores the previous session if the setting is enabled and a saved session exists.
     func restoreSessionIfNeeded() {
+        guard !BrowserViewModel.sessionRestoreAttempted else { return }
+        BrowserViewModel.sessionRestoreAttempted = true
         guard !isPrivateMode,
               SettingsManager.shared.restorePreviousSession,
               SessionRestoreManager.shared.hasSavedSession else { return }

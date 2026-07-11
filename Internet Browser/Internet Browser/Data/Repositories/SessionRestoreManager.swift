@@ -24,11 +24,19 @@ final class SessionRestoreManager {
     // MARK: - Save
 
     func saveSession(tabs: [Tab], selectedIndex: Int?) {
-        let entries: [SavedTabEntry] = tabs.compactMap { tab in
+        // selectedIndex refers to the full tabs array, but private and
+        // URL-less tabs are excluded from the saved entries — map the index
+        // into the filtered list so the correct tab is selected on restore.
+        var entries: [SavedTabEntry] = []
+        var mappedSelectedIndex = 0
+        for (index, tab) in tabs.enumerated() {
             guard !tab.isPrivate,
                   let url = tab.url,
-                  !url.absoluteString.isEmpty else { return nil }
-            return SavedTabEntry(urlString: url.absoluteString, title: tab.title)
+                  !url.absoluteString.isEmpty else { continue }
+            if let selectedIndex, index == selectedIndex {
+                mappedSelectedIndex = entries.count
+            }
+            entries.append(SavedTabEntry(urlString: url.absoluteString, title: tab.title))
         }
         guard !entries.isEmpty else {
             clearSession()
@@ -37,7 +45,7 @@ final class SessionRestoreManager {
         if let data = try? JSONEncoder().encode(entries) {
             UserDefaults.standard.set(data, forKey: tabsKey)
         }
-        UserDefaults.standard.set(selectedIndex ?? 0, forKey: selectedIndexKey)
+        UserDefaults.standard.set(mappedSelectedIndex, forKey: selectedIndexKey)
         UserDefaults.standard.synchronize()
     }
 
