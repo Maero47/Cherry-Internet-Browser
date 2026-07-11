@@ -418,16 +418,13 @@ final class BrowserViewModel {
         window.titlebarSeparatorStyle = .none
         window.title = "Private Browsing"
 
+        // Use the shared delegate for close cleanup like every other detached
+        // window. The previous block-based observer's token was discarded, so
+        // the observation could never be removed and leaked per private window.
+        let delegate = DetachedWindowDelegate()
+        window.delegate = delegate
         BrowserViewModel.detachedWindows.append(window)
-
-        NotificationCenter.default.addObserver(
-            forName: NSWindow.willCloseNotification,
-            object: window,
-            queue: .main
-        ) { notification in
-            guard let closedWindow = notification.object as? NSWindow else { return }
-            BrowserViewModel.detachedWindows.removeAll { $0 === closedWindow }
-        }
+        BrowserViewModel.detachedWindowDelegates.append(delegate)
 
         window.center()
         window.makeKeyAndOrderFront(nil)
