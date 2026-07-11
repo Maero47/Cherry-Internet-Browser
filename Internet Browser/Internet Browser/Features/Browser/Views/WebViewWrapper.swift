@@ -172,6 +172,16 @@ struct WebViewWrapper: NSViewRepresentable {
         devController.add(context.coordinator, name: "cherryConsole")
         devController.add(context.coordinator, name: "cherryNetwork")
 
+        // Tab mute: install the media-muting observer on every page load so
+        // dynamically-added <audio>/<video> elements pick up the current
+        // mute state. The live value is pushed in via tab.applyMuteState()
+        // below and on every navigation (see Coordinator.didCommit).
+        devController.addUserScript(WKUserScript(
+            source: MuteScripts.installScript,
+            injectionTime: .atDocumentStart,
+            forMainFrameOnly: false
+        ))
+
         // Check if the tab already has a webView (e.g. adopted popup)
         let isAdoptedWebView = tab.webView != nil
 
@@ -192,8 +202,8 @@ struct WebViewWrapper: NSViewRepresentable {
         webView.uiDelegate = context.coordinator
 
         // Re-apply the tab's muted state to the freshly (re)created WebView —
-        // isAudioMuted lives on the view itself, so it's lost on sleep/wake and
-        // any other webView recreation.
+        // the JS-side mute state lives in the page's document, so it's lost
+        // on sleep/wake and any other webView recreation.
         tab.applyMuteState()
 
         // Enable Safari Web Inspector attachment (Develop > Show Web Inspector in menu bar)
@@ -338,6 +348,11 @@ struct WebViewWrapper: NSViewRepresentable {
                 injectionTime: .atDocumentStart,
                 forMainFrameOnly: true
             ))
+            controller.addUserScript(WKUserScript(
+                source: MuteScripts.installScript,
+                injectionTime: .atDocumentStart,
+                forMainFrameOnly: false
+            ))
         }
 
         func observeWebView(_ webView: WKWebView) {
@@ -441,6 +456,12 @@ struct WebViewWrapper: NSViewRepresentable {
             // confirms the login went through — show the save prompt now
             PasswordManager.shared.onNavigationAfterCapture()
             PasswordManager.shared.resetForNavigation()
+        }
+
+        func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+            // Each navigation gets a fresh JS context, so push the tab's mute
+            // state back in as soon as the new document exists.
+            tab?.applyMuteState()
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {

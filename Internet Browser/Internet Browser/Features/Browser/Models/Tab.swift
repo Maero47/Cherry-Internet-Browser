@@ -114,11 +114,13 @@ final class Tab: Identifiable {
         applyMuteState()
     }
 
-    /// Re-applies `isMuted` to the live WebView. Must be called whenever a tab's
-    /// WKWebView is (re)created — e.g. sleep/wake, popup adoption, WebViewWrapper
-    /// recreation — since WKWebView.isAudioMuted lives on the view, not the model.
+    /// Re-applies `isMuted` to the live WebView via JS (WKWebView has no public
+    /// audio-mute API on macOS). Must be called whenever a tab's WKWebView is
+    /// (re)created — e.g. sleep/wake, popup adoption, WebViewWrapper recreation —
+    /// and on every navigation, since the JS-side mute state lives in the page's
+    /// document and is lost on reload.
     func applyMuteState() {
-        webView?.isAudioMuted = isMuted
+        webView?.evaluateJavaScript(MuteScripts.applyMuteJS(muted: isMuted), completionHandler: nil)
     }
 
     func loadURL(_ url: URL) {
