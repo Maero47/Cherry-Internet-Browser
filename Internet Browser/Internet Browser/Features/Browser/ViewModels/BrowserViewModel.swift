@@ -53,6 +53,13 @@ final class BrowserViewModel {
     var showAutoFillPopup: Bool = false
 
     // MARK: - Find in Page
+    // M2a: kept as ONE window-global query/count pair (not per-pane state) —
+    // there's only one find bar/input on screen, so a second query would need
+    // its own UI to be reachable at all. All find operations below act on
+    // `tabManager.focusedTab`, and `refreshFindForFocusChange()` re-runs the
+    // shared query against whichever pane is now focused. Each pane's DOM
+    // highlights are independent (tracked per-tab via `Tab.findHelperInjected`)
+    // and are never touched by the other pane's search.
     var showFindInPage: Bool = false
     var findQuery: String = ""
     var findCurrentMatch: Int = 0
@@ -646,14 +653,14 @@ final class BrowserViewModel {
 
     // MARK: - Find in Page
 
-    private var findHelperInjected = false
-
     /// Injects the find helper JS once per page. Uses querySelectorAll to clear
     /// old marks so it never loses track of highlights even if called again.
     /// The presence check must live in JS: the helper is wiped by every
     /// navigation and is per-page, while this view model spans pages and tabs,
     /// so a Swift-side "already injected" flag goes stale and breaks find.
-    private func injectFindHelperIfNeeded(in webView: WKWebView, completion: @escaping () -> Void) {
+    /// `findHelperInjected` lives on the `Tab`, not this view model, so each
+    /// split-view pane's page tracks its own injection state independently.
+    private func injectFindHelperIfNeeded(in webView: WKWebView, for tab: Tab, completion: @escaping () -> Void) {
         let js = """
         if (!window.__cherryFind) window.__cherryFind = {
             marks: [],
@@ -754,8 +761,8 @@ final class BrowserViewModel {
         };
         true;
         """
-        webView.evaluateJavaScript(js) { [weak self] _, _ in
-            self?.findHelperInjected = true
+        webView.evaluateJavaScript(js) { [weak tab] _, _ in
+            tab?.findHelperInjected = true
             completion()
         }
     }
@@ -776,7 +783,7 @@ final class BrowserViewModel {
     }
 
     func findNext() {
-        guard let webView = currentTab?.webView, !findQuery.isEmpty else { return }
+        guard let webView = tabManager.focusedTab?.webView, !findQuery.isEmpty else { return }
         webView.evaluateJavaScript("window.__cherryFind.next();") { [weak self] result, _ in
             guard let self, let dict = result as? [String: Any],
                   let c = dict["c"] as? Int, let t = dict["t"] as? Int else { return }
@@ -786,7 +793,7 @@ final class BrowserViewModel {
     }
 
     func findPrevious() {
-        guard let webView = currentTab?.webView, !findQuery.isEmpty else { return }
+        guard let webView = tabManager.focusedTab?.webView, !findQuery.isEmpty else { return }
         webView.evaluateJavaScript("window.__cherryFind.prev();") { [weak self] result, _ in
             guard let self, let dict = result as? [String: Any],
                   let c = dict["c"] as? Int, let t = dict["t"] as? Int else { return }
@@ -814,9 +821,9 @@ final class BrowserViewModel {
     }
 
     private func executeHighlightFind(query: String) {
-        guard let webView = currentTab?.webView else { return }
+        guard let tab = tabManager.focusedTab, let webView = tab.webView else { return }
         let escaped = escapeFindQuery(query)
-        injectFindHelperIfNeeded(in: webView) { [weak self] in
+        injectFindHelperIfNeeded(in: webView, for: tab) { [weak self] in
             let js = "window.__cherryFind.highlight('\(escaped)');"
             webView.evaluateJavaScript(js) { [weak self] result, _ in
                 guard let self else { return }
@@ -832,8 +839,8 @@ final class BrowserViewModel {
     }
 
     private func clearFindHighlights() {
-        guard let webView = currentTab?.webView else { return }
-        if findHelperInjected {
+        guard let tab = tabManager.focusedTab, let webView = tab.webView else { return }
+        if tab.findHelperInjected {
             webView.evaluateJavaScript(
                 "window.__cherryFind.clear();", completionHandler: nil)
         }
@@ -845,7 +852,20 @@ final class BrowserViewModel {
         findQuery = ""
         findCurrentMatch = 0
         findTotalMatches = 0
-        findHelperInjected = false
+        tabManager.focusedTab?.findHelperInjected = false
+    }
+
+    /// Called when focus switches between split-view panes while find is
+    /// open. A single `findQuery`/count pair is shared by the bar (see the
+    /// M2a design note in the class doc), so on focus change we zero the
+    /// counts immediately (they belonged to the previous pane) and re-run
+    /// the search against the newly-focused pane's tab. This never touches
+    /// the other pane's DOM, so its highlights stay intact.
+    func refreshFindForFocusChange() {
+        guard showFindInPage else { return }
+        findCurrentMatch = 0
+        findTotalMatches = 0
+        performFind()
     }
 
     // MARK: - Print / Save as PDF

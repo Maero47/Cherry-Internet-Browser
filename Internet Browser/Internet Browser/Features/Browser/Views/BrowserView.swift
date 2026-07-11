@@ -96,6 +96,12 @@ struct BrowserView: View {
             .onChange(of: viewModel.findQuery) { _, _ in
                 viewModel.performFind()
             }
+            .onChange(of: viewModel.tabManager.focusedPaneIsSecondary) { _, _ in
+                // Cmd+F targets the focused pane, so when focus switches
+                // panes mid-search, re-run against the newly-focused tab
+                // instead of leaving the bar showing the old pane's counts.
+                viewModel.refreshFindForFocusChange()
+            }
             .onChange(of: viewModel.downloadManager.downloadStartedTrigger) { _, _ in
                 guard let id = viewModel.downloadManager.latestDownloadID else { return }
                 viewModel.toastDismissTask?.cancel()
