@@ -172,8 +172,18 @@ struct TabBarView: View {
                         return
                     }
 
-                    // Switch to tear-off once the tab is dragged far enough downward
-                    if value.translation.height > 30 {
+                    // Switch to tear-off once the tab is pulled away from the strip —
+                    // vertically in EITHER direction (up or down) past a threshold, or
+                    // once the cursor leaves the source window in ANY direction. Only
+                    // pure horizontal movement inside the bar stays a reorder. (Before,
+                    // this checked `translation.height > 30`, so the ghost appeared only
+                    // when dragging downward.)
+                    let pulledVertically = abs(value.translation.height) > 30
+                    let leftSourceWindow: Bool = {
+                        guard let frame = tabManager.hostWindow?.frame else { return false }
+                        return !frame.contains(NSEvent.mouseLocation)
+                    }()
+                    if pulledVertically || leftSourceWindow {
                         isTearingOff = true
                         tearOffTabID = tab.id
                         tearOffStartTranslation = value.translation
