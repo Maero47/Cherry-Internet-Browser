@@ -805,147 +805,113 @@ final class BrowserViewModel {
 
     // MARK: - Picture-in-Picture
 
-    static var pipWindow: NSPanel?
-    static var pipSourceTab: Tab?
-    static var pipCloseObserver: Any?
-
-    static func cleanupPiP() {
-        // Remove the hide-UI CSS from the webView
-        if let webView = pipSourceTab?.webView {
-            webView.evaluateJavaScript("""
-            (function() {
-                var s = document.getElementById('__cherry-pip-style');
-                if (s) s.remove();
-            })();
-            """, completionHandler: nil)
+    /// Finds the best `<video>` on the page (including same-origin iframes) and
+    /// toggles its native WebKit presentation mode between "picture-in-picture"
+    /// and "inline". This never touches the WKWebView itself — the page keeps
+    /// rendering and the tab stays fully interactive — because WebKit renders
+    /// the PiP video into its own OS-level floating window on macOS.
+    ///
+    /// `webkitSetPresentationMode` (the legacy WebKit-proprietary PiP API) is
+    /// used in preference to the standard `element.requestPictureInPicture()`.
+    /// Unlike the standard API, which strictly requires a live DOM user
+    /// gesture on its call stack, WebKit's legacy presentation-mode API does
+    /// not enforce that check — the same reason PiP bookmarklets
+    /// (`javascript:video.webkitSetPresentationMode(...)`) work when typed
+    /// into Safari's address bar, which is likewise outside any DOM gesture.
+    /// That means this call is safe to make directly from `evaluateJavaScript`
+    /// in response to a native toolbar/menu click. The standard API is kept
+    /// as a fallback for players where the WebKit-specific one is unavailable;
+    /// any failure (including a gesture rejection on that fallback path) is
+    /// logged via `console.error`, which this app already forwards to the
+    /// in-app DevTools console.
+    private static let pipToggleScript = """
+    (function() {
+        function isVisible(el) {
+            if (!el) return false;
+            var rect = el.getBoundingClientRect();
+            if (rect.width === 0 || rect.height === 0) return false;
+            var style = window.getComputedStyle(el);
+            if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+            return true;
         }
-        pipSourceTab = nil
-        pipWindow = nil
-        if let observer = pipCloseObserver {
-            NotificationCenter.default.removeObserver(observer)
-            pipCloseObserver = nil
+        function collectVideos(doc, out) {
+            doc.querySelectorAll('video').forEach(function(v) { out.push(v); });
+            doc.querySelectorAll('iframe').forEach(function(f) {
+                try {
+                    if (f.contentDocument) collectVideos(f.contentDocument, out);
+                } catch (e) {
+                    // Cross-origin iframe — inaccessible, skip it.
+                }
+            });
         }
-    }
-
-    func togglePictureInPicture() {
-        // If PiP window already open, close it and return webView to tab
-        if let existing = BrowserViewModel.pipWindow {
-            // Move webView back to the tab (SwiftUI will reclaim it via WebViewWrapper)
-            existing.contentView = nil
-            existing.close()
-            BrowserViewModel.cleanupPiP()
-            return
+        function currentMode(v) {
+            if (typeof v.webkitPresentationMode === 'string') return v.webkitPresentationMode;
+            return document.pictureInPictureElement === v ? 'picture-in-picture' : 'inline';
         }
-
-        guard let tab = currentTab, let webView = tab.webView else { return }
-
-        // Delay slightly so the menu fully dismisses
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
-            guard let self else { return }
-
-            // Inject CSS to hide everything except video
-            let hideJS = """
-            (function() {
-                var s = document.createElement('style');
-                s.id = '__cherry-pip-style';
-                var isYT = location.hostname.includes('youtube.com');
-                if (isYT) {
-                    s.textContent = `
-                        #masthead, #below, #secondary, #comments, #related,
-                        ytd-masthead, #guide, #guide-button, tp-yt-app-drawer,
-                        ytd-mini-guide-renderer, #header, #page-manager > *:not(ytd-watch-flexy),
-                        .ytp-chrome-top, .ytp-pause-overlay, .ytp-gradient-top,
-                        ytd-watch-metadata, #meta, #info, #ticket-shelf,
-                        #description, #actions, #menu, #subscribe-button,
-                        .ytd-watch-flexy > #columns > #secondary,
-                        #chat, #above-the-fold, #bottom-row {
-                            display: none !important;
-                        }
-                        body { overflow: hidden !important; background: #000 !important; }
-                        #player, #movie_player, .html5-main-video, video {
-                            position: fixed !important; top: 0 !important; left: 0 !important;
-                            width: 100vw !important; height: 100vh !important;
-                            max-width: 100vw !important; max-height: 100vh !important;
-                            object-fit: contain !important;
-                        }
-                        #columns { padding: 0 !important; margin: 0 !important; }
-                        ytd-watch-flexy { padding: 0 !important; margin: 0 !important; }
-                    `;
-                } else {
-                    s.textContent = `
-                        body > *:not(video) { opacity: 0 !important; pointer-events: none !important; }
-                        body { background: #000 !important; overflow: hidden !important; margin: 0 !important; }
-                        video {
-                            position: fixed !important; top: 0 !important; left: 0 !important;
-                            width: 100vw !important; height: 100vh !important;
-                            max-width: 100vw !important; max-height: 100vh !important;
-                            object-fit: contain !important; z-index: 2147483647 !important;
-                            opacity: 1 !important; pointer-events: auto !important;
-                        }
-                    `;
-                }
-                document.head.appendChild(s);
-                var v = document.querySelector('video');
-                var w = (v && v.videoWidth) || 640;
-                var h = (v && v.videoHeight) || 360;
-                return { w: w, h: h };
-            })();
-            """
-            webView.evaluateJavaScript(hideJS) { [weak self] result, _ in
-                guard let self else { return }
-                let info = result as? [String: Any]
-                let videoW = info?["w"] as? Int ?? 640
-                let videoH = info?["h"] as? Int ?? 360
-
-                // Detach webView from its current superview and put into floating panel
-                webView.removeFromSuperview()
-
-                let maxWidth: CGFloat = 480
-                let aspect = videoH > 0 ? CGFloat(videoW) / CGFloat(videoH) : 16.0 / 9.0
-                let pipWidth = min(maxWidth, CGFloat(videoW))
-                let pipHeight = pipWidth / aspect
-
-                let panel = NSPanel(
-                    contentRect: NSRect(x: 0, y: 0, width: pipWidth, height: pipHeight),
-                    styleMask: [.titled, .closable, .resizable, .nonactivatingPanel, .utilityWindow, .hudWindow],
-                    backing: .buffered,
-                    defer: false
-                )
-                panel.contentView = webView
-                panel.isFloatingPanel = true
-                panel.level = .floating
-                panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-                panel.titlebarAppearsTransparent = true
-                panel.titleVisibility = .hidden
-                panel.isMovableByWindowBackground = true
-                panel.backgroundColor = .black
-                panel.hasShadow = true
-                panel.animationBehavior = .utilityWindow
-                panel.aspectRatio = NSSize(width: aspect, height: 1)
-
-                if let screen = NSScreen.main {
-                    let screenFrame = screen.visibleFrame
-                    let x = screenFrame.maxX - pipWidth - 20
-                    let y = screenFrame.minY + 20
-                    panel.setFrameOrigin(NSPoint(x: x, y: y))
-                }
-
-                BrowserViewModel.pipWindow = panel
-                BrowserViewModel.pipSourceTab = tab
-
-                BrowserViewModel.pipCloseObserver = NotificationCenter.default.addObserver(
-                    forName: NSWindow.willCloseNotification,
-                    object: panel,
-                    queue: .main
-                ) { _ in
-                    // Return webView to tab by removing hide CSS (SwiftUI will re-add it)
-                    panel.contentView = nil
-                    BrowserViewModel.cleanupPiP()
-                }
-
-                panel.makeKeyAndOrderFront(nil)
+        function exit(v) {
+            if (typeof v.webkitSetPresentationMode === 'function') {
+                v.webkitSetPresentationMode('inline');
+            } else if (document.exitPictureInPicture) {
+                document.exitPictureInPicture().catch(function(e) {
+                    console.error('Cherry PiP: exit failed', e && e.message);
+                });
             }
         }
+        function enter(v) {
+            try {
+                if (typeof v.webkitSetPresentationMode === 'function' &&
+                    (typeof v.webkitSupportsPresentationMode !== 'function' ||
+                     v.webkitSupportsPresentationMode('picture-in-picture'))) {
+                    v.webkitSetPresentationMode('picture-in-picture');
+                    return true;
+                }
+                if (typeof v.requestPictureInPicture === 'function') {
+                    v.requestPictureInPicture().catch(function(e) {
+                        console.error('Cherry PiP: enter failed', e && e.message);
+                    });
+                    return true;
+                }
+            } catch (e) {
+                console.error('Cherry PiP: enter threw', e && e.message);
+            }
+            return false;
+        }
+
+        var videos = [];
+        collectVideos(document, videos);
+        if (videos.length === 0) {
+            console.error('Cherry PiP: no video element found on page');
+            return false;
+        }
+
+        // If a video is already in PiP, toggling means exiting it.
+        var active = videos.find(function(v) { return currentMode(v) === 'picture-in-picture'; });
+        if (active) {
+            exit(active);
+            return true;
+        }
+
+        // Otherwise pick the most prominent candidate: currently playing and
+        // visible first, falling back to the largest video on the page.
+        var best = null, bestScore = -1;
+        videos.forEach(function(v) {
+            var visible = isVisible(v);
+            var area = Math.max(v.clientWidth * v.clientHeight, (v.videoWidth || 0) * (v.videoHeight || 0));
+            var playing = !v.paused && !v.ended && v.readyState > 2;
+            var score = (playing ? 1000000 : 0) + (visible ? 500000 : 0) + area;
+            if (score > bestScore) { bestScore = score; best = v; }
+        });
+        if (!best) {
+            console.error('Cherry PiP: no suitable video candidate');
+            return false;
+        }
+        return enter(best);
+    })();
+    """
+
+    func togglePictureInPicture() {
+        guard let webView = currentTab?.webView else { return }
+        webView.evaluateJavaScript(BrowserViewModel.pipToggleScript, completionHandler: nil)
     }
 
     // MARK: - Command Palette
