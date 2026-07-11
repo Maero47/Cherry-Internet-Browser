@@ -8,6 +8,7 @@
 import SwiftUI
 import AppKit
 import WebKit
+import UniformTypeIdentifiers
 
 @main
 struct Internet_BrowserApp: App {
@@ -37,6 +38,12 @@ struct Internet_BrowserApp: App {
                     NotificationCenter.default.post(name: .closeTab, object: nil)
                 }
                 .keyboardShortcut("w", modifiers: .command)
+
+                Divider()
+
+                Button("Load Extension…") {
+                    loadExtensionFromOpenPanel()
+                }
             }
 
             // Edit menu additions
@@ -165,6 +172,48 @@ struct Internet_BrowserApp: App {
             SettingsView()
         }
     }
+}
+
+// MARK: - Load Extension…
+
+/// Opens a file/folder picker for a `.xpi`/`.zip` WebExtension or an unpacked
+/// extension directory, then loads it into the app-global `ExtensionManager`.
+/// v1a has no management UI yet, so success/failure is reported via a plain
+/// alert — good enough for manually verifying a loaded extension's content
+/// scripts run.
+@MainActor
+private func loadExtensionFromOpenPanel() {
+    let panel = NSOpenPanel()
+    panel.canChooseFiles = true
+    panel.canChooseDirectories = true
+    panel.allowsMultipleSelection = false
+    panel.prompt = "Load"
+    panel.message = "Choose a WebExtension folder, or a .xpi/.zip file"
+    if let xpiType = UTType(filenameExtension: "xpi") {
+        panel.allowedContentTypes = [xpiType, .zip]
+    } else {
+        panel.allowedContentTypes = [.zip]
+    }
+
+    guard panel.runModal() == .OK, let url = panel.url else { return }
+
+    Task { @MainActor in
+        do {
+            let loaded = try await ExtensionManager.shared.loadExtension(from: url)
+            presentExtensionAlert(title: "Extension Loaded", message: loaded.displayName, style: .informational)
+        } catch {
+            presentExtensionAlert(title: "Couldn't Load Extension", message: error.localizedDescription, style: .warning)
+        }
+    }
+}
+
+@MainActor
+private func presentExtensionAlert(title: String, message: String, style: NSAlert.Style) {
+    let alert = NSAlert()
+    alert.messageText = title
+    alert.informativeText = message
+    alert.alertStyle = style
+    alert.runModal()
 }
 
 // MARK: - App Delegate to configure windows
