@@ -380,14 +380,22 @@ final class BrowserViewModel {
 
     func confirmTogglePrivateMode() {
         isPrivateMode.toggle()
-        // Update all existing tabs
+        // Update all existing tabs and drop their web views so they are
+        // recreated with the correct data store when next displayed.
+        // (The data store is fixed in the WKWebViewConfiguration at creation,
+        // so a plain reload can never switch between private and normal.)
         for tab in tabManager.tabs {
             tab.isPrivate = isPrivateMode
+            tab.webView = nil
         }
-        // Reload current tab so it uses the correct data store
-        if let tab = currentTab, tab.url != nil {
-            tab.webView = nil // Force new webView with correct data store
-            tab.reload()
+        // The on-screen WKWebView is keyed by tab.id, so nilling webView alone
+        // leaves the old view (with the old data store) visible. Replace the
+        // current tab with a fresh one to force WebViewWrapper to rebuild.
+        if let tab = currentTab, let url = tab.url {
+            let fresh = tabManager.duplicateTab(tab)
+            fresh.isPrivate = isPrivateMode
+            fresh.loadURL(url)
+            _ = tabManager.removeTab(tab)
         }
     }
 
