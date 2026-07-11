@@ -35,7 +35,9 @@ struct BrowserView: View {
     var body: some View {
         configuredLayout
             .sheet(isPresented: $viewModel.showAddBookmark) {
-                if let tab = viewModel.currentTab, let url = tab.url {
+                // The focused pane's tab, not always the primary — so bookmarking
+                // from the secondary pane saves THAT pane's page.
+                if let tab = viewModel.tabManager.focusedTab, let url = tab.url {
                     AddBookmarkView(
                         url: url,
                         pageTitle: tab.title,
@@ -86,7 +88,7 @@ struct BrowserView: View {
                 // visible. Restore focus after the spring animation finishes (~0.35 s).
                 guard !newValue else { return }
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
-                    if let webView = viewModel.currentTab?.webView {
+                    if let webView = viewModel.tabManager.focusedTab?.webView {
                         NSApp.keyWindow?.makeFirstResponder(webView)
                     }
                 }
@@ -260,6 +262,13 @@ struct BrowserView: View {
     /// Builds a `BrowserContentView` whose action closures target `tab`
     /// specifically, so each split-view pane operates on its own tab rather
     /// than whichever tab `viewModel.currentTab` currently resolves to.
+    ///
+    /// Every closure calls `onFocusPane?()` first so clicking ANY nav-bar
+    /// control (not just the background tap) focuses this pane — required
+    /// because the page-scoped VM actions below (bookmark, adblock, autofill,
+    /// print, screenshot, QR, save PDF, private mode, reader mode, PiP) read
+    /// `tabManager.focusedTab` internally, so focus must already point at
+    /// this pane by the time they run.
     @ViewBuilder
     private func paneContentView(
         tab: Tab,
@@ -273,28 +282,28 @@ struct BrowserView: View {
             isFocused: isFocused,
             isSplitPane: isSplitPane,
             onFocusPane: onFocusPane,
-            onNavigate: { viewModel.navigate(to: $0, in: tab) },
-            onBack: { viewModel.goBack(for: tab) },
-            onForward: { viewModel.goForward(for: tab) },
-            onReload: { viewModel.reload(for: tab) },
-            onStop: { viewModel.stopLoading(for: tab) },
-            onHome: { viewModel.goHome() },
-            onBookmark: { viewModel.showAddBookmark = true },
-            onToggleHistory: { viewModel.toggleHistory() },
-            onToggleBookmarks: { viewModel.toggleBookmarks() },
-            onDownloads: { viewModel.toggleDownloads() },
-            onSettings: { viewModel.showSettings() },
-            onToggleAdBlock: { viewModel.toggleAdBlockForCurrentSite() },
-            onTogglePrivateMode: { viewModel.requestTogglePrivateMode() },
-            onAutoFill: { viewModel.toggleAutoFillPopup() },
-            onGeneratePassword: { viewModel.generateAndFillPassword() },
-            onPrint: { viewModel.printCurrentPage() },
-            onToggleReaderMode: { viewModel.toggleReaderMode() },
-            onPictureInPicture: { viewModel.togglePictureInPicture() },
-            onScreenshot: { viewModel.captureScreenshot() },
-            onQRCode: { viewModel.showQRCode = true },
-            onSavePDF: { viewModel.savePDF() },
-            onToggleFocusMode: { viewModel.toggleFocusMode() }
+            onNavigate: { onFocusPane?(); viewModel.navigate(to: $0, in: tab) },
+            onBack: { onFocusPane?(); viewModel.goBack(for: tab) },
+            onForward: { onFocusPane?(); viewModel.goForward(for: tab) },
+            onReload: { onFocusPane?(); viewModel.reload(for: tab) },
+            onStop: { onFocusPane?(); viewModel.stopLoading(for: tab) },
+            onHome: { onFocusPane?(); viewModel.goHome() },
+            onBookmark: { onFocusPane?(); viewModel.showAddBookmark = true },
+            onToggleHistory: { onFocusPane?(); viewModel.toggleHistory() },
+            onToggleBookmarks: { onFocusPane?(); viewModel.toggleBookmarks() },
+            onDownloads: { onFocusPane?(); viewModel.toggleDownloads() },
+            onSettings: { onFocusPane?(); viewModel.showSettings() },
+            onToggleAdBlock: { onFocusPane?(); viewModel.toggleAdBlockForCurrentSite() },
+            onTogglePrivateMode: { onFocusPane?(); viewModel.requestTogglePrivateMode() },
+            onAutoFill: { onFocusPane?(); viewModel.toggleAutoFillPopup() },
+            onGeneratePassword: { onFocusPane?(); viewModel.generateAndFillPassword() },
+            onPrint: { onFocusPane?(); viewModel.printCurrentPage() },
+            onToggleReaderMode: { onFocusPane?(); viewModel.toggleReaderMode() },
+            onPictureInPicture: { onFocusPane?(); viewModel.togglePictureInPicture() },
+            onScreenshot: { onFocusPane?(); viewModel.captureScreenshot() },
+            onQRCode: { onFocusPane?(); viewModel.showQRCode = true },
+            onSavePDF: { onFocusPane?(); viewModel.savePDF() },
+            onToggleFocusMode: { onFocusPane?(); viewModel.toggleFocusMode() }
         )
     }
 
@@ -413,7 +422,7 @@ struct BrowserView: View {
 
     @ViewBuilder
     private var qrCodeOverlay: some View {
-        if viewModel.showQRCode, let tab = viewModel.currentTab, let url = tab.url {
+        if viewModel.showQRCode, let tab = viewModel.tabManager.focusedTab, let url = tab.url {
             QRCodePopup(
                 url: url,
                 pageTitle: tab.title,

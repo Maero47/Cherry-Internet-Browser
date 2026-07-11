@@ -205,7 +205,7 @@ final class BrowserViewModel {
     }
 
     func toggleAdBlockForCurrentSite() {
-        guard let tab = currentTab, let webView = tab.webView else { return }
+        guard let tab = tabManager.focusedTab, let webView = tab.webView else { return }
         SettingsManager.shared.toggleAdBlockPause(for: tab.url)
 
         // Actually add/remove content blocker rules on the existing webview
@@ -433,15 +433,33 @@ final class BrowserViewModel {
             tab.isPrivate = isPrivateMode
             tab.webView = nil
         }
-        // The on-screen WKWebView is keyed by tab.id, so nilling webView alone
-        // leaves the old view (with the old data store) visible. Replace the
-        // current tab with a fresh one to force WebViewWrapper to rebuild.
-        if let tab = currentTab, let url = tab.url {
-            let fresh = tabManager.duplicateTab(tab)
-            fresh.isPrivate = isPrivateMode
-            fresh.loadURL(url)
-            _ = tabManager.removeTab(tab)
+        // The on-screen WKWebView(s) are keyed by tab.id, so nilling webView
+        // alone leaves the old view (with the old data store) visible.
+        // Hard-replace every tab actually on screen right now — the primary
+        // tab, and the secondary pane's tab too when split view is active —
+        // to force WebViewWrapper to rebuild each with the new data store.
+        if let primary = currentTab {
+            hardReplaceOnScreenTab(primary)
         }
+        if tabManager.isSplitActive, let secondary = tabManager.secondarySelectedTab {
+            hardReplaceOnScreenTab(secondary)
+        }
+    }
+
+    /// Replaces `tab` in place with a fresh `Tab` carrying the same URL, so
+    /// `WebViewWrapper` (keyed by `tab.id`) tears down and rebuilds its
+    /// `WKWebView` with the current data store. Unlike `duplicateTab`, this
+    /// fixes up `selectedTabID`/`secondarySelectedTabID` in place rather than
+    /// always reassigning `selectedTabID` — so replacing the SECONDARY pane's
+    /// tab doesn't wrongly promote it to primary.
+    private func hardReplaceOnScreenTab(_ tab: Tab) {
+        guard let url = tab.url, let index = tabManager.tabs.firstIndex(of: tab) else { return }
+        let fresh = Tab(url: url, title: tab.title)
+        fresh.isPrivate = isPrivateMode
+        tabManager.tabs[index] = fresh
+        fresh.loadURL(url)
+        if tabManager.selectedTabID == tab.id { tabManager.selectedTabID = fresh.id }
+        if tabManager.secondarySelectedTabID == tab.id { tabManager.secondarySelectedTabID = fresh.id }
     }
 
     func openPrivateWindow() {
@@ -492,7 +510,7 @@ final class BrowserViewModel {
     }
 
     func addBookmark(title: String, folder: String?, isInBookmarkBar: Bool) {
-        guard let tab = currentTab, let url = tab.url else { return }
+        guard let tab = tabManager.focusedTab, let url = tab.url else { return }
         bookmarkRepository.addBookmark(
             url: url,
             title: title,
@@ -564,7 +582,7 @@ final class BrowserViewModel {
     }
 
     func autoFillCurrentPage() {
-        guard let tab = currentTab, let webView = tab.webView else { return }
+        guard let tab = tabManager.focusedTab, let webView = tab.webView else { return }
         let credentials = passwordManager.matchingCredentials
         if credentials.count == 1 {
             passwordManager.fillCredentials(credentials[0], in: webView)
@@ -574,13 +592,13 @@ final class BrowserViewModel {
     }
 
     func fillCredential(_ credential: PasswordItem) {
-        guard let webView = currentTab?.webView else { return }
+        guard let webView = tabManager.focusedTab?.webView else { return }
         passwordManager.fillCredentials(credential, in: webView)
         showAutoFillPopup = false
     }
 
     func generateAndFillPassword() {
-        guard let webView = currentTab?.webView else { return }
+        guard let webView = tabManager.focusedTab?.webView else { return }
         let settings = SettingsManager.shared
         let generated = PasswordGenerator.generate(
             length: settings.passwordGeneratorLength,
@@ -810,7 +828,7 @@ final class BrowserViewModel {
     // MARK: - Print / Save as PDF
 
     func printCurrentPage() {
-        guard let webView = currentTab?.webView else { return }
+        guard let webView = tabManager.focusedTab?.webView else { return }
         guard let window = webView.window ?? NSApp.keyWindow else { return }
         let printInfo = NSPrintInfo.shared.copy() as! NSPrintInfo
         printInfo.isHorizontallyCentered = true
@@ -839,7 +857,7 @@ final class BrowserViewModel {
             readerContent = nil
             return
         }
-        guard let webView = currentTab?.webView else { return }
+        guard let webView = tabManager.focusedTab?.webView else { return }
         Task { @MainActor in
             if let content = await ReaderModeExtractor.extract(from: webView) {
                 self.readerContent = content
@@ -955,7 +973,7 @@ final class BrowserViewModel {
     """
 
     func togglePictureInPicture() {
-        guard let webView = currentTab?.webView else { return }
+        guard let webView = tabManager.focusedTab?.webView else { return }
         webView.evaluateJavaScript(BrowserViewModel.pipToggleScript, completionHandler: nil)
     }
 
@@ -1120,7 +1138,7 @@ final class BrowserViewModel {
     // MARK: - Save PDF
 
     func savePDF() {
-        guard let webView = currentTab?.webView, let url = webView.url else { return }
+        guard let webView = tabManager.focusedTab?.webView, let url = webView.url else { return }
         // Use WebKit's own networking stack and route through the existing
         // WKDownloadDelegate (WebViewWrapper.Coordinator) for save panel + history
         webView.startDownload(using: URLRequest(url: url)) { download in
@@ -1131,7 +1149,7 @@ final class BrowserViewModel {
     // MARK: - Screenshot
 
     func captureScreenshot() {
-        guard let webView = currentTab?.webView else { return }
+        guard let webView = tabManager.focusedTab?.webView else { return }
         let config = WKSnapshotConfiguration()
         webView.takeSnapshot(with: config) { image, error in
             guard let image = image, error == nil else { return }
