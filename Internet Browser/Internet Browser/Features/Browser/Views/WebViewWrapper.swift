@@ -238,7 +238,10 @@ struct WebViewWrapper: NSViewRepresentable {
 
     class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKDownloadDelegate, WKScriptMessageHandler {
         var parent: WebViewWrapper
-        var webView: WKWebView?
+        // Weak: the webView's userContentController retains this coordinator
+        // (script message handlers), so a strong reference here would create a
+        // retain cycle that keeps every closed tab's WKWebView alive forever.
+        weak var webView: WKWebView?
         var tab: Tab?
         var lastLoadedURL: URL?
         /// URL of the PDF currently rendered in the viewer (set after didFinish)
