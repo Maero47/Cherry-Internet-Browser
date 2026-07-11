@@ -21,11 +21,33 @@ struct DevToolsPanelView: View {
     @State private var editedHTML: String = ""
     @State private var applyFeedback: String = ""
 
+    /// The focused pane's tab — the panel shows only this tab's console,
+    /// network, and inspected-element data, so split panes don't interleave.
+    let focusedTabID: UUID
+
     // Closures provided by BrowserViewModel
     var onEvaluateJS: ((String, @escaping (String?) -> Void) -> Void)? = nil
     var onHighlightElement: ((String) -> Void)? = nil
     var onApplyHTML: ((String, String, @escaping (String?) -> Void) -> Void)? = nil
     let onDismiss: () -> Void
+
+    /// Console entries belonging to the focused pane's tab only.
+    private var tabConsoleEntries: [ConsoleEntry] {
+        devTools.consoleEntries.filter { $0.tabID == focusedTabID }
+    }
+
+    /// Network entries belonging to the focused pane's tab only.
+    private var tabNetworkEntries: [NetworkEntry] {
+        devTools.networkEntries.filter { $0.tabID == focusedTabID }
+    }
+
+    /// The globally-inspected element, but only if it was inspected in the
+    /// focused pane's tab — otherwise this pane shows the empty state rather
+    /// than another pane's stale element.
+    private var tabInspectedElement: InspectedElement? {
+        guard let el = devTools.inspectedElement, el.tabID == focusedTabID else { return nil }
+        return el
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -41,7 +63,7 @@ struct DevToolsPanelView: View {
         .onChange(of: devTools.activeDevToolsTab) { _, tab in
             selectedTab = tab
         }
-        .onChange(of: devTools.inspectedElement?.outerHTML) { _, html in
+        .onChange(of: tabInspectedElement?.outerHTML) { _, html in
             editedHTML = html ?? ""
             applyFeedback = ""
         }
@@ -103,9 +125,11 @@ struct DevToolsPanelView: View {
             // Clear button
             Button {
                 switch selectedTab {
-                case .console:  devTools.clearConsole()
-                case .network:  devTools.clearNetwork()
-                case .elements: devTools.inspectedElement = nil; editedHTML = ""
+                case .console:  devTools.clearConsole(tabID: focusedTabID)
+                case .network:  devTools.clearNetwork(tabID: focusedTabID)
+                case .elements:
+                    if tabInspectedElement != nil { devTools.inspectedElement = nil }
+                    editedHTML = ""
                 }
             } label: {
                 Image(systemName: "trash")
@@ -169,15 +193,15 @@ struct DevToolsPanelView: View {
     // =========================================================
 
     private var filteredConsole: [ConsoleEntry] {
-        guard let f = consoleFilter else { return devTools.consoleEntries }
-        return devTools.consoleEntries.filter { $0.level == f }
+        guard let f = consoleFilter else { return tabConsoleEntries }
+        return tabConsoleEntries.filter { $0.level == f }
     }
 
     @ViewBuilder
     private var consolePane: some View {
         VStack(spacing: 0) {
             // Log list
-            if devTools.consoleEntries.isEmpty {
+            if tabConsoleEntries.isEmpty {
                 emptyState(icon: "terminal", message: "No console output yet")
             } else {
                 ScrollViewReader { proxy in
@@ -192,8 +216,8 @@ struct DevToolsPanelView: View {
                             )
                     }
                     .listStyle(.plain)
-                    .onChange(of: devTools.consoleEntries.count) { _, _ in
-                        if let last = devTools.consoleEntries.last {
+                    .onChange(of: tabConsoleEntries.count) { _, _ in
+                        if let last = tabConsoleEntries.last {
                             withAnimation { proxy.scrollTo(last.id, anchor: .bottom) }
                         }
                     }
@@ -302,7 +326,7 @@ struct DevToolsPanelView: View {
         guard !command.isEmpty else { return }
 
         // Log the command
-        devTools.appendConsole(ConsoleEntry(level: .repl, message: command))
+        devTools.appendConsole(ConsoleEntry(level: .repl, message: command, tabID: focusedTabID))
 
         // Save to history
         replHistory.append(command)
@@ -312,7 +336,7 @@ struct DevToolsPanelView: View {
         // Execute
         onEvaluateJS?(command) { result in
             let output = result ?? "undefined"
-            devTools.appendConsole(ConsoleEntry(level: .result, message: output))
+            devTools.appendConsole(ConsoleEntry(level: .result, message: output, tabID: focusedTabID))
         }
     }
 
@@ -321,15 +345,15 @@ struct DevToolsPanelView: View {
     // =========================================================
 
     private var filteredNetwork: [NetworkEntry] {
-        guard !networkFilter.isEmpty else { return devTools.networkEntries }
-        return devTools.networkEntries.filter {
+        guard !networkFilter.isEmpty else { return tabNetworkEntries }
+        return tabNetworkEntries.filter {
             $0.url.localizedCaseInsensitiveContains(networkFilter)
         }
     }
 
     @ViewBuilder
     private var networkPane: some View {
-        if devTools.networkEntries.isEmpty {
+        if tabNetworkEntries.isEmpty {
             emptyState(icon: "network", message: "No network requests captured yet.\nNavigate to a page to see traffic.")
         } else {
             VStack(spacing: 0) {
@@ -404,7 +428,7 @@ struct DevToolsPanelView: View {
 
     @ViewBuilder
     private var elementsPane: some View {
-        if devTools.inspectedElement == nil {
+        if tabInspectedElement == nil {
             emptyState(
                 icon: "rectangle.3.offgrid",
                 message: "Right-click any element and choose\n\"Inspect Element\" to inspect it."
@@ -416,7 +440,7 @@ struct DevToolsPanelView: View {
 
     @ViewBuilder
     private var elementsPaneContent: some View {
-        if let el = devTools.inspectedElement {
+        if let el = tabInspectedElement {
             VStack(spacing: 0) {
                 // Top bar: element name + actions
                 elementsTopBar(el)
