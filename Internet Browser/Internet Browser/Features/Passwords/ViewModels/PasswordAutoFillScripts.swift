@@ -88,13 +88,22 @@ enum PasswordAutoFillScripts {
     // MARK: - Auto-Fill Script
 
     /// Executed on demand to fill username and password fields.
+    /// Escape a value for embedding in a single-quoted JS string literal.
+    /// \r and the U+2028/U+2029 line separators terminate JS string literals
+    /// just like \n — leaving them raw makes the whole script fail to parse,
+    /// so autofill would silently do nothing for such passwords.
+    private static func escapeForJSString(_ value: String) -> String {
+        value.replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "'", with: "\\'")
+            .replacingOccurrences(of: "\n", with: "\\n")
+            .replacingOccurrences(of: "\r", with: "\\r")
+            .replacingOccurrences(of: "\u{2028}", with: "\\u2028")
+            .replacingOccurrences(of: "\u{2029}", with: "\\u2029")
+    }
+
     static func autoFillScript(username: String, password: String) -> String {
-        let escapedUsername = username.replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "'", with: "\\'")
-            .replacingOccurrences(of: "\n", with: "\\n")
-        let escapedPassword = password.replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "'", with: "\\'")
-            .replacingOccurrences(of: "\n", with: "\\n")
+        let escapedUsername = escapeForJSString(username)
+        let escapedPassword = escapeForJSString(password)
 
         return """
         (function() {
