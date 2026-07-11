@@ -174,8 +174,9 @@ struct BrowserView: View {
             }
             .onReceive(NotificationCenter.default.publisher(for: NSWindow.willCloseNotification)) { notification in
                 guard let closing = notification.object as? NSWindow,
-                      closing === viewModel.associatedWindow,
-                      !viewModel.isPrivateMode else { return }
+                      closing === viewModel.associatedWindow else { return }
+                ExtensionManager.shared.windowClosed(viewModel)
+                guard !viewModel.isPrivateMode else { return }
                 viewModel.saveSessionForRestore()
             }
             .onAppear {
@@ -955,6 +956,7 @@ private struct WindowRegistrar: NSViewRepresentable {
         DispatchQueue.main.async {
             viewModel.associatedWindow = view.window
             viewModel.tabManager.hostWindow = view.window
+            ExtensionManager.shared.windowOpened(viewModel)
         }
         return view
     }
@@ -967,6 +969,7 @@ private struct WindowRegistrar: NSViewRepresentable {
             if viewModel.tabManager.hostWindow == nil {
                 viewModel.tabManager.hostWindow = nsView.window
             }
+            ExtensionManager.shared.windowOpened(viewModel)
         }
     }
 }

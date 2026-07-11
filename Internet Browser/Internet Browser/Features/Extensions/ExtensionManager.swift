@@ -23,6 +23,22 @@ final class ExtensionManager: NSObject {
     /// `openWindowsFor`, etc.) instead of creating a new wrapper every query.
     private var windowAdapters: [ObjectIdentifier: ExtensionWindowAdapter] = [:]
 
+    /// Windows the controller has actually been told about via `didOpenWindow`
+    /// (as opposed to merely having an adapter allocated). Every window must be
+    /// announced exactly once per its lifetime, independent of how many
+    /// extensions load — this tracks that so `windowOpened`/`windowClosed` and
+    /// the initial-state announce (see `didAnnounceInitialState`) can't
+    /// double-announce or double-close the same window.
+    private var announcedWindows: Set<ObjectIdentifier> = []
+
+    /// Whether `announceExistingWindowsAndTabs()` has already run once. It
+    /// must run exactly once, on the FIRST `loadExtension` call, to register
+    /// whatever windows/tabs already existed at that point — re-running it on
+    /// every subsequent load would re-announce tabs the controller already
+    /// knows about, which `didOpenTab`'s contract forbids. Windows/tabs
+    /// created after this flips true are covered by `windowOpened`/`tabOpened`.
+    private var didAnnounceInitialState = false
+
     struct LoadedExtension: Identifiable {
         let id = UUID()
         let webExtension: WKWebExtension
@@ -65,7 +81,15 @@ final class ExtensionManager: NSObject {
         let loaded = LoadedExtension(webExtension: webExtension, context: context)
         loadedExtensions.append(loaded)
 
-        announceExistingWindowsAndTabs()
+        // Only ever run once, on the very first extension load — see
+        // `didAnnounceInitialState`. A second (or later) extension's content
+        // scripts still reach already-open tabs, because `didOpenTab`/
+        // `didOpenWindow` register a tab/window with the controller itself,
+        // not with any one extension context.
+        if !didAnnounceInitialState {
+            announceExistingWindowsAndTabs()
+            didAnnounceInitialState = true
+        }
 
         return loaded
     }
@@ -98,20 +122,53 @@ final class ExtensionManager: NSObject {
     }
 
     /// Registers every currently open (non-private) window and tab with the
-    /// controller. Needed right after loading a new extension, since content
-    /// scripts only inject into tabs the controller already knows about —
-    /// otherwise tabs opened before this extension was loaded would be skipped.
+    /// controller. Runs exactly once (see `didAnnounceInitialState`) — needed
+    /// right after the FIRST extension loads, since content scripts only
+    /// inject into tabs the controller already knows about, and otherwise
+    /// tabs opened before any extension was loaded would be skipped forever.
     private func announceExistingWindowsAndTabs() {
         for viewModel in extensionVisibleViewModels {
-            let adapter = windowAdapter(for: viewModel)
-            controller.didOpenWindow(adapter)
-            for tab in viewModel.tabManager.tabs {
-                controller.didOpenTab(tab)
-            }
-            if let active = viewModel.tabManager.focusedTab ?? viewModel.tabManager.selectedTab {
-                controller.didActivateTab(active, previousActiveTab: nil)
-            }
+            announceWindow(viewModel)
         }
+    }
+
+    /// Tells the controller about one window and its current tabs, exactly
+    /// once. Shared by the initial-state announce and `windowOpened`.
+    private func announceWindow(_ viewModel: BrowserViewModel) {
+        let key = ObjectIdentifier(viewModel)
+        guard !announcedWindows.contains(key) else { return }
+        announcedWindows.insert(key)
+
+        let adapter = windowAdapter(for: viewModel)
+        controller.didOpenWindow(adapter)
+        for tab in viewModel.tabManager.tabs {
+            controller.didOpenTab(tab)
+        }
+        if let active = viewModel.tabManager.focusedTab ?? viewModel.tabManager.selectedTab {
+            controller.didActivateTab(active, previousActiveTab: nil)
+        }
+    }
+
+    // MARK: - Window lifecycle notifications (called by BrowserView)
+
+    /// A browser window became visible. No-op for private windows (see
+    /// `extensionVisibleViewModels`) and for windows that existed before the
+    /// first extension load — those are covered by `announceExistingWindowsAndTabs`
+    /// instead, so this only fires for windows opened *after* that point.
+    func windowOpened(_ viewModel: BrowserViewModel) {
+        guard didAnnounceInitialState, !viewModel.isPrivateMode else { return }
+        announceWindow(viewModel)
+    }
+
+    /// A browser window closed — tells the controller (only if it was ever
+    /// announced) and drops the cached adapter so `windowAdapters` doesn't
+    /// grow unboundedly across the app's lifetime.
+    func windowClosed(_ viewModel: BrowserViewModel) {
+        let key = ObjectIdentifier(viewModel)
+        if announcedWindows.remove(key) != nil, let adapter = windowAdapters[key] {
+            controller.didCloseWindow(adapter)
+        }
+        windowAdapters.removeValue(forKey: key)
     }
 
     // MARK: - Tab lifecycle notifications (called by TabManager)
