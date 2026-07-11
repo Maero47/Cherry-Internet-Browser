@@ -20,11 +20,20 @@ extension URL {
         return URL(string: "\(scheme)://\(host)/favicon.ico")
     }
 
+    /// Schemes the browser recognizes in typed input. Anything else that
+    /// parses "with a scheme" is almost always a host:port ("localhost:8080"
+    /// parses with scheme "localhost", "example.com:8080" with scheme
+    /// "example.com") and must not be treated as an already-complete URL.
+    private static let knownInputSchemes: Set<String> = [
+        "http", "https", "file", "about", "data", "ftp", "mailto", "tel", "blob",
+    ]
+
     static func fromUserInput(_ input: String) -> URL? {
         let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
 
-        // Already a valid URL with scheme
-        if let url = URL(string: trimmed), url.scheme != nil {
+        // Already a valid URL with a recognized scheme
+        if let url = URL(string: trimmed), let scheme = url.scheme?.lowercased(),
+           knownInputSchemes.contains(scheme) {
             return url
         }
 
