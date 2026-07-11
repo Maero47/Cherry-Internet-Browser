@@ -9,6 +9,9 @@ import UniformTypeIdentifiers
 struct BrowserView: View {
     @State private var viewModel: BrowserViewModel
     @FocusState private var isOmniboxFocused: Bool
+    /// Which content-area edge zone (if any) a dragged tab currently hovers,
+    /// so the drop indicator bar can be shown/hidden during the drag.
+    @State private var dragHoverEdge: Edge? = nil
 
     init(initialURL: URL? = nil, isPrivate: Bool = false) {
         let vm = BrowserViewModel()
@@ -243,14 +246,28 @@ struct BrowserView: View {
                         .frame(minWidth: 400, maxWidth: .infinity, maxHeight: .infinity)
                     }
                 } else if let currentTab = viewModel.currentTab {
-                    paneContentView(
-                        tab: currentTab,
-                        isFocused: true,
-                        isSplitPane: false,
-                        onFocusPane: nil
-                    )
-                    .onDrop(of: [.cherryBrowserTab], isTargeted: nil) { providers in
-                        viewModel.handleContentAreaDrop()
+                    GeometryReader { geometry in
+                        paneContentView(
+                            tab: currentTab,
+                            isFocused: true,
+                            isSplitPane: false,
+                            onFocusPane: nil
+                        )
+                        .frame(width: geometry.size.width, height: geometry.size.height)
+                        .onDrop(
+                            of: [.cherryBrowserTab],
+                            delegate: ContentAreaDropDelegate(
+                                contentWidth: geometry.size.width,
+                                hoverEdge: $dragHoverEdge,
+                                onDrop: { edge in viewModel.handleContentAreaDrop(edge: edge) }
+                            )
+                        )
+                        .overlay(alignment: .leading) {
+                            edgeDropIndicator(isActive: dragHoverEdge == .leading)
+                        }
+                        .overlay(alignment: .trailing) {
+                            edgeDropIndicator(isActive: dragHoverEdge == .trailing)
+                        }
                     }
                 } else {
                     emptyState
@@ -555,6 +572,19 @@ struct BrowserView: View {
             .buttonStyle(.borderedProminent)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    /// Translucent accent-colored bar shown down an edge while a dragged tab
+    /// hovers that edge's drop zone, previewing the split that's about to open.
+    @ViewBuilder
+    private func edgeDropIndicator(isActive: Bool) -> some View {
+        if isActive {
+            SettingsManager.shared.accentColor
+                .opacity(0.35)
+                .frame(width: 6)
+                .transition(.opacity)
+                .allowsHitTesting(false)
+        }
     }
 
     @ViewBuilder
@@ -867,6 +897,48 @@ struct BrowserContentView: View {
         .onChange(of: tab.url) { _, _ in
             urlVersion += 1
         }
+    }
+}
+
+// MARK: - Content Area Drop Delegate
+
+/// Location-aware drop target for a dragged tab dropped on the single-pane
+/// content area. Drops within the left/right ~30% edge zones open split view
+/// (see `BrowserViewModel.handleContentAreaDrop(edge:)` for the pane
+/// arrangement); everything else — including drops with no location info —
+/// keeps the pre-existing "detach to new window" behavior via `edge: nil`.
+private struct ContentAreaDropDelegate: DropDelegate {
+    let contentWidth: CGFloat
+    /// Fraction of the content width, from each side, that counts as an edge zone.
+    let edgeZoneFraction: CGFloat = 0.3
+    @Binding var hoverEdge: Edge?
+    let onDrop: (Edge?) -> Bool
+
+    func dropEntered(info: DropInfo) {
+        hoverEdge = edge(for: info.location)
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        hoverEdge = edge(for: info.location)
+        return DropProposal(operation: .move)
+    }
+
+    func dropExited(info: DropInfo) {
+        hoverEdge = nil
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        let edge = edge(for: info.location)
+        hoverEdge = nil
+        return onDrop(edge)
+    }
+
+    private func edge(for location: CGPoint) -> Edge? {
+        guard contentWidth > 0 else { return nil }
+        let fraction = location.x / contentWidth
+        if fraction <= edgeZoneFraction { return .leading }
+        if fraction >= 1 - edgeZoneFraction { return .trailing }
+        return nil
     }
 }
 

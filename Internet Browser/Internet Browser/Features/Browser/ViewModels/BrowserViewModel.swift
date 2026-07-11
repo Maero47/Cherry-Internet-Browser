@@ -351,12 +351,49 @@ final class BrowserViewModel {
         return false
     }
 
-    /// Handle a tab dropped on the content area — detach to new window
-    func handleContentAreaDrop() -> Bool {
+    /// Handle a tab dropped on the content area.
+    ///
+    /// `edge` is `.leading`/`.trailing` when the drop landed in a content-area
+    /// edge zone (open split view) or `nil` for the middle (existing
+    /// detach-to-new-window behavior, unchanged).
+    ///
+    /// Arrangement when opening split from an edge drop: dropping on the
+    /// RIGHT edge keeps the current tab primary (left) and puts the dragged
+    /// tab in the secondary (right) pane — it lands where you dropped it.
+    /// Dropping on the LEFT edge does the mirror: the dragged tab becomes
+    /// primary (left) and the current tab is pushed to secondary (right).
+    ///
+    /// Split-from-edge-drop is only wired up for a tab dragged from THIS
+    /// window — `openSplit` operates on this window's `TabManager`, and a
+    /// tab living in another window's `TabManager` can't be placed into a
+    /// split pane here without first transferring it. For M2c, a cross-window
+    /// drag on an edge zone simply falls through to the existing detach path
+    /// below (same as a middle drop) rather than transferring + splitting.
+    func handleContentAreaDrop(edge: Edge? = nil) -> Bool {
         guard let draggedID = TabManager.draggedTabID else { return false }
+
+        if let edge, tabManager.tabs.contains(where: { $0.id == draggedID }) {
+            TabManager.draggedTabID = nil
+            switch edge {
+            case .trailing:
+                tabManager.openSplit(with: draggedID)
+            case .leading:
+                let previousPrimaryID = tabManager.selectedTabID
+                tabManager.selectedTabID = draggedID
+                if let previousPrimaryID {
+                    tabManager.openSplit(with: previousPrimaryID)
+                }
+            default:
+                break
+            }
+            return true
+        }
+
         TabManager.draggedTabID = nil
 
-        // Find the tab across all windows
+        // Find the tab across all windows (existing detach-to-new-window path
+        // — also the fallback for edge drops when the dragged tab belongs to
+        // another window).
         for (_, vm) in BrowserViewModel.windowViewModels {
             if let tab = vm.tabManager.tabs.first(where: { $0.id == draggedID }) {
                 guard vm.tabManager.tabs.count > 1 else { return false }
