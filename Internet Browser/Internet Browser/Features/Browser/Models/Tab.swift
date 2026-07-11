@@ -13,7 +13,7 @@ extension UTType {
 }
 
 @Observable
-final class Tab: Identifiable {
+final class Tab: NSObject, Identifiable {
     let id: UUID
     var url: URL?
     var title: String
@@ -72,6 +72,7 @@ final class Tab: Identifiable {
         self.isSleeping = false
         self.lastActiveDate = Date()
         self.isPrivate = isPrivate
+        super.init()
     }
 
     var displayTitle: String {
@@ -217,15 +218,29 @@ final class Tab: Identifiable {
     }
 }
 
-extension Tab: Equatable {
-    static func == (lhs: Tab, rhs: Tab) -> Bool {
-        lhs.id == rhs.id
+// Tab inherits NSObject (required by WKWebExtensionTab), which already bridges
+// Equatable/Hashable through isEqual(_:)/hash — override those instead of
+// declaring Swift Equatable/Hashable conformance again, which would collide.
+extension Tab {
+    override func isEqual(_ object: Any?) -> Bool {
+        guard let other = object as? Tab else { return false }
+        return id == other.id
+    }
+
+    override var hash: Int {
+        id.hashValue
     }
 }
 
-extension Tab: Hashable {
-    func hash(into hasher: inout Hasher) {
-        hasher.combine(id)
-    }
+// MARK: - WKWebExtensionTab
+
+extension Tab: WKWebExtensionTab {
+    func webView(for context: WKWebExtensionContext) -> WKWebView? { webView }
+    func title(for context: WKWebExtensionContext) -> String? { title }
+    func url(for context: WKWebExtensionContext) -> URL? { url }
+    func isPinned(for context: WKWebExtensionContext) -> Bool { isPinned }
+    func isMuted(for context: WKWebExtensionContext) -> Bool { isMuted }
+    func isPrivate(for context: WKWebExtensionContext) -> Bool { isPrivate }
+    func isLoadingComplete(for context: WKWebExtensionContext) -> Bool { !isLoading }
 }
 
