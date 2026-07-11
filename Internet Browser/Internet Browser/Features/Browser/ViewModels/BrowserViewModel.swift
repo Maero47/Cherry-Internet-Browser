@@ -567,13 +567,12 @@ final class BrowserViewModel {
 
     /// Injects the find helper JS once per page. Uses querySelectorAll to clear
     /// old marks so it never loses track of highlights even if called again.
+    /// The presence check must live in JS: the helper is wiped by every
+    /// navigation and is per-page, while this view model spans pages and tabs,
+    /// so a Swift-side "already injected" flag goes stale and breaks find.
     private func injectFindHelperIfNeeded(in webView: WKWebView, completion: @escaping () -> Void) {
-        if findHelperInjected {
-            completion()
-            return
-        }
         let js = """
-        window.__cherryFind = {
+        if (!window.__cherryFind) window.__cherryFind = {
             marks: [],
             current: -1,
             clear: function() {
