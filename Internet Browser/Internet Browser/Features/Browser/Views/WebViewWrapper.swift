@@ -172,12 +172,13 @@ struct WebViewWrapper: NSViewRepresentable {
         devController.add(context.coordinator, name: "cherryConsole")
         devController.add(context.coordinator, name: "cherryNetwork")
 
-        // Tab mute: install the media-muting observer on every page load so
-        // dynamically-added <audio>/<video> elements pick up the current
-        // mute state. The live value is pushed in via tab.applyMuteState()
-        // below and on every navigation (see Coordinator.didCommit).
+        // Tab mute: install the media-muting observer into every frame on each
+        // page load. The tab's current mute state is baked into the script so
+        // cross-origin iframes (which evaluateJavaScript cannot reach) mute
+        // themselves; the live main-frame value is also pushed via
+        // tab.applyMuteState() below and on every navigation (Coordinator.didCommit).
         devController.addUserScript(WKUserScript(
-            source: MuteScripts.installScript,
+            source: MuteScripts.installScript(muted: tab.isMuted),
             injectionTime: .atDocumentStart,
             forMainFrameOnly: false
         ))
@@ -349,7 +350,7 @@ struct WebViewWrapper: NSViewRepresentable {
                 forMainFrameOnly: true
             ))
             controller.addUserScript(WKUserScript(
-                source: MuteScripts.installScript,
+                source: MuteScripts.installScript(muted: tab?.isMuted ?? false),
                 injectionTime: .atDocumentStart,
                 forMainFrameOnly: false
             ))
