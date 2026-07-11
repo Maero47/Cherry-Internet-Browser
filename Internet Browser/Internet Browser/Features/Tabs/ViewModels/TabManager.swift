@@ -14,6 +14,10 @@ final class TabManager {
     private(set) var recentlyClosedTabs: [ClosedTab] = []
     private(set) var tabGroups: [TabGroup] = []
 
+    /// Split view state (Milestone 1: two panes, no persistence across sessions)
+    var secondarySelectedTabID: UUID? = nil
+    var focusedPaneIsSecondary: Bool = false
+
     /// Shared drag state for native drag-and-drop across windows
     static var draggedTabID: UUID?
     /// Set by DragGesture reorder so the onDrop fallback doesn't double-reorder
@@ -38,6 +42,32 @@ final class TabManager {
         return tabs.firstIndex { $0.id == id }
     }
 
+    var secondarySelectedTab: Tab? {
+        guard let id = secondarySelectedTabID else { return nil }
+        return tabs.first { $0.id == id }
+    }
+
+    var isSplitActive: Bool { secondarySelectedTabID != nil }
+
+    var focusedTab: Tab? {
+        focusedPaneIsSecondary ? secondarySelectedTab : selectedTab
+    }
+
+    // MARK: - Split View
+
+    /// Opens split view with `secondaryTabID` as the secondary (right) pane.
+    /// No-op if that tab doesn't exist.
+    func openSplit(with secondaryTabID: UUID) {
+        guard tabs.contains(where: { $0.id == secondaryTabID }) else { return }
+        secondarySelectedTabID = secondaryTabID
+        focusedPaneIsSecondary = false
+    }
+
+    func closeSplit() {
+        secondarySelectedTabID = nil
+        focusedPaneIsSecondary = false
+    }
+
     init(createDefaultTab: Bool = true) {
         if createDefaultTab {
             let initialTab = Tab()
@@ -58,6 +88,16 @@ final class TabManager {
     /// Remove a tab without closing it — preserves webview state for transfer
     func removeTab(_ tab: Tab) -> Tab? {
         guard let index = tabs.firstIndex(of: tab) else { return nil }
+
+        // Split fix-up: removing the secondary pane's tab exits split cleanly.
+        if secondarySelectedTabID == tab.id {
+            secondarySelectedTabID = nil
+            focusedPaneIsSecondary = false
+        }
+        // Split fix-up: removing the primary tab while split is active promotes
+        // the secondary tab to primary instead of leaving a dangling secondary.
+        let promotedTabID: UUID? = (isSplitActive && selectedTabID == tab.id) ? secondarySelectedTabID : nil
+
         tabs.remove(at: index)
 
         if tabs.isEmpty {
@@ -70,6 +110,10 @@ final class TabManager {
                 NSApp.terminate(nil)
             }
             return tab
+        } else if let promotedTabID {
+            selectedTabID = promotedTabID
+            secondarySelectedTabID = nil
+            focusedPaneIsSecondary = false
         } else if selectedTabID == tab.id {
             let newIndex = min(index, tabs.count - 1)
             selectedTabID = tabs[newIndex].id
@@ -112,6 +156,15 @@ final class TabManager {
         tab.webView?.loadHTMLString("", baseURL: nil)
         tab.webView = nil
 
+        // Split fix-up: closing the secondary pane's tab exits split cleanly.
+        if secondarySelectedTabID == tab.id {
+            secondarySelectedTabID = nil
+            focusedPaneIsSecondary = false
+        }
+        // Split fix-up: closing the primary tab while split is active promotes
+        // the secondary tab to primary instead of leaving a dangling secondary.
+        let promotedTabID: UUID? = (isSplitActive && selectedTabID == tab.id) ? secondarySelectedTabID : nil
+
         // Remove the tab
         tabs.remove(at: index)
 
@@ -127,6 +180,10 @@ final class TabManager {
                 NSApp.terminate(nil)
             }
             return
+        } else if let promotedTabID {
+            selectedTabID = promotedTabID
+            secondarySelectedTabID = nil
+            focusedPaneIsSecondary = false
         } else if selectedTabID == tab.id {
             let newIndex = min(index, tabs.count - 1)
             selectedTabID = tabs[newIndex].id
@@ -311,6 +368,7 @@ final class TabManager {
             guard !tab.isSleeping,
                   !tab.isPinned,
                   tab.id != selectedTabID,
+                  tab.id != secondarySelectedTabID,
                   !tab.showHomePage,
                   now.timeIntervalSince(tab.lastActiveDate) > sleepTimeout else { continue }
             tab.sleep()
