@@ -99,6 +99,12 @@ struct TabBarView: View {
         .onDrop(of: [.cherryBrowserTab], isTargeted: nil) { providers in
             handleBarDrop()
         }
+        // Safety net: if the whole tab bar is removed from the hierarchy mid-drag
+        // (e.g. it's conditionally hidden when entering video fullscreen), `onEnded`
+        // never fires — this guarantees the floating ghost window still gets torn down.
+        .onDisappear {
+            hideGhostWindow()
+        }
     }
 
     // MARK: - Tab Item with Gesture Reorder
