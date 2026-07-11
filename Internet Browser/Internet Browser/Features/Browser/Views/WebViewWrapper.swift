@@ -130,6 +130,7 @@ struct WebViewWrapper: NSViewRepresentable {
     func makeNSView(context: Context) -> WKWebView {
         let settings = SettingsManager.shared
         let configuration = WKWebViewConfiguration()
+        configuration.webExtensionController = ExtensionManager.shared.controller
         configuration.preferences.isElementFullscreenEnabled = true
         configuration.preferences.javaScriptCanOpenWindowsAutomatically = !settings.blockPopups
         // Enable video Picture-in-Picture. On macOS the public
