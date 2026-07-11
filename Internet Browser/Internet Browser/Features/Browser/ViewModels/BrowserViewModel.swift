@@ -306,6 +306,27 @@ final class BrowserViewModel {
 
     // MARK: - Split View
 
+    /// Opens split view placing `tab` in the pane on the given `edge`.
+    /// `.trailing` (right) → `tab` becomes the secondary (right) pane, current
+    /// tab stays primary (left). `.leading` (left) → `tab` becomes primary
+    /// (left) and the current tab is pushed to the secondary (right) pane.
+    /// If `tab` is already the current tab the swap is meaningless, so
+    /// `openSplit` picks a sensible secondary (adjacent or a fresh tab).
+    func splitWith(tab: Tab, edge: Edge) {
+        let id = tab.id
+        if id == tabManager.selectedTabID {
+            tabManager.openSplit(with: id)
+        } else if edge == .leading {
+            let previousPrimaryID = tabManager.selectedTabID
+            tabManager.selectedTabID = id
+            if let previousPrimaryID {
+                tabManager.openSplit(with: previousPrimaryID)
+            }
+        } else {
+            tabManager.openSplit(with: id)
+        }
+    }
+
     /// Toggles split view. Opening picks the tab after the current one as the
     /// secondary pane, or creates a new home-page tab when there's only one tab.
     func toggleSplitView() {
@@ -372,29 +393,9 @@ final class BrowserViewModel {
     func handleContentAreaDrop(edge: Edge? = nil) -> Bool {
         guard let draggedID = TabManager.draggedTabID else { return false }
 
-        if let edge, tabManager.tabs.contains(where: { $0.id == draggedID }) {
+        if let edge, let tab = tabManager.tabs.first(where: { $0.id == draggedID }) {
             TabManager.draggedTabID = nil
-            if draggedID == tabManager.selectedTabID {
-                // Dragging the already-current tab onto either edge — the
-                // primary/secondary swap below is meaningless since there's
-                // nothing to swap with. Let openSplit pick a sensible
-                // secondary (adjacent tab, or a fresh one) instead of the
-                // leading-swap dance silently substituting an unrelated tab.
-                tabManager.openSplit(with: draggedID)
-            } else {
-                switch edge {
-                case .trailing:
-                    tabManager.openSplit(with: draggedID)
-                case .leading:
-                    let previousPrimaryID = tabManager.selectedTabID
-                    tabManager.selectedTabID = draggedID
-                    if let previousPrimaryID {
-                        tabManager.openSplit(with: previousPrimaryID)
-                    }
-                default:
-                    break
-                }
-            }
+            splitWith(tab: tab, edge: edge)
             return true
         }
 

@@ -14,6 +14,9 @@ struct TabBarView: View {
     let onNewTab: () -> Void
     var onDetachTab: ((Tab) -> Void)? = nil
     var onReceiveTab: ((UUID) -> Void)? = nil
+    /// Dragging a tab into this window's left/right content edge opens split
+    /// view with the tab on that edge, instead of tearing it into a new window.
+    var onSplitOnEdge: ((Tab, Edge) -> Void)? = nil
 
     /// ID of the tab currently being reordered via DragGesture
     @State private var draggingTabID: UUID? = nil
@@ -214,6 +217,27 @@ struct TabBarView: View {
                     let mouseLocation = NSEvent.mouseLocation
                     let sourceFrame = tabManager.hostWindow?.frame ?? NSApp.keyWindow?.frame ?? .zero
                     let leftSourceWindow = !sourceFrame.contains(mouseLocation)
+
+                    // Released INSIDE this window, below the tab bar, near the left
+                    // or right edge → open split view with this tab on that side
+                    // (checked before detach so an edge drop splits instead of
+                    // tearing off into a new window).
+                    if !leftSourceWindow, onSplitOnEdge != nil, sourceFrame.width > 0 {
+                        let relX = mouseLocation.x - sourceFrame.minX
+                        let fromTop = sourceFrame.maxY - mouseLocation.y
+                        let edgeZone = sourceFrame.width * 0.30
+                        if fromTop > AppConstants.UI.tabBarHeight {
+                            if relX < edgeZone {
+                                onSplitOnEdge?(tab, .leading)
+                                finishDrag()
+                                return
+                            } else if relX > sourceFrame.width - edgeZone {
+                                onSplitOnEdge?(tab, .trailing)
+                                finishDrag()
+                                return
+                            }
+                        }
+                    }
 
                     // Detach on release if the cursor left the source window (any
                     // direction) or the tab was pulled vertically far enough — up OR

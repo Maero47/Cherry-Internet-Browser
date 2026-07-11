@@ -214,7 +214,8 @@ struct BrowserView: View {
                         onDetachTab: { tab in viewModel.detachTab(tab) },
                         onReceiveTab: { tabID in
                             _ = BrowserViewModel.transferTab(tabID: tabID, to: viewModel)
-                        }
+                        },
+                        onSplitOnEdge: { tab, edge in viewModel.splitWith(tab: tab, edge: edge) }
                     )
                     Rectangle()
                         .fill(Color.primary.opacity(0.08))
