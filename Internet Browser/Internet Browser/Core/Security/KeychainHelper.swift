@@ -13,9 +13,10 @@ enum KeychainHelper {
     static func save(password: String, for id: UUID) -> Bool {
         guard let data = password.data(using: .utf8) else { return false }
 
-        // Delete any existing item first
-        delete(for: id)
-
+        // Add first and fall back to update on duplicate. Never delete before
+        // adding: retrieve() re-saves on every read, and a delete followed by
+        // a failed SecItemAdd (locked keychain, denied access) would destroy
+        // the only stored copy of the password.
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: serviceName,
@@ -24,7 +25,16 @@ enum KeychainHelper {
             kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlocked,
         ]
 
-        let status = SecItemAdd(query as CFDictionary, nil)
+        var status = SecItemAdd(query as CFDictionary, nil)
+        if status == errSecDuplicateItem {
+            let matchQuery: [String: Any] = [
+                kSecClass as String: kSecClassGenericPassword,
+                kSecAttrService as String: serviceName,
+                kSecAttrAccount as String: id.uuidString,
+            ]
+            let attributes: [String: Any] = [kSecValueData as String: data]
+            status = SecItemUpdate(matchQuery as CFDictionary, attributes as CFDictionary)
+        }
         if status != errSecSuccess {
             print("[Keychain] save failed: \(status)")
         }
