@@ -121,12 +121,17 @@ final class PasswordRepository {
 
     func credentials(for url: URL) -> [PasswordItem] {
         guard let host = url.host?.lowercased() else { return [] }
-        let baseDomain = host.components(separatedBy: ".").suffix(2).joined(separator: ".")
 
+        // Match the exact host or a parent/subdomain relationship on a dot
+        // boundary (www.example.com <-> example.com). Never match on a naive
+        // "last two labels" base domain: for hosts under multi-label public
+        // suffixes (example.co.uk) that base is "co.uk", which offered — and
+        // could auto-fill — one site's password on every other co.uk site.
         return passwords.filter { item in
             let itemHost = URL(string: item.url)?.host?.lowercased() ?? item.url.lowercased()
-            let itemBase = itemHost.components(separatedBy: ".").suffix(2).joined(separator: ".")
-            return itemHost == host || itemBase == baseDomain
+            return itemHost == host
+                || itemHost.hasSuffix("." + host)
+                || host.hasSuffix("." + itemHost)
         }
     }
 
