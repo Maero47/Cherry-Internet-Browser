@@ -20,7 +20,6 @@ final class TabManager {
     static var reorderedByGesture: Bool = false
 
     private let maxRecentlyClosedTabs = 25
-    private let sleepTimeout: TimeInterval = 30 * 60 // 30 minutes
     private var sleepTimer: Timer?
 
     var selectedTab: Tab? {
@@ -40,6 +39,12 @@ final class TabManager {
             selectedTabID = initialTab.id
         }
         startSleepTimer()
+    }
+
+    deinit {
+        // The run loop retains scheduled timers; without invalidation the
+        // timer of every closed window's TabManager keeps firing forever.
+        sleepTimer?.invalidate()
     }
 
     // MARK: - Tab Transfer (cross-window)
@@ -277,6 +282,12 @@ final class TabManager {
     }
 
     private func checkSleepingTabs() {
+        // Respect the user's settings — previously a hardcoded 30 min was used
+        // and the "Auto-sleep Inactive Tabs" toggle / timeout picker did nothing.
+        let settings = SettingsManager.shared
+        guard settings.tabSleepEnabled else { return }
+        let sleepTimeout = TimeInterval(settings.tabSleepTimeout * 60)
+
         let now = Date()
         for tab in tabs {
             guard !tab.isSleeping,
