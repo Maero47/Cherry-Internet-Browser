@@ -86,9 +86,19 @@ final class BrowserViewModel {
     static var detachedWindows: [NSWindow] = []
     static var detachedWindowDelegates: [DetachedWindowDelegate] = []
 
-    // Registry of all active view models for cross-window tab transfer
+    // Registry of all active view models for cross-window tab transfer.
+    // Weak boxes: a strong dictionary would keep every view model alive forever
+    // (deinit could never run, so entries would never be removed) and closed
+    // windows would stay valid transfer targets.
+    final class WeakViewModelRef {
+        weak var value: BrowserViewModel?
+        init(_ value: BrowserViewModel) { self.value = value }
+    }
     private let instanceID = UUID()
-    static var windowViewModels: [UUID: BrowserViewModel] = [:]
+    private static var viewModelRefs: [UUID: WeakViewModelRef] = [:]
+    static var windowViewModels: [UUID: BrowserViewModel] {
+        viewModelRefs.compactMapValues { $0.value }
+    }
 
     /// The NSWindow hosting this view model. Set by BrowserView on appear.
     weak var associatedWindow: NSWindow?
@@ -97,11 +107,11 @@ final class BrowserViewModel {
         if !withDefaultTab {
             tabManager = TabManager(createDefaultTab: false)
         }
-        BrowserViewModel.windowViewModels[instanceID] = self
+        BrowserViewModel.viewModelRefs[instanceID] = WeakViewModelRef(self)
     }
 
     deinit {
-        BrowserViewModel.windowViewModels.removeValue(forKey: instanceID)
+        BrowserViewModel.viewModelRefs.removeValue(forKey: instanceID)
     }
 
     var currentTab: Tab? {
