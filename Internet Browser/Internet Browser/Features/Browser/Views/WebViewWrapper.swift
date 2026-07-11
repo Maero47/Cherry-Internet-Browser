@@ -182,6 +182,7 @@ struct WebViewWrapper: NSViewRepresentable {
             injectionTime: .atDocumentStart,
             forMainFrameOnly: false
         ))
+        devController.add(context.coordinator, name: "cherryMuteFrame")
 
         // Check if the tab already has a webView (e.g. adopted popup)
         let isAdoptedWebView = tab.webView != nil
@@ -460,8 +461,10 @@ struct WebViewWrapper: NSViewRepresentable {
         }
 
         func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
-            // Each navigation gets a fresh JS context, so push the tab's mute
-            // state back in as soon as the new document exists.
+            // Main-frame navigation invalidates previously-registered sub-frames;
+            // drop them (iframes re-register as they load), then re-apply the
+            // tab's mute state to the fresh main-frame JS context.
+            tab?.resetMuteFrames()
             tab?.applyMuteState()
         }
 
@@ -898,6 +901,16 @@ struct WebViewWrapper: NSViewRepresentable {
         // MARK: - WKScriptMessageHandler
 
         func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+            if message.name == "cherryMuteFrame" {
+                // A sub-frame installed the mute observer; record it so live
+                // toggles can address it. Main frame is handled directly.
+                let frame = message.frameInfo
+                Task { @MainActor in
+                    self.tab?.registerMuteFrame(frame)
+                }
+                return
+            }
+
             guard let body = message.body as? [String: Any] else { return }
 
             switch message.name {

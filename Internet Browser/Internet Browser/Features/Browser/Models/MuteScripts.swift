@@ -81,6 +81,15 @@ enum MuteScripts {
 
             startObserver();
             muteAll();
+
+            // Register this frame with Swift so live mute toggles can reach it
+            // (evaluateJavaScript only targets the main frame otherwise).
+            try {
+                if (window.webkit && window.webkit.messageHandlers &&
+                    window.webkit.messageHandlers.cherryMuteFrame) {
+                    window.webkit.messageHandlers.cherryMuteFrame.postMessage({ registered: true });
+                }
+            } catch (e) {}
         })();
         """
     }

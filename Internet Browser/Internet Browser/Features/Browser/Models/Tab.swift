@@ -114,13 +114,44 @@ final class Tab: Identifiable {
         applyMuteState()
     }
 
+    /// Sub-frames (iframes) that registered themselves via the mute install
+    /// script. `evaluateJavaScript` only reaches the main frame, so to mute
+    /// cross-origin embeds (YouTube/Vimeo players, video ads) live we must
+    /// address each frame with `evaluateJavaScript(_:in:contentWorld:)`.
+    /// Not observed — this is view-plumbing state, not UI state.
+    @ObservationIgnored private var muteFrames: [WKFrameInfo] = []
+
+    /// Records a frame that installed the mute observer, so live toggles can
+    /// reach it. Called by the WebViewWrapper coordinator's message handler.
+    func registerMuteFrame(_ frame: WKFrameInfo) {
+        guard !frame.isMainFrame else { return }
+        muteFrames.append(frame)
+        // Push the current state immediately so a just-loaded iframe matches.
+        if isMuted {
+            webView?.evaluateJavaScript(MuteScripts.applyMuteJS(muted: true),
+                                        in: frame, in: .page, completionHandler: nil)
+        }
+    }
+
+    /// Drops recorded sub-frames — call when the main frame navigates, since
+    /// its WKFrameInfo handles become stale.
+    func resetMuteFrames() {
+        muteFrames.removeAll()
+    }
+
     /// Re-applies `isMuted` to the live WebView via JS (WKWebView has no public
     /// audio-mute API on macOS). Must be called whenever a tab's WKWebView is
     /// (re)created — e.g. sleep/wake, popup adoption, WebViewWrapper recreation —
     /// and on every navigation, since the JS-side mute state lives in the page's
-    /// document and is lost on reload.
+    /// document and is lost on reload. Applies to the main frame and every
+    /// registered sub-frame so iframe media toggles live too.
     func applyMuteState() {
-        webView?.evaluateJavaScript(MuteScripts.applyMuteJS(muted: isMuted), completionHandler: nil)
+        let js = MuteScripts.applyMuteJS(muted: isMuted)
+        webView?.evaluateJavaScript(js, completionHandler: nil)
+        for frame in muteFrames where !frame.isMainFrame {
+            // Stale frames throw — ignore; worst case it's a no-op.
+            webView?.evaluateJavaScript(js, in: frame, in: .page, completionHandler: nil)
+        }
     }
 
     func loadURL(_ url: URL) {
