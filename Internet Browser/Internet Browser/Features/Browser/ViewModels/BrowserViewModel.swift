@@ -126,7 +126,12 @@ final class BrowserViewModel {
 
     func navigate(to input: String) {
         guard let tab = currentTab else { return }
+        navigate(to: input, in: tab)
+    }
 
+    /// Pane-targeted variant so a specific split-view pane can navigate its own
+    /// tab regardless of which tab is `currentTab`.
+    func navigate(to input: String, in tab: Tab) {
         let trimmedInput = input.trimmingCharacters(in: .whitespacesAndNewlines)
 
         // Try to parse as URL first
@@ -138,17 +143,21 @@ final class BrowserViewModel {
                 tab.loadURL(url)
             } else {
                 // Fall back to search
-                performSearch(trimmedInput)
+                performSearch(trimmedInput, in: tab)
             }
         } else {
             // Treat as search query
-            performSearch(trimmedInput)
+            performSearch(trimmedInput, in: tab)
         }
     }
 
     func performSearch(_ query: String) {
-        guard let tab = currentTab,
-              let searchURL = URL.searchURL(for: query, engine: searchEngine) else { return }
+        guard let tab = currentTab else { return }
+        performSearch(query, in: tab)
+    }
+
+    func performSearch(_ query: String, in tab: Tab) {
+        guard let searchURL = URL.searchURL(for: query, engine: searchEngine) else { return }
         tab.loadURL(searchURL)
     }
 
@@ -156,16 +165,32 @@ final class BrowserViewModel {
         currentTab?.goBack()
     }
 
+    func goBack(for tab: Tab) {
+        tab.goBack()
+    }
+
     func goForward() {
         currentTab?.goForward()
+    }
+
+    func goForward(for tab: Tab) {
+        tab.goForward()
     }
 
     func reload() {
         currentTab?.reload()
     }
 
+    func reload(for tab: Tab) {
+        tab.reload()
+    }
+
     func stopLoading() {
         currentTab?.stopLoading()
+    }
+
+    func stopLoading(for tab: Tab) {
+        tab.stopLoading()
     }
 
     func goHome() {
@@ -247,6 +272,26 @@ final class BrowserViewModel {
 
     func selectPreviousTab() {
         tabManager.selectPreviousTab()
+    }
+
+    // MARK: - Split View
+
+    /// Toggles split view. Opening picks the tab after the current one as the
+    /// secondary pane, or creates a new home-page tab when there's only one tab.
+    func toggleSplitView() {
+        if tabManager.isSplitActive {
+            tabManager.closeSplit()
+            return
+        }
+        guard let currentIndex = tabManager.selectedTabIndex else { return }
+        if tabManager.tabs.count > 1 {
+            let nextIndex = (currentIndex + 1) % tabManager.tabs.count
+            tabManager.openSplit(with: tabManager.tabs[nextIndex].id)
+        } else {
+            let secondary = tabManager.newTab(switchTo: false)
+            secondary.isPrivate = isPrivateMode
+            tabManager.openSplit(with: secondary.id)
+        }
     }
 
     func selectTab(at index: Int) {
