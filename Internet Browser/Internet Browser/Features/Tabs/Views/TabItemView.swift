@@ -24,6 +24,9 @@ struct TabItemView: View {
     var isSplitActive: Bool = false
     var onOpenInSplitView: (() -> Void)? = nil
     var onCloseSplitView: (() -> Void)? = nil
+    /// True when this tab is one of the two tabs currently shown in split view
+    /// (primary or secondary pane) — drives the small "paired" badge below.
+    var isPaired: Bool = false
 
     @State private var isHovering = false
     @State private var showPreview = false
@@ -34,6 +37,11 @@ struct TabItemView: View {
             // Favicon
             faviconView
                 .frame(width: 16, height: 16)
+                .overlay(alignment: .bottomTrailing) {
+                    if isPaired {
+                        pairedBadge
+                    }
+                }
 
             // Title (hidden for pinned tabs or very narrow tabs)
             if !tab.isPinned && (fixedWidth ?? 999) > 100 {
@@ -139,6 +147,17 @@ struct TabItemView: View {
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
         }
+    }
+
+    /// Small marker shown on tabs currently paired in split view, so the user
+    /// can tell at a glance which two tabs are on screen together.
+    private var pairedBadge: some View {
+        Image(systemName: "rectangle.split.2x1.fill")
+            .font(.system(size: 6, weight: .bold))
+            .foregroundStyle(SettingsManager.shared.accentColor)
+            .padding(2)
+            .background(Circle().fill(.regularMaterial))
+            .offset(x: 4, y: 4)
     }
 
     @ViewBuilder

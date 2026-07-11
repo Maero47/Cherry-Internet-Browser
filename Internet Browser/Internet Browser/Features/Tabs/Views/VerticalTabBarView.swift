@@ -167,6 +167,13 @@ private struct VerticalTabItemView: View {
         tabManager.selectedTabID == tab.id
     }
 
+    /// True when this tab is one of the two tabs currently shown in split
+    /// view — mirrors the same check in `TabBarView`'s horizontal tab item.
+    private var isPaired: Bool {
+        tabManager.isSplitActive &&
+            (tabManager.selectedTabID == tab.id || tabManager.secondarySelectedTabID == tab.id)
+    }
+
     var body: some View {
         HStack(spacing: 8) {
             // Group color dot
@@ -196,6 +203,16 @@ private struct VerticalTabItemView: View {
                 }
             }
             .frame(width: 16, height: 16)
+            .overlay(alignment: .bottomTrailing) {
+                if isPaired {
+                    Image(systemName: "rectangle.split.2x1.fill")
+                        .font(.system(size: 6, weight: .bold))
+                        .foregroundStyle(SettingsManager.shared.accentColor)
+                        .padding(2)
+                        .background(Circle().fill(.regularMaterial))
+                        .offset(x: 4, y: 4)
+                }
+            }
 
             if !isCollapsed {
                 Text(tab.displayTitle)
