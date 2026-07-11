@@ -36,6 +36,12 @@ final class Tab: Identifiable {
     var lastActiveDate: Date
     var isPrivate: Bool
 
+    /// Whether `window.__cherryFind` has been injected into this tab's
+    /// current page. Per-tab (not a shared view-model flag) so each
+    /// split-view pane's page tracks its own injection independently —
+    /// view-plumbing state, not something the UI observes.
+    @ObservationIgnored var findHelperInjected: Bool = false
+
     private(set) var createdAt: Date
 
     // Store URL before sleeping so we can reload

@@ -11,6 +11,22 @@ import WebKit
 final class CherryWebView: WKWebView {
     private var lastRightClickLocation: CGPoint = .zero
 
+    /// Fired when this web view becomes first responder or receives a
+    /// mouseDown, so split view can focus the pane the user clicked INTO
+    /// (not just its nav-bar chrome). `nil` outside split view, where
+    /// there's nothing to switch focus to.
+    var onFocused: (() -> Void)?
+
+    override func becomeFirstResponder() -> Bool {
+        onFocused?()
+        return super.becomeFirstResponder()
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        onFocused?()
+        super.mouseDown(with: event)
+    }
+
     override func willOpenMenu(_ menu: NSMenu, with event: NSEvent) {
         // Capture position before the menu opens
         lastRightClickLocation = convert(event.locationInWindow, from: nil)
@@ -96,6 +112,10 @@ struct WebViewWrapper: NSViewRepresentable {
     var onNewTab: ((URL) -> Void)? = nil
     var onNewTabWithWebView: ((WKWebView, URL?) -> Void)? = nil
     var viewModel: BrowserViewModel? = nil
+    /// Same closure the pane's nav-bar tap uses to claim focus — passed
+    /// through to `CherryWebView.onFocused` so clicking inside the page
+    /// focuses the pane too. `nil` outside split view.
+    var onFocused: (() -> Void)? = nil
 
     func makeNSView(context: Context) -> WKWebView {
         let settings = SettingsManager.shared
@@ -204,6 +224,7 @@ struct WebViewWrapper: NSViewRepresentable {
             let cherry = CherryWebView(frame: .zero, configuration: configuration)
             cherry.allowsBackForwardNavigationGestures = true
             cherry.allowsMagnification = true
+            cherry.onFocused = onFocused
             tab.webView = cherry
             webView = cherry
         }
@@ -243,6 +264,10 @@ struct WebViewWrapper: NSViewRepresentable {
 
     func updateNSView(_ webView: WKWebView, context: Context) {
         context.coordinator.tab = tab
+        // Re-sync every render — split view can be toggled on/off, which
+        // changes onFocusPane from nil to a live closure (or back), and a
+        // stale closure captured only at makeNSView-time would miss that.
+        (webView as? CherryWebView)?.onFocused = onFocused
 
         if let tabURL = tab.url {
             let lastURLString = context.coordinator.lastLoadedURL?.absoluteString ?? ""
