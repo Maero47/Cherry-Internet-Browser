@@ -172,18 +172,13 @@ struct TabBarView: View {
                         return
                     }
 
-                    // Switch to tear-off once the tab is pulled away from the strip —
-                    // vertically in EITHER direction (up or down) past a threshold, or
-                    // once the cursor leaves the source window in ANY direction. Only
-                    // pure horizontal movement inside the bar stays a reorder. (Before,
-                    // this checked `translation.height > 30`, so the ghost appeared only
-                    // when dragging downward.)
-                    let pulledVertically = abs(value.translation.height) > 30
-                    let leftSourceWindow: Bool = {
-                        guard let frame = tabManager.hostWindow?.frame else { return false }
-                        return !frame.contains(NSEvent.mouseLocation)
-                    }()
-                    if pulledVertically || leftSourceWindow {
+                    // Switch to tear-off once the tab is pulled vertically away from the
+                    // strip in EITHER direction (up or down). Before, this checked
+                    // `translation.height > 30`, so the ghost appeared only when dragging
+                    // downward; `abs(...)` makes upward drags tear off too. A pure
+                    // horizontal drag keeps a small height, so in-bar reorder is unaffected
+                    // (and jitter-based false triggers are avoided — 30pt is well beyond it).
+                    if abs(value.translation.height) > 30 {
                         isTearingOff = true
                         tearOffTabID = tab.id
                         tearOffStartTranslation = value.translation
@@ -212,10 +207,14 @@ struct TabBarView: View {
                     }
 
                     let mouseLocation = NSEvent.mouseLocation
-                    let sourceFrame = NSApp.keyWindow?.frame ?? .zero
+                    let sourceFrame = tabManager.hostWindow?.frame ?? NSApp.keyWindow?.frame ?? .zero
                     let leftSourceWindow = !sourceFrame.contains(mouseLocation)
 
-                    if leftSourceWindow || value.translation.height > 44 {
+                    // Detach on release if the cursor left the source window (any
+                    // direction) or the tab was pulled vertically far enough — up OR
+                    // down, matching the symmetric tear-off ghost trigger above so an
+                    // upward tear-off actually detaches instead of snapping back.
+                    if leftSourceWindow || abs(value.translation.height) > 44 {
                         triggerDetach(tab: tab)
                     } else {
                         finishDrag()
