@@ -98,7 +98,7 @@ class SearchSuggestService {
         fetchTask = Task {
             defer { Task { @MainActor in self.isLoading = false } }
 
-            guard let encoded = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
+            guard let encoded = query.addingPercentEncoding(withAllowedCharacters: URL.urlQueryValueAllowed),
                   let url = URL(string: "https://suggestqueries.google.com/complete/search?client=firefox&q=\(encoded)") else {
                 return
             }

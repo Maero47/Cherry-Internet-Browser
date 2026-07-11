@@ -39,8 +39,17 @@ extension URL {
         return nil
     }
 
+    /// Characters allowed unescaped inside a single query *value*.
+    /// .urlQueryAllowed permits &, +, =, ?, # which corrupt the query
+    /// (e.g. "fish & chips" truncates at &, "c++" turns + into spaces).
+    static var urlQueryValueAllowed: CharacterSet = {
+        var set = CharacterSet.urlQueryAllowed
+        set.remove(charactersIn: "&+=?#")
+        return set
+    }()
+
     static func searchURL(for query: String, engine: SearchEngine = .google) -> URL? {
-        let encodedQuery = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? query
+        let encodedQuery = query.addingPercentEncoding(withAllowedCharacters: urlQueryValueAllowed) ?? query
         return URL(string: engine.searchURL + encodedQuery)
     }
 }
