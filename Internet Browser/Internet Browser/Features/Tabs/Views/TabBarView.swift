@@ -23,8 +23,10 @@ struct TabBarView: View {
     /// Tear-off ghost state — when the tab is dragged out of the bar it floats freely
     @State private var isTearingOff: Bool = false
     @State private var tearOffTabID: UUID? = nil
-    @State private var tearOffDragTranslation: CGSize = .zero
     @State private var tearOffStartTranslation: CGSize = .zero
+    /// Floating on-screen-anywhere ghost window shown while tearing a tab off.
+    /// Lives outside the SwiftUI view hierarchy so it isn't clipped to the window bounds.
+    @State private var ghostWindow: GhostTabWindow? = nil
 
     private let pinnedTabWidth: CGFloat = 40
     private let tabSpacing: CGFloat = 2
@@ -149,22 +151,8 @@ struct TabBarView: View {
         .shadow(color: isDragging ? .black.opacity(0.22) : .clear, radius: 8, y: 3)
         .zIndex(isDragging || isTearingOffThisTab ? 2 : 0)
         .animation(.spring(response: 0.15, dampingFraction: 0.85), value: isDragging)
-        // Floating ghost that follows the cursor once the tab is dragged out of the bar
-        .overlay {
-            if isTearingOffThisTab {
-                TabItemView(
-                    tab: tab,
-                    isSelected: tabManager.selectedTabID == tab.id,
-                    fixedWidth: width,
-                    onSelect: {},
-                    onClose: {}
-                )
-                .offset(tearOffDragTranslation)
-                .shadow(color: .black.opacity(0.28), radius: 14, y: 6)
-                .scaleEffect(1.04)
-                .allowsHitTesting(false)
-            }
-        }
+        // The tear-off ghost is a real NSWindow (see `ghostWindow` below) so it can
+        // render outside this window's bounds — a SwiftUI overlay would be clipped to it.
         // DragGesture fires immediately (2 px threshold) — Chrome-like real-time reorder.
         // Vertical drag > 30 pt switches to free "tear-off" mode with a ghost that floats.
         .simultaneousGesture(
@@ -172,12 +160,9 @@ struct TabBarView: View {
                 .onChanged { value in
                     guard !tab.isPinned else { return }
 
-                    // Already in tear-off mode — update ghost position and return
+                    // Already in tear-off mode — move the floating ghost window and return
                     if isTearingOff && tearOffTabID == tab.id {
-                        tearOffDragTranslation = CGSize(
-                            width: value.translation.width - tearOffStartTranslation.width,
-                            height: value.translation.height - tearOffStartTranslation.height
-                        )
+                        ghostWindow?.move(toScreenPoint: NSEvent.mouseLocation)
                         return
                     }
 
@@ -186,9 +171,9 @@ struct TabBarView: View {
                         isTearingOff = true
                         tearOffTabID = tab.id
                         tearOffStartTranslation = value.translation
-                        tearOffDragTranslation = .zero
                         draggingTabID = nil          // hand off from reorder to ghost
                         TabManager.draggedTabID = tab.id
+                        showGhostWindow(for: tab)
                         return
                     }
 
@@ -196,12 +181,13 @@ struct TabBarView: View {
                     reorderOnDrag(tab: tab, x: value.location.x, tabWidth: width)
                 }
                 .onEnded { value in
-                    // Clean up tear-off ghost state
+                    // Clean up tear-off ghost state (covers tear-off, re-attach and cancel —
+                    // this always runs when the gesture ends, regardless of outcome).
                     if isTearingOff && tearOffTabID == tab.id {
                         isTearingOff = false
                         tearOffTabID = nil
-                        tearOffDragTranslation = .zero
                         tearOffStartTranslation = .zero
+                        hideGhostWindow()
                     }
 
                     guard !tab.isPinned else {
@@ -318,6 +304,25 @@ struct TabBarView: View {
         TabManager.draggedTabID = nil
         TabManager.reorderedByGesture = false
         onDetachTab?(tab)
+    }
+
+    // MARK: - Tear-off Ghost Window
+
+    /// Creates the floating ghost window and positions it at the current cursor location.
+    private func showGhostWindow(for tab: Tab) {
+        hideGhostWindow() // guard against a stray leftover instance
+        let window = GhostTabWindow(tab: tab)
+        window.move(toScreenPoint: NSEvent.mouseLocation)
+        window.orderFrontRegardless()
+        ghostWindow = window
+    }
+
+    /// Orders out and releases the floating ghost window. Safe to call multiple times
+    /// or when no ghost window exists — every drag-end path (tear-off, re-attach,
+    /// cancel) routes through this so a ghost can never be left on screen.
+    private func hideGhostWindow() {
+        ghostWindow?.orderOut(nil)
+        ghostWindow = nil
     }
 
     // MARK: - Collapsed Groups
