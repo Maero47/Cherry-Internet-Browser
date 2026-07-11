@@ -212,7 +212,8 @@ struct BrowserView: View {
 
                 if viewModel.tabManager.isSplitActive,
                    let primaryTab = viewModel.tabManager.selectedTab,
-                   let secondaryTab = viewModel.tabManager.secondarySelectedTab {
+                   let secondaryTab = viewModel.tabManager.secondarySelectedTab,
+                   primaryTab.id != secondaryTab.id {
                     HSplitView {
                         paneContentView(
                             tab: primaryTab,

@@ -56,10 +56,20 @@ final class TabManager {
     // MARK: - Split View
 
     /// Opens split view with `secondaryTabID` as the secondary (right) pane.
-    /// No-op if that tab doesn't exist.
+    /// No-op if that tab doesn't exist. The secondary pane is never allowed to
+    /// show the same tab as the primary (selected) pane — that would mount
+    /// one Tab's single `webView` into two view hierarchies at once and break
+    /// rendering. If the requested secondary IS the current primary tab,
+    /// falls back to an adjacent tab instead (or no-ops if it's the only tab).
     func openSplit(with secondaryTabID: UUID) {
         guard tabs.contains(where: { $0.id == secondaryTabID }) else { return }
-        secondarySelectedTabID = secondaryTabID
+        if secondaryTabID == selectedTabID {
+            guard tabs.count > 1, let index = selectedTabIndex else { return }
+            let nextIndex = (index + 1) % tabs.count
+            secondarySelectedTabID = tabs[nextIndex].id
+        } else {
+            secondarySelectedTabID = secondaryTabID
+        }
         focusedPaneIsSecondary = false
     }
 
@@ -218,6 +228,18 @@ final class TabManager {
             tab.wake()
         }
         tab.lastActiveDate = Date()
+
+        // Selecting the tab currently shown in the secondary pane would make
+        // selectedTabID == secondarySelectedTabID — the same Tab mounted in
+        // both HSplitView panes at once. Swap the panes instead: the clicked
+        // tab becomes primary, the old primary takes the secondary pane.
+        if isSplitActive, secondarySelectedTabID == tab.id {
+            let oldPrimaryID = selectedTabID
+            selectedTabID = tab.id
+            secondarySelectedTabID = oldPrimaryID
+            return
+        }
+
         selectedTabID = tab.id
     }
 
