@@ -291,10 +291,48 @@ struct WebViewWrapper: NSViewRepresentable {
                 } else {
                     // Disable: remove style tag, disconnect observer, unhide elements on current page
                     webView.evaluateJavaScript(AdBlockManager.cosmeticDisableJS(), completionHandler: nil)
-                    // Remove all user scripts so future navigations don't re-inject
-                    webView.configuration.userContentController.removeAllUserScripts()
+                    // Remove all user scripts so future navigations don't re-inject.
+                    // WKUserContentController can only remove scripts wholesale,
+                    // which also wipes the password autofill and devtools scripts —
+                    // reinstall those or they stay broken until the tab is recreated.
+                    let controller = webView.configuration.userContentController
+                    controller.removeAllUserScripts()
+                    reinstallCoreUserScripts(on: controller)
                 }
             }
+        }
+
+        /// Re-adds the always-on user scripts (password autofill, devtools
+        /// bridges) after removeAllUserScripts wiped them. Message handlers
+        /// remain registered on the controller, only the scripts are gone.
+        private func reinstallCoreUserScripts(on controller: WKUserContentController) {
+            if !(tab?.isPrivate ?? false) {
+                controller.addUserScript(WKUserScript(
+                    source: PasswordAutoFillScripts.formDetectionScript,
+                    injectionTime: .atDocumentEnd,
+                    forMainFrameOnly: true
+                ))
+                controller.addUserScript(WKUserScript(
+                    source: PasswordAutoFillScripts.credentialCaptureScript,
+                    injectionTime: .atDocumentEnd,
+                    forMainFrameOnly: true
+                ))
+            }
+            controller.addUserScript(WKUserScript(
+                source: ConsoleScripts.devToolsPolicyScript,
+                injectionTime: .atDocumentStart,
+                forMainFrameOnly: false
+            ))
+            controller.addUserScript(WKUserScript(
+                source: ConsoleScripts.consoleInterceptScript,
+                injectionTime: .atDocumentStart,
+                forMainFrameOnly: true
+            ))
+            controller.addUserScript(WKUserScript(
+                source: ConsoleScripts.networkInterceptScript,
+                injectionTime: .atDocumentStart,
+                forMainFrameOnly: true
+            ))
         }
 
         func observeWebView(_ webView: WKWebView) {
