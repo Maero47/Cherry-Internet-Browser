@@ -119,7 +119,7 @@ struct BrowserView: View {
     // Split from body to keep the modifier chain short enough for the Swift type-checker
     private var configuredLayout: some View {
         browserLayout
-            .frame(minWidth: 1000, minHeight: 600)
+            .frame(minWidth: viewModel.tabManager.isSplitActive ? 1300 : 1000, minHeight: 600)
             .ignoresSafeArea(.all, edges: .top)
             .background(Color(nsColor: .windowBackgroundColor))
             .background { WindowConfigurator() }
@@ -210,32 +210,35 @@ struct BrowserView: View {
                         .frame(height: 0.5)
                 }
 
-                if let currentTab = viewModel.currentTab {
-                    BrowserContentView(
-                        viewModel: viewModel,
+                if viewModel.tabManager.isSplitActive,
+                   let primaryTab = viewModel.tabManager.selectedTab,
+                   let secondaryTab = viewModel.tabManager.secondarySelectedTab {
+                    HSplitView {
+                        paneContentView(
+                            tab: primaryTab,
+                            isFocused: !viewModel.tabManager.focusedPaneIsSecondary,
+                            isSplitPane: true,
+                            onFocusPane: { viewModel.tabManager.focusedPaneIsSecondary = false }
+                        )
+                        .onDrop(of: [.cherryBrowserTab], isTargeted: nil) { providers in
+                            viewModel.handleContentAreaDrop()
+                        }
+                        .frame(minWidth: 400, maxWidth: .infinity, maxHeight: .infinity)
+
+                        paneContentView(
+                            tab: secondaryTab,
+                            isFocused: viewModel.tabManager.focusedPaneIsSecondary,
+                            isSplitPane: true,
+                            onFocusPane: { viewModel.tabManager.focusedPaneIsSecondary = true }
+                        )
+                        .frame(minWidth: 400, maxWidth: .infinity, maxHeight: .infinity)
+                    }
+                } else if let currentTab = viewModel.currentTab {
+                    paneContentView(
                         tab: currentTab,
-                        onNavigate: { viewModel.navigate(to: $0) },
-                        onBack: { viewModel.goBack() },
-                        onForward: { viewModel.goForward() },
-                        onReload: { viewModel.reload() },
-                        onStop: { viewModel.stopLoading() },
-                        onHome: { viewModel.goHome() },
-                        onBookmark: { viewModel.showAddBookmark = true },
-                        onToggleHistory: { viewModel.toggleHistory() },
-                        onToggleBookmarks: { viewModel.toggleBookmarks() },
-                        onDownloads: { viewModel.toggleDownloads() },
-                        onSettings: { viewModel.showSettings() },
-                        onToggleAdBlock: { viewModel.toggleAdBlockForCurrentSite() },
-                        onTogglePrivateMode: { viewModel.requestTogglePrivateMode() },
-                        onAutoFill: { viewModel.toggleAutoFillPopup() },
-                        onGeneratePassword: { viewModel.generateAndFillPassword() },
-                        onPrint: { viewModel.printCurrentPage() },
-                        onToggleReaderMode: { viewModel.toggleReaderMode() },
-                        onPictureInPicture: { viewModel.togglePictureInPicture() },
-                        onScreenshot: { viewModel.captureScreenshot() },
-                        onQRCode: { viewModel.showQRCode = true },
-                        onSavePDF: { viewModel.savePDF() },
-                        onToggleFocusMode: { viewModel.toggleFocusMode() }
+                        isFocused: true,
+                        isSplitPane: false,
+                        onFocusPane: nil
                     )
                     .onDrop(of: [.cherryBrowserTab], isTargeted: nil) { providers in
                         viewModel.handleContentAreaDrop()
@@ -251,6 +254,47 @@ struct BrowserView: View {
                 sidebarView
             }
         }
+    }
+
+    /// Builds a `BrowserContentView` whose action closures target `tab`
+    /// specifically, so each split-view pane operates on its own tab rather
+    /// than whichever tab `viewModel.currentTab` currently resolves to.
+    @ViewBuilder
+    private func paneContentView(
+        tab: Tab,
+        isFocused: Bool,
+        isSplitPane: Bool,
+        onFocusPane: (() -> Void)?
+    ) -> some View {
+        BrowserContentView(
+            viewModel: viewModel,
+            tab: tab,
+            isFocused: isFocused,
+            isSplitPane: isSplitPane,
+            onFocusPane: onFocusPane,
+            onNavigate: { viewModel.navigate(to: $0, in: tab) },
+            onBack: { viewModel.goBack(for: tab) },
+            onForward: { viewModel.goForward(for: tab) },
+            onReload: { viewModel.reload(for: tab) },
+            onStop: { viewModel.stopLoading(for: tab) },
+            onHome: { viewModel.goHome() },
+            onBookmark: { viewModel.showAddBookmark = true },
+            onToggleHistory: { viewModel.toggleHistory() },
+            onToggleBookmarks: { viewModel.toggleBookmarks() },
+            onDownloads: { viewModel.toggleDownloads() },
+            onSettings: { viewModel.showSettings() },
+            onToggleAdBlock: { viewModel.toggleAdBlockForCurrentSite() },
+            onTogglePrivateMode: { viewModel.requestTogglePrivateMode() },
+            onAutoFill: { viewModel.toggleAutoFillPopup() },
+            onGeneratePassword: { viewModel.generateAndFillPassword() },
+            onPrint: { viewModel.printCurrentPage() },
+            onToggleReaderMode: { viewModel.toggleReaderMode() },
+            onPictureInPicture: { viewModel.togglePictureInPicture() },
+            onScreenshot: { viewModel.captureScreenshot() },
+            onQRCode: { viewModel.showQRCode = true },
+            onSavePDF: { viewModel.savePDF() },
+            onToggleFocusMode: { viewModel.toggleFocusMode() }
+        )
     }
 
     @ViewBuilder
@@ -485,17 +529,27 @@ struct BrowserView: View {
             Button("") { viewModel.reopenClosedTab() }
                 .keyboardShortcut("t", modifiers: [.command, .shift])
 
-            // Reload (Cmd+R)
-            Button("") { viewModel.reload() }
+            // Reload (Cmd+R) — acts on the focused split pane's tab
+            Button("") {
+                if let tab = viewModel.tabManager.focusedTab { viewModel.reload(for: tab) }
+            }
                 .keyboardShortcut("r", modifiers: .command)
 
-            // Go Back (Cmd+[)
-            Button("") { viewModel.goBack() }
+            // Go Back (Cmd+[) — acts on the focused split pane's tab
+            Button("") {
+                if let tab = viewModel.tabManager.focusedTab { viewModel.goBack(for: tab) }
+            }
                 .keyboardShortcut("[", modifiers: .command)
 
-            // Go Forward (Cmd+])
-            Button("") { viewModel.goForward() }
+            // Go Forward (Cmd+]) — acts on the focused split pane's tab
+            Button("") {
+                if let tab = viewModel.tabManager.focusedTab { viewModel.goForward(for: tab) }
+            }
                 .keyboardShortcut("]", modifiers: .command)
+
+            // Toggle Split View (Cmd+Shift+\)
+            Button("") { viewModel.toggleSplitView() }
+                .keyboardShortcut("\\", modifiers: [.command, .shift])
 
             // Focus Address Bar (Cmd+L)
             Button("") { isOmniboxFocused = true }
@@ -607,6 +661,16 @@ struct BrowserView: View {
 struct BrowserContentView: View {
     @Bindable var viewModel: BrowserViewModel
     @Bindable var tab: Tab
+    /// Whether this pane is the one keyboard shortcuts / toolbar clicks act on.
+    /// Always `true` outside split view.
+    var isFocused: Bool = true
+    /// Whether this instance is rendered inside the split-view `HSplitView`.
+    /// Gates the focus border/dim decoration so the single-pane path is
+    /// visually unchanged when split is off.
+    var isSplitPane: Bool = false
+    /// Called when the user clicks this pane's chrome (nav bar) to focus it.
+    /// `nil` outside split view, where there's nothing to switch focus to.
+    var onFocusPane: (() -> Void)? = nil
     let onNavigate: (String) -> Void
     let onBack: () -> Void
     let onForward: () -> Void
@@ -633,12 +697,19 @@ struct BrowserContentView: View {
     // Track URL changes to force WebViewWrapper updates
     @State private var urlVersion: Int = 0
 
+    /// Computed from THIS pane's tab, not `viewModel.currentTab` — so the
+    /// bookmark star reflects the right tab even for the unfocused split pane.
+    private var isBookmarked: Bool {
+        guard let url = tab.url else { return false }
+        return viewModel.bookmarkRepository.isBookmarked(url: url)
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             if !viewModel.isVideoFullscreen {
                 NavigationBarView(
                     tab: tab,
-                    isBookmarked: viewModel.isCurrentPageBookmarked(),
+                    isBookmarked: isBookmarked,
                     onNavigate: onNavigate,
                     onBack: onBack,
                     onForward: onForward,
@@ -685,6 +756,17 @@ struct BrowserContentView: View {
                         .zIndex(100)
                     }
                 }
+                .overlay(alignment: .top) {
+                    if isSplitPane && isFocused {
+                        Rectangle()
+                            .fill(SettingsManager.shared.accentColor)
+                            .frame(height: 2)
+                    }
+                }
+                .opacity(isSplitPane && !isFocused ? 0.6 : 1.0)
+                .simultaneousGesture(
+                    TapGesture().onEnded { onFocusPane?() }
+                )
                 .zIndex(200)
             }
 
