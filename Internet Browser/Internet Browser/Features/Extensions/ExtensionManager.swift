@@ -166,6 +166,15 @@ final class ExtensionManager: NSObject {
     func windowClosed(_ viewModel: BrowserViewModel) {
         let key = ObjectIdentifier(viewModel)
         if announcedWindows.remove(key) != nil, let adapter = windowAdapters[key] {
+            // Announce each still-open tab as removed BEFORE the window, so
+            // extensions get tabs.onRemoved for them (closing a multi-tab
+            // window via the red button / Cmd+Q never routes through
+            // TabManager.closeTab per tab). In the tab-by-tab close path the
+            // manager is already empty here, so this loop is a no-op — no
+            // double-close. Private tabs were never announced; skip them.
+            for tab in viewModel.tabManager.tabs where !tab.isPrivate {
+                controller.didCloseTab(tab, windowIsClosing: true)
+            }
             controller.didCloseWindow(adapter)
         }
         windowAdapters.removeValue(forKey: key)
