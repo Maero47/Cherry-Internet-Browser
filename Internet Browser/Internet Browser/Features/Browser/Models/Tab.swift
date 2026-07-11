@@ -125,12 +125,20 @@ final class Tab: Identifiable {
     /// reach it. Called by the WebViewWrapper coordinator's message handler.
     func registerMuteFrame(_ frame: WKFrameInfo) {
         guard !frame.isMainFrame else { return }
-        muteFrames.append(frame)
-        // Push the current state immediately so a just-loaded iframe matches.
-        if isMuted {
-            webView?.evaluateJavaScript(MuteScripts.applyMuteJS(muted: true),
-                                        in: frame, in: .page, completionHandler: nil)
+        // Bound the list: independently-reloading iframes (rotating ads, chat
+        // widgets) re-register without a main-frame navigation to clear them.
+        // Stale entries are harmless (their eval no-ops) but must not grow
+        // without limit; drop the oldest beyond the cap.
+        if muteFrames.count >= 64 {
+            muteFrames.removeFirst(muteFrames.count - 63)
         }
+        muteFrames.append(frame)
+        // Always correct the just-registered frame to the CURRENT state — the
+        // script's baked-in `muted` value is fixed at web-view creation and may
+        // be stale (e.g. muted then unmuted, then this iframe loaded). Pushing
+        // unconditionally prevents an iframe getting stuck force-muted.
+        webView?.evaluateJavaScript(MuteScripts.applyMuteJS(muted: isMuted),
+                                    in: frame, in: .page, completionHandler: nil)
     }
 
     /// Drops recorded sub-frames — call when the main frame navigates, since
