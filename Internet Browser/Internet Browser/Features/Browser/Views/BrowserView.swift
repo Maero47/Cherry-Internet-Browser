@@ -768,6 +768,7 @@ private struct WindowRegistrar: NSViewRepresentable {
         let view = NSView()
         DispatchQueue.main.async {
             viewModel.associatedWindow = view.window
+            viewModel.tabManager.hostWindow = view.window
         }
         return view
     }
@@ -776,6 +777,9 @@ private struct WindowRegistrar: NSViewRepresentable {
         DispatchQueue.main.async {
             if viewModel.associatedWindow == nil {
                 viewModel.associatedWindow = nsView.window
+            }
+            if viewModel.tabManager.hostWindow == nil {
+                viewModel.tabManager.hostWindow = nsView.window
             }
         }
     }

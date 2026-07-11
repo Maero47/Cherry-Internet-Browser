@@ -19,6 +19,12 @@ final class TabManager {
     /// Set by DragGesture reorder so the onDrop fallback doesn't double-reorder
     static var reorderedByGesture: Bool = false
 
+    /// The NSWindow this manager's tabs live in. Set by BrowserView's window
+    /// registrar. When the last tab leaves (close OR cross-window transfer) we
+    /// must close THIS window — not `NSApp.keyWindow`, which during a drag-drop
+    /// is often the destination window, causing the wrong window to close.
+    @ObservationIgnored weak var hostWindow: NSWindow?
+
     private let maxRecentlyClosedTabs = 25
     private var sleepTimer: Timer?
 
@@ -55,7 +61,9 @@ final class TabManager {
         tabs.remove(at: index)
 
         if tabs.isEmpty {
-            if let window = NSApp.keyWindow {
+            // Close THIS manager's window (the emptied source), not keyWindow —
+            // during a cross-window drag keyWindow is often the drop target.
+            if let window = hostWindow ?? NSApp.keyWindow {
                 window.close()
             }
             if NSApp.windows.filter({ $0.isVisible }).isEmpty {
@@ -109,8 +117,9 @@ final class TabManager {
 
         // Handle selection
         if tabs.isEmpty {
-            // Close the window when the last tab is closed
-            if let window = NSApp.keyWindow {
+            // Close this manager's own window when its last tab is closed —
+            // hostWindow, not keyWindow (which may be a different focused window).
+            if let window = hostWindow ?? NSApp.keyWindow {
                 window.close()
             }
             // If no windows remain, quit the app
