@@ -148,7 +148,10 @@ struct TabBarView: View {
             },
             onDetachTab: {
                 onDetachTab?(tab)
-            }
+            },
+            isSplitActive: tabManager.isSplitActive,
+            onOpenInSplitView: { tabManager.openSplit(with: tab.id) },
+            onCloseSplitView: { tabManager.closeSplit() }
         )
         // Dim the slot when the tab is floating as a ghost
         .opacity(isTearingOffThisTab ? 0.35 : 1.0)

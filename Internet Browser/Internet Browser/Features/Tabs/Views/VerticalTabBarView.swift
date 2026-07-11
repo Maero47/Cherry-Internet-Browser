@@ -317,6 +317,15 @@ private struct VerticalTabItemView: View {
                 onDetachTab?(tab)
             }
             .disabled(tabManager.tabs.count <= 1)
+            if tabManager.isSplitActive {
+                Button("Close Split View") {
+                    tabManager.closeSplit()
+                }
+            } else {
+                Button("Open in Split View") {
+                    tabManager.openSplit(with: tab.id)
+                }
+            }
             Divider()
             Button("Close Other Tabs") { tabManager.closeOtherTabs(tab) }
             Button("Close Tabs Below") { tabManager.closeTabsToRight(of: tab) }

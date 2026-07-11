@@ -21,6 +21,9 @@ struct TabItemView: View {
     var availableGroups: [TabGroup] = []
     var onAddToGroup: ((TabGroup) -> Void)? = nil
     var onDetachTab: (() -> Void)? = nil
+    var isSplitActive: Bool = false
+    var onOpenInSplitView: (() -> Void)? = nil
+    var onCloseSplitView: (() -> Void)? = nil
 
     @State private var isHovering = false
     @State private var showPreview = false
@@ -233,6 +236,15 @@ struct TabItemView: View {
         Divider()
         Button("Open in New Window") {
             onDetachTab?()
+        }
+        if isSplitActive {
+            Button("Close Split View") {
+                onCloseSplitView?()
+            }
+        } else {
+            Button("Open in Split View") {
+                onOpenInSplitView?()
+            }
         }
         Divider()
         if tab.isMuted {
