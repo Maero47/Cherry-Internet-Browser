@@ -203,9 +203,19 @@ final class BrowserViewModel {
     /// instead of creating an unrelated tab in the primary pane.
     func goHome(for tab: Tab?) {
         guard let tab else { return }
-        tab.stopLoading()
+        // Release the old page like closeTab does, so its audio/JS/timers stop
+        // instead of lingering invisibly behind the home page.
+        tab.webView?.stopLoading()
+        tab.webView?.loadHTMLString("", baseURL: nil)
+        tab.webView = nil
         tab.url = nil
         tab.title = "New Tab"
+        // Reset nav state so Back/Forward don't stay enabled pointing at the
+        // now-released page.
+        tab.canGoBack = false
+        tab.canGoForward = false
+        tab.isLoading = false
+        tab.loadingProgress = 0
         tab.showSettingsPage = false
         tab.showHomePage = true
     }
