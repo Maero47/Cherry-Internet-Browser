@@ -33,6 +33,8 @@ struct InspectedElement {
     var selector: String
     var styles: [String: String]       // computed styles
     var attrs: [String: String]        // DOM attributes
+    /// Tab (and therefore pane) this element was inspected in.
+    var tabID: UUID
 
     var displayName: String {
         var s = "<\(tag)"
@@ -60,15 +62,19 @@ final class DevToolsManager {
         consoleEntries.append(entry)
     }
 
-    func clearConsole() { consoleEntries.removeAll() }
+    /// Clears only the entries belonging to `tabID`, so clearing one pane's
+    /// console doesn't wipe the other pane's (or another window's) log.
+    func clearConsole(tabID: UUID) {
+        consoleEntries.removeAll { $0.tabID == tabID }
+    }
 
     // MARK: - Network
 
     var networkEntries: [NetworkEntry] = []
     private var inFlight: [String: Date] = [:]
 
-    func networkRequestStarted(url: String, method: String) -> String {
-        let entry = NetworkEntry(url: url, method: method)
+    func networkRequestStarted(url: String, method: String, tabID: UUID) -> String {
+        let entry = NetworkEntry(url: url, method: method, tabID: tabID)
         let key   = entry.id.uuidString
         inFlight[key] = Date()
         if networkEntries.count >= 2000 {
@@ -89,14 +95,25 @@ final class DevToolsManager {
         }
     }
 
-    func finalizeByURL(url: String, statusCode: Int, mimeType: String?, isError: Bool) {
+    /// Finalizes the in-flight request matching both `url` and `tabID` — the
+    /// tabID match is required so two panes loading the same URL concurrently
+    /// don't finalize each other's entry.
+    func finalizeByURL(url: String, statusCode: Int, mimeType: String?, isError: Bool, tabID: UUID) {
         guard let key = inFlight.keys.first(where: { k in
             networkEntries.first(where: { $0.id.uuidString == k })?.url == url
+                && networkEntries.first(where: { $0.id.uuidString == k })?.tabID == tabID
         }) else { return }
         networkRequestFinished(key: key, statusCode: statusCode, mimeType: mimeType, isError: isError)
     }
 
-    func clearNetwork() { networkEntries.removeAll(); inFlight.removeAll() }
+    /// Clears only the entries belonging to `tabID`.
+    func clearNetwork(tabID: UUID) {
+        let keysToRemove = networkEntries
+            .filter { $0.tabID == tabID }
+            .map { $0.id.uuidString }
+        networkEntries.removeAll { $0.tabID == tabID }
+        for key in keysToRemove { inFlight.removeValue(forKey: key) }
+    }
 
     // MARK: - Elements / Inspect
 
@@ -104,7 +121,7 @@ final class DevToolsManager {
     var activeDevToolsTab: DevToolsTab = .console
 
     /// Called from the right-click "Inspect Element" JS result
-    func selectElement(from dict: [String: Any]) {
+    func selectElement(from dict: [String: Any], tabID: UUID) {
         let stylesRaw = dict["styles"] as? [String: Any] ?? [:]
         var styles: [String: String] = [:]
         for (k, v) in stylesRaw { styles[k] = "\(v)" }
@@ -120,7 +137,8 @@ final class DevToolsManager {
             outerHTML: dict["outerHTML"] as? String ?? "",
             selector:  dict["selector"]  as? String ?? "",
             styles:    styles,
-            attrs:     attrs
+            attrs:     attrs,
+            tabID:     tabID
         )
         activeDevToolsTab = .elements
     }

@@ -45,12 +45,16 @@ struct ConsoleEntry: Identifiable {
     let timestamp: Date
     let level: ConsoleLevel
     let message: String
+    /// Tab (and therefore pane/window) this entry originated from, so split
+    /// panes and separate windows can each show only their own tab's log.
+    let tabID: UUID
 
-    init(level: ConsoleLevel, message: String) {
+    init(level: ConsoleLevel, message: String, tabID: UUID) {
         self.id        = UUID()
         self.timestamp = Date()
         self.level     = level
         self.message   = message
+        self.tabID     = tabID
     }
 
     var timestampString: String {

@@ -15,8 +15,11 @@ struct NetworkEntry: Identifiable {
     var responseTimeMs: Double?
     var mimeType: String?
     var isError: Bool
+    /// Tab (and therefore pane/window) this request originated from, so split
+    /// panes and separate windows can each show only their own tab's traffic.
+    let tabID: UUID
 
-    init(url: String, method: String) {
+    init(url: String, method: String, tabID: UUID) {
         self.id             = UUID()
         self.timestamp      = Date()
         self.url            = url
@@ -25,6 +28,7 @@ struct NetworkEntry: Identifiable {
         self.responseTimeMs = nil
         self.mimeType       = nil
         self.isError        = false
+        self.tabID          = tabID
     }
 
     var displayURL: String {

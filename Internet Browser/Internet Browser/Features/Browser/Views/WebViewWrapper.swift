@@ -17,6 +17,11 @@ final class CherryWebView: WKWebView {
     /// there's nothing to switch focus to.
     var onFocused: (() -> Void)?
 
+    /// The tab this web view belongs to. Kept in sync by `WebViewWrapper` so
+    /// `cherryInspect` can tag the inspected element with the right pane's
+    /// tab, regardless of which pane the user right-clicked into.
+    var tabID: UUID?
+
     override func becomeFirstResponder() -> Bool {
         onFocused?()
         return super.becomeFirstResponder()
@@ -89,13 +94,18 @@ final class CherryWebView: WKWebView {
         })();
         """
 
+        let inspectedTabID = tabID
         evaluateJavaScript(js) { result, _ in
             guard let jsonStr = result as? String,
                   let data    = jsonStr.data(using: .utf8),
-                  let dict    = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+                  let dict    = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let inspectedTabID
             else { return }
             DispatchQueue.main.async {
-                DevToolsManager.shared.selectElement(from: dict)
+                // Focus this pane BEFORE selecting the element, so the panel
+                // (which shows the focused pane's tab) actually displays it.
+                self.onFocused?()
+                DevToolsManager.shared.selectElement(from: dict, tabID: inspectedTabID)
                 // Open the dev tools panel if not already open
                 NotificationCenter.default.post(name: .showConsole, object: nil)
             }
@@ -225,6 +235,7 @@ struct WebViewWrapper: NSViewRepresentable {
             cherry.allowsBackForwardNavigationGestures = true
             cherry.allowsMagnification = true
             cherry.onFocused = onFocused
+            cherry.tabID = tab.id
             tab.webView = cherry
             webView = cherry
         }
@@ -268,6 +279,7 @@ struct WebViewWrapper: NSViewRepresentable {
         // changes onFocusPane from nil to a live closure (or back), and a
         // stale closure captured only at makeNSView-time would miss that.
         (webView as? CherryWebView)?.onFocused = onFocused
+        (webView as? CherryWebView)?.tabID = tab.id
 
         if let tabURL = tab.url {
             let lastURLString = context.coordinator.lastLoadedURL?.absoluteString ?? ""
@@ -585,10 +597,10 @@ struct WebViewWrapper: NSViewRepresentable {
             }
 
             // Track main-frame HTTP navigations for the network panel
-            if isMainFrame, scheme == "https" || scheme == "http" {
+            if isMainFrame, scheme == "https" || scheme == "http", let tabID = tab?.id {
                 let method = navigationAction.request.httpMethod ?? "GET"
                 let urlStr = url.absoluteString
-                let key = DevToolsManager.shared.networkRequestStarted(url: urlStr, method: method)
+                let key = DevToolsManager.shared.networkRequestStarted(url: urlStr, method: method, tabID: tabID)
                 pendingNetworkKeys[urlStr] = key
             }
 
@@ -969,7 +981,8 @@ struct WebViewWrapper: NSViewRepresentable {
                 let levelStr = body["level"] as? String ?? "log"
                 let message  = body["message"] as? String ?? ""
                 let level    = ConsoleLevel(rawValue: levelStr) ?? .log
-                let entry    = ConsoleEntry(level: level, message: message)
+                guard let tabID = self.tab?.id else { return }
+                let entry    = ConsoleEntry(level: level, message: message, tabID: tabID)
                 Task { @MainActor in
                     DevToolsManager.shared.appendConsole(entry)
                 }
@@ -978,15 +991,16 @@ struct WebViewWrapper: NSViewRepresentable {
                 let type     = body["type"] as? String ?? "start"
                 let url      = body["url"] as? String ?? ""
                 let method   = body["method"] as? String ?? "GET"
+                guard let tabID = self.tab?.id else { return }
                 Task { @MainActor in
                     if type == "start" {
-                        _ = DevToolsManager.shared.networkRequestStarted(url: url, method: method)
+                        _ = DevToolsManager.shared.networkRequestStarted(url: url, method: method, tabID: tabID)
                     } else {
                         let status  = body["status"] as? Int ?? 0
                         let mime    = body["mimeType"] as? String
                         DevToolsManager.shared.finalizeByURL(
                             url: url, statusCode: status,
-                            mimeType: mime, isError: status >= 400
+                            mimeType: mime, isError: status >= 400, tabID: tabID
                         )
                     }
                 }
