@@ -374,17 +374,26 @@ final class BrowserViewModel {
 
         if let edge, tabManager.tabs.contains(where: { $0.id == draggedID }) {
             TabManager.draggedTabID = nil
-            switch edge {
-            case .trailing:
+            if draggedID == tabManager.selectedTabID {
+                // Dragging the already-current tab onto either edge — the
+                // primary/secondary swap below is meaningless since there's
+                // nothing to swap with. Let openSplit pick a sensible
+                // secondary (adjacent tab, or a fresh one) instead of the
+                // leading-swap dance silently substituting an unrelated tab.
                 tabManager.openSplit(with: draggedID)
-            case .leading:
-                let previousPrimaryID = tabManager.selectedTabID
-                tabManager.selectedTabID = draggedID
-                if let previousPrimaryID {
-                    tabManager.openSplit(with: previousPrimaryID)
+            } else {
+                switch edge {
+                case .trailing:
+                    tabManager.openSplit(with: draggedID)
+                case .leading:
+                    let previousPrimaryID = tabManager.selectedTabID
+                    tabManager.selectedTabID = draggedID
+                    if let previousPrimaryID {
+                        tabManager.openSplit(with: previousPrimaryID)
+                    }
+                default:
+                    break
                 }
-            default:
-                break
             }
             return true
         }
