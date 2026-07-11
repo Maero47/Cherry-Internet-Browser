@@ -1050,26 +1050,45 @@ final class BrowserViewModel {
               SessionRestoreManager.shared.hasSavedSession else { return }
 
         let entries = SessionRestoreManager.shared.loadSavedTabs()
+        let savedGroups = SessionRestoreManager.shared.loadSavedGroups()
         let selectedIndex = SessionRestoreManager.shared.loadSelectedIndex()
         SessionRestoreManager.shared.clearSession()
 
         guard !entries.isEmpty else { return }
+
+        // Recreate groups first so restored tabs can be assigned to them.
+        var groupsByID: [UUID: TabGroup] = [:]
+        for savedGroup in savedGroups {
+            let color = TabGroupColor(rawValue: savedGroup.colorRawValue) ?? .blue
+            groupsByID[savedGroup.id] = tabManager.restoreGroup(
+                id: savedGroup.id,
+                name: savedGroup.name,
+                color: color,
+                isCollapsed: savedGroup.isCollapsed
+            )
+        }
 
         // Replace the default blank tab with the restored session
         let hadOnlyBlankTab = tabManager.tabs.count == 1 && tabManager.tabs.first?.url == nil
 
         for (i, entry) in entries.enumerated() {
             guard let url = URL(string: entry.urlString) else { continue }
+            let restoredTab: Tab
             if i == 0 && hadOnlyBlankTab, let firstTab = tabManager.tabs.first {
                 // Re-use the existing blank tab for the first restored URL
                 firstTab.title = entry.title
                 firstTab.showHomePage = false
                 firstTab.loadURL(url)
+                restoredTab = firstTab
             } else {
                 let tab = tabManager.newTab(url: url)
                 tab.title = entry.title
                 tab.showHomePage = false
                 tab.loadURL(url)
+                restoredTab = tab
+            }
+            if let groupID = entry.groupID {
+                restoredTab.group = groupsByID[groupID]
             }
         }
 
@@ -1082,7 +1101,7 @@ final class BrowserViewModel {
     func saveSessionForRestore() {
         guard !isPrivateMode else { return }
         let selectedIndex = tabManager.tabs.firstIndex(where: { $0.id == tabManager.selectedTabID })
-        SessionRestoreManager.shared.saveSession(tabs: tabManager.tabs, selectedIndex: selectedIndex)
+        SessionRestoreManager.shared.saveSession(tabs: tabManager.tabs, groups: tabManager.tabGroups, selectedIndex: selectedIndex)
     }
 
     // MARK: - Screenshot

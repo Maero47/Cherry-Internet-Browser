@@ -273,6 +273,15 @@ final class TabManager {
         tabGroups.removeAll { $0.id == group.id }
     }
 
+    /// Recreates a group with a caller-specified id, preserving identity so
+    /// restored tabs can be matched back to it. Used by session restore.
+    @discardableResult
+    func restoreGroup(id: UUID, name: String, color: TabGroupColor, isCollapsed: Bool) -> TabGroup {
+        let group = TabGroup(id: id, name: name, color: color, isCollapsed: isCollapsed)
+        tabGroups.append(group)
+        return group
+    }
+
     // MARK: - Tab Sleeping
 
     private func startSleepTimer() {
