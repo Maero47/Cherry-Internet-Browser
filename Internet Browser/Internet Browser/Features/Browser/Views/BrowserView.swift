@@ -824,7 +824,8 @@ struct BrowserContentView: View {
                     onNewTabWithWebView: { webView, url in
                         viewModel.newTabWithWebView(webView, url: url)
                     },
-                    viewModel: viewModel
+                    viewModel: viewModel,
+                    onFocused: onFocusPane
                 )
                     .id(tab.id)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
