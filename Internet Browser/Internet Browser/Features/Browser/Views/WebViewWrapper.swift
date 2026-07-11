@@ -102,6 +102,14 @@ struct WebViewWrapper: NSViewRepresentable {
         let configuration = WKWebViewConfiguration()
         configuration.preferences.isElementFullscreenEnabled = true
         configuration.preferences.javaScriptCanOpenWindowsAutomatically = !settings.blockPopups
+        // Enable video Picture-in-Picture. On macOS the public
+        // `WKWebViewConfiguration.allowsPictureInPictureMediaPlayback` is iOS-only,
+        // but the underlying WKPreferences flag is settable via KVC and is REQUIRED —
+        // without it `video.webkitSupportsPresentationMode('picture-in-picture')` is
+        // false and `webkitSetPresentationMode(...)` is a silent no-op. This exact key
+        // was verified against WKPreferences to be KVC-compliant (no exception) and to
+        // flip PiP support on. See BrowserViewModel.togglePictureInPicture().
+        configuration.preferences.setValue(true, forKey: "allowsPictureInPictureMediaPlayback")
         configuration.defaultWebpagePreferences.allowsContentJavaScript = settings.enableJavaScript
 
         // Use Safari user agent — WKWebView IS the Safari/WebKit engine, so this
