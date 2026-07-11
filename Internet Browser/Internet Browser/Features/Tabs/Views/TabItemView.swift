@@ -42,6 +42,20 @@ struct TabItemView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
 
+            // Mute indicator — click to unmute
+            if tab.isMuted && !tab.isPinned && (fixedWidth ?? 999) > 100 {
+                Button {
+                    tab.isMuted = false
+                } label: {
+                    Image(systemName: "speaker.slash.fill")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .frame(width: 14, height: 14)
+                .help("Unmute Tab")
+            }
+
             // Close button (always in layout to prevent jumps, opacity-controlled)
             if !tab.isPinned {
                 Button(action: onClose) {

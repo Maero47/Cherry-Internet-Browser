@@ -191,6 +191,11 @@ struct WebViewWrapper: NSViewRepresentable {
         webView.navigationDelegate = context.coordinator
         webView.uiDelegate = context.coordinator
 
+        // Re-apply the tab's muted state to the freshly (re)created WebView —
+        // isAudioMuted lives on the view itself, so it's lost on sleep/wake and
+        // any other webView recreation.
+        tab.applyMuteState()
+
         // Enable Safari Web Inspector attachment (Develop > Show Web Inspector in menu bar)
         if #available(macOS 13.3, *) {
             webView.isInspectable = true

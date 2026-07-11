@@ -23,7 +23,11 @@ final class Tab: Identifiable {
     var canGoBack: Bool
     var canGoForward: Bool
     var isPinned: Bool
-    var isMuted: Bool
+    var isMuted: Bool {
+        didSet {
+            applyMuteState()
+        }
+    }
     var showHomePage: Bool
     var showSettingsPage: Bool
     var webView: WKWebView?
@@ -100,12 +104,21 @@ final class Tab: Identifiable {
         wv.allowsMagnification = true
         // User agent is set via applicationNameForUserAgent on the configuration in WebViewWrapper
         self.webView = wv
+        applyMuteState()
         return wv
     }
 
     /// Adopt an externally-created WKWebView (e.g. from a popup)
     func adoptWebView(_ wv: WKWebView) {
         self.webView = wv
+        applyMuteState()
+    }
+
+    /// Re-applies `isMuted` to the live WebView. Must be called whenever a tab's
+    /// WKWebView is (re)created — e.g. sleep/wake, popup adoption, WebViewWrapper
+    /// recreation — since WKWebView.isAudioMuted lives on the view, not the model.
+    func applyMuteState() {
+        webView?.isAudioMuted = isMuted
     }
 
     func loadURL(_ url: URL) {

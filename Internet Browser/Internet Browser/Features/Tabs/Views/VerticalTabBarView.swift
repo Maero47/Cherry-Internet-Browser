@@ -205,6 +205,20 @@ private struct VerticalTabItemView: View {
                     .truncationMode(.tail)
                     .frame(maxWidth: .infinity, alignment: .leading)
 
+                // Mute indicator — click to unmute
+                if tab.isMuted {
+                    Button {
+                        tab.isMuted = false
+                    } label: {
+                        Image(systemName: "speaker.slash.fill")
+                            .font(.system(size: 9))
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .frame(width: 12, height: 12)
+                    .help("Unmute Tab")
+                }
+
                 // Close button (always in layout, opacity-controlled)
                 Button {
                     tabManager.closeTab(tab)
