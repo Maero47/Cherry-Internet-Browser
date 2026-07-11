@@ -37,6 +37,13 @@ final class TabManager {
         return tabs.first { $0.id == id }
     }
 
+    /// `TabManager` isn't formally `@MainActor`-isolated but is only ever used
+    /// from the main thread (SwiftUI/AppKit UI code) — this asserts that fact
+    /// so it can call into the `@MainActor`-isolated `ExtensionManager`.
+    private func notifyExtensionManager(_ body: @MainActor () -> Void) {
+        MainActor.assumeIsolated(body)
+    }
+
     var selectedTabIndex: Int? {
         guard let id = selectedTabID else { return nil }
         return tabs.firstIndex { $0.id == id }
@@ -151,10 +158,13 @@ final class TabManager {
 
     @discardableResult
     func newTab(url: URL? = nil, switchTo: Bool = true) -> Tab {
+        let previous = selectedTab
         let tab = Tab(url: url)
         tabs.append(tab)
+        notifyExtensionManager { ExtensionManager.shared.tabOpened(tab) }
         if switchTo {
             selectedTabID = tab.id
+            notifyExtensionManager { ExtensionManager.shared.tabActivated(tab, previous: previous) }
         }
         return tab
     }
@@ -182,6 +192,8 @@ final class TabManager {
         // Split fix-up: closing the primary tab while split is active promotes
         // the secondary tab to primary instead of leaving a dangling secondary.
         let promotedTabID: UUID? = (isSplitActive && selectedTabID == tab.id) ? secondarySelectedTabID : nil
+
+        notifyExtensionManager { ExtensionManager.shared.tabClosed(tab, windowIsClosing: tabs.count == 1) }
 
         // Remove the tab
         tabs.remove(at: index)
@@ -237,6 +249,8 @@ final class TabManager {
         }
         tab.lastActiveDate = Date()
 
+        let previous = selectedTab
+
         // Selecting the tab currently shown in the secondary pane would make
         // selectedTabID == secondarySelectedTabID — the same Tab mounted in
         // both HSplitView panes at once. Swap the panes instead: the clicked
@@ -245,10 +259,12 @@ final class TabManager {
             let oldPrimaryID = selectedTabID
             selectedTabID = tab.id
             secondarySelectedTabID = oldPrimaryID
+            notifyExtensionManager { ExtensionManager.shared.tabActivated(tab, previous: previous) }
             return
         }
 
         selectedTabID = tab.id
+        notifyExtensionManager { ExtensionManager.shared.tabActivated(tab, previous: previous) }
     }
 
     func selectTab(at index: Int) {
@@ -286,13 +302,16 @@ final class TabManager {
     // MARK: - Duplicate / Reopen
 
     func duplicateTab(_ tab: Tab) -> Tab {
+        let previous = selectedTab
         let duplicate = Tab(url: tab.url, title: tab.title)
         if let index = tabs.firstIndex(of: tab) {
             tabs.insert(duplicate, at: index + 1)
         } else {
             tabs.append(duplicate)
         }
+        notifyExtensionManager { ExtensionManager.shared.tabOpened(duplicate) }
         selectedTabID = duplicate.id
+        notifyExtensionManager { ExtensionManager.shared.tabActivated(duplicate, previous: previous) }
         return duplicate
     }
 
@@ -300,9 +319,12 @@ final class TabManager {
         guard let closedTab = recentlyClosedTabs.first else { return nil }
         recentlyClosedTabs.removeFirst()
 
+        let previous = selectedTab
         let tab = Tab(url: closedTab.url, title: closedTab.title)
         tabs.append(tab)
+        notifyExtensionManager { ExtensionManager.shared.tabOpened(tab) }
         selectedTabID = tab.id
+        notifyExtensionManager { ExtensionManager.shared.tabActivated(tab, previous: previous) }
         return tab
     }
 
