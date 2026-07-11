@@ -39,8 +39,12 @@ final class TabManager {
 
     /// `TabManager` isn't formally `@MainActor`-isolated but is only ever used
     /// from the main thread (SwiftUI/AppKit UI code) — this asserts that fact
-    /// so it can call into the `@MainActor`-isolated `ExtensionManager`.
-    private func notifyExtensionManager(_ body: @MainActor () -> Void) {
+    /// so it can call into the `@MainActor`-isolated `ExtensionManager`. Skips
+    /// the notification entirely for private tabs: extensions have no access
+    /// to private browsing in v1a, so they must never learn a private tab
+    /// even exists via open/close/activate events.
+    private func notifyExtensionManager(for tab: Tab, _ body: @MainActor () -> Void) {
+        guard !tab.isPrivate else { return }
         MainActor.assumeIsolated(body)
     }
 
@@ -161,10 +165,10 @@ final class TabManager {
         let previous = selectedTab
         let tab = Tab(url: url)
         tabs.append(tab)
-        notifyExtensionManager { ExtensionManager.shared.tabOpened(tab) }
+        notifyExtensionManager(for: tab) { ExtensionManager.shared.tabOpened(tab) }
         if switchTo {
             selectedTabID = tab.id
-            notifyExtensionManager { ExtensionManager.shared.tabActivated(tab, previous: previous) }
+            notifyExtensionManager(for: tab) { ExtensionManager.shared.tabActivated(tab, previous: previous) }
         }
         return tab
     }
@@ -193,7 +197,7 @@ final class TabManager {
         // the secondary tab to primary instead of leaving a dangling secondary.
         let promotedTabID: UUID? = (isSplitActive && selectedTabID == tab.id) ? secondarySelectedTabID : nil
 
-        notifyExtensionManager { ExtensionManager.shared.tabClosed(tab, windowIsClosing: tabs.count == 1) }
+        notifyExtensionManager(for: tab) { ExtensionManager.shared.tabClosed(tab, windowIsClosing: tabs.count == 1) }
 
         // Remove the tab
         tabs.remove(at: index)
@@ -259,12 +263,12 @@ final class TabManager {
             let oldPrimaryID = selectedTabID
             selectedTabID = tab.id
             secondarySelectedTabID = oldPrimaryID
-            notifyExtensionManager { ExtensionManager.shared.tabActivated(tab, previous: previous) }
+            notifyExtensionManager(for: tab) { ExtensionManager.shared.tabActivated(tab, previous: previous) }
             return
         }
 
         selectedTabID = tab.id
-        notifyExtensionManager { ExtensionManager.shared.tabActivated(tab, previous: previous) }
+        notifyExtensionManager(for: tab) { ExtensionManager.shared.tabActivated(tab, previous: previous) }
     }
 
     func selectTab(at index: Int) {
@@ -309,9 +313,9 @@ final class TabManager {
         } else {
             tabs.append(duplicate)
         }
-        notifyExtensionManager { ExtensionManager.shared.tabOpened(duplicate) }
+        notifyExtensionManager(for: duplicate) { ExtensionManager.shared.tabOpened(duplicate) }
         selectedTabID = duplicate.id
-        notifyExtensionManager { ExtensionManager.shared.tabActivated(duplicate, previous: previous) }
+        notifyExtensionManager(for: duplicate) { ExtensionManager.shared.tabActivated(duplicate, previous: previous) }
         return duplicate
     }
 
@@ -322,9 +326,9 @@ final class TabManager {
         let previous = selectedTab
         let tab = Tab(url: closedTab.url, title: closedTab.title)
         tabs.append(tab)
-        notifyExtensionManager { ExtensionManager.shared.tabOpened(tab) }
+        notifyExtensionManager(for: tab) { ExtensionManager.shared.tabOpened(tab) }
         selectedTabID = tab.id
-        notifyExtensionManager { ExtensionManager.shared.tabActivated(tab, previous: previous) }
+        notifyExtensionManager(for: tab) { ExtensionManager.shared.tabActivated(tab, previous: previous) }
         return tab
     }
 

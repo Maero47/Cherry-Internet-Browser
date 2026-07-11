@@ -40,15 +40,19 @@ final class ExtensionManager: NSObject {
     // MARK: - Load / Unload
 
     /// Loads a WebExtension from a `.xpi`/`.zip` file or an unpacked directory,
-    /// auto-granting every permission and host pattern it requests (v1a has no
-    /// permission prompt yet), then announces every already-open window/tab so
-    /// content scripts inject into pages that were loaded before this call.
+    /// auto-granting exactly the permissions and host patterns it *requests*
+    /// (v1a has no permission prompt yet — see the delegate's prompt methods
+    /// below), then announces every already-open window/tab so content
+    /// scripts inject into pages that were loaded before this call.
+    ///
+    /// Deliberately does NOT also grant `WKWebExtension.MatchPattern.allURLs()`
+    /// — that would give every loaded extension universal host access
+    /// regardless of what it actually declared needing.
     @discardableResult
     func loadExtension(from fileURL: URL) async throws -> LoadedExtension {
         let webExtension = try await WKWebExtension(resourceBaseURL: fileURL)
         let context = WKWebExtensionContext(for: webExtension)
 
-        context.setPermissionStatus(.grantedExplicitly, for: WKWebExtension.MatchPattern.allURLs())
         for pattern in webExtension.requestedPermissionMatchPatterns {
             context.setPermissionStatus(.grantedExplicitly, for: pattern)
         }
@@ -83,12 +87,22 @@ final class ExtensionManager: NSObject {
         return adapter
     }
 
-    /// Registers every currently open window and tab with the controller.
-    /// Needed right after loading a new extension, since content scripts only
-    /// inject into tabs the controller already knows about — otherwise tabs
-    /// opened before this extension was loaded would be skipped.
+    /// Windows extensions are allowed to see. v1a has no per-extension
+    /// "allow in private browsing" opt-in (`WKWebExtensionContext.hasAccessToPrivateData`
+    /// is left at its default `false` for every context), so private/incognito
+    /// windows are excluded from every extension-facing API entirely, rather
+    /// than relying solely on that flag — the same window/tab is also never
+    /// wired to `configuration.webExtensionController` in `WebViewWrapper`.
+    private var extensionVisibleViewModels: [BrowserViewModel] {
+        BrowserViewModel.windowViewModels.values.filter { !$0.isPrivateMode }
+    }
+
+    /// Registers every currently open (non-private) window and tab with the
+    /// controller. Needed right after loading a new extension, since content
+    /// scripts only inject into tabs the controller already knows about —
+    /// otherwise tabs opened before this extension was loaded would be skipped.
     private func announceExistingWindowsAndTabs() {
-        for (_, viewModel) in BrowserViewModel.windowViewModels {
+        for viewModel in extensionVisibleViewModels {
             let adapter = windowAdapter(for: viewModel)
             controller.didOpenWindow(adapter)
             for tab in viewModel.tabManager.tabs {
@@ -122,7 +136,7 @@ extension ExtensionManager: WKWebExtensionControllerDelegate {
         _ controller: WKWebExtensionController,
         openWindowsFor context: WKWebExtensionContext
     ) -> [any WKWebExtensionWindow] {
-        BrowserViewModel.windowViewModels.values.map { windowAdapter(for: $0) }
+        extensionVisibleViewModels.map { windowAdapter(for: $0) }
     }
 
     func webExtensionController(
@@ -130,7 +144,7 @@ extension ExtensionManager: WKWebExtensionControllerDelegate {
         focusedWindowFor context: WKWebExtensionContext
     ) -> (any WKWebExtensionWindow)? {
         let keyWindow = NSApp.keyWindow
-        let viewModels = BrowserViewModel.windowViewModels.values
+        let viewModels = extensionVisibleViewModels
         let focused = viewModels.first { $0.associatedWindow === keyWindow } ?? viewModels.first
         return focused.map { windowAdapter(for: $0) }
     }
@@ -142,7 +156,7 @@ extension ExtensionManager: WKWebExtensionControllerDelegate {
         completionHandler: @escaping ((any WKWebExtensionTab)?, (any Error)?) -> Void
     ) {
         let keyWindow = NSApp.keyWindow
-        let viewModels = BrowserViewModel.windowViewModels.values
+        let viewModels = extensionVisibleViewModels
         guard let viewModel = (viewModels.first { $0.associatedWindow === keyWindow } ?? viewModels.first) else {
             completionHandler(nil, nil)
             return

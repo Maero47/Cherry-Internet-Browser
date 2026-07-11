@@ -130,7 +130,14 @@ struct WebViewWrapper: NSViewRepresentable {
     func makeNSView(context: Context) -> WKWebView {
         let settings = SettingsManager.shared
         let configuration = WKWebViewConfiguration()
-        configuration.webExtensionController = ExtensionManager.shared.controller
+        // Extensions never run in private/incognito tabs in v1a — there's no
+        // per-extension "allow in private browsing" opt-in yet, so leaving the
+        // controller unset here is what actually prevents content scripts from
+        // running on private pages (ExtensionManager also excludes private
+        // windows from every window/tab-enumeration API as a second layer).
+        if !tab.isPrivate {
+            configuration.webExtensionController = ExtensionManager.shared.controller
+        }
         configuration.preferences.isElementFullscreenEnabled = true
         configuration.preferences.javaScriptCanOpenWindowsAutomatically = !settings.blockPopups
         // Enable video Picture-in-Picture. On macOS the public
