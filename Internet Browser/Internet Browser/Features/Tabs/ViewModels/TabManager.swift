@@ -64,9 +64,17 @@ final class TabManager {
     func openSplit(with secondaryTabID: UUID) {
         guard tabs.contains(where: { $0.id == secondaryTabID }) else { return }
         if secondaryTabID == selectedTabID {
-            guard tabs.count > 1, let index = selectedTabIndex else { return }
-            let nextIndex = (index + 1) % tabs.count
-            secondarySelectedTabID = tabs[nextIndex].id
+            if tabs.count > 1, let index = selectedTabIndex {
+                let nextIndex = (index + 1) % tabs.count
+                secondarySelectedTabID = tabs[nextIndex].id
+            } else {
+                // Only one tab open — create a fresh home-page tab for the
+                // secondary pane so "Open in Split View" on the lone tab still
+                // opens a working two-pane split instead of silently no-op'ing.
+                let newSecondary = newTab(switchTo: false)
+                newSecondary.isPrivate = tabs.first?.isPrivate ?? false
+                secondarySelectedTabID = newSecondary.id
+            }
         } else {
             secondarySelectedTabID = secondaryTabID
         }

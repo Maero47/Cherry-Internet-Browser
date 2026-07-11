@@ -194,7 +194,20 @@ final class BrowserViewModel {
     }
 
     func goHome() {
-        newTab()
+        goHome(for: tabManager.focusedTab)
+    }
+
+    /// Takes a specific pane's tab to the home page IN PLACE (like `goBack(for:)`
+    /// acts on that tab), rather than spawning a new primary tab — so clicking
+    /// Home in the secondary split pane returns THAT pane to the home page
+    /// instead of creating an unrelated tab in the primary pane.
+    func goHome(for tab: Tab?) {
+        guard let tab else { return }
+        tab.stopLoading()
+        tab.url = nil
+        tab.title = "New Tab"
+        tab.showSettingsPage = false
+        tab.showHomePage = true
     }
 
     func showSettings() {

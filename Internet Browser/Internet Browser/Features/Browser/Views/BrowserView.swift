@@ -287,7 +287,7 @@ struct BrowserView: View {
             onForward: { onFocusPane?(); viewModel.goForward(for: tab) },
             onReload: { onFocusPane?(); viewModel.reload(for: tab) },
             onStop: { onFocusPane?(); viewModel.stopLoading(for: tab) },
-            onHome: { onFocusPane?(); viewModel.goHome() },
+            onHome: { onFocusPane?(); viewModel.goHome(for: tab) },
             onBookmark: { onFocusPane?(); viewModel.showAddBookmark = true },
             onToggleHistory: { onFocusPane?(); viewModel.toggleHistory() },
             onToggleBookmarks: { onFocusPane?(); viewModel.toggleBookmarks() },
