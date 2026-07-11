@@ -501,7 +501,23 @@ final class BrowserViewModel {
     }
 
     func confirmTogglePrivateMode() {
+        let wasPrivate = isPrivateMode
+        // Snapshot BEFORE any tab gets mutated/replaced below — these are the
+        // exact Tab instances (if any) the extension controller was told
+        // about via didOpenTab, and going private must close exactly those.
+        let previousTabs = tabManager.tabs
+
         isPrivateMode.toggle()
+
+        if !wasPrivate && isPrivateMode {
+            // BrowserViewModel isn't formally @MainActor-isolated but is only
+            // ever driven from the main thread, same rationale as TabManager's
+            // notifyExtensionManager helper.
+            MainActor.assumeIsolated {
+                ExtensionManager.shared.windowBecamePrivate(self, tabs: previousTabs)
+            }
+        }
+
         // Update all existing tabs and drop their web views so they are
         // recreated with the correct data store when next displayed.
         // (The data store is fixed in the WKWebViewConfiguration at creation,
@@ -520,6 +536,15 @@ final class BrowserViewModel {
         }
         if tabManager.isSplitActive, let secondary = tabManager.secondarySelectedTab {
             hardReplaceOnScreenTab(secondary)
+        }
+
+        if wasPrivate && !isPrivateMode {
+            // Announce the now-finalized (post hard-replace) tab set, since
+            // this window was excluded from every extension-facing API while
+            // private and so was never previously known to the controller.
+            MainActor.assumeIsolated {
+                ExtensionManager.shared.windowBecameNormal(self)
+            }
         }
     }
 

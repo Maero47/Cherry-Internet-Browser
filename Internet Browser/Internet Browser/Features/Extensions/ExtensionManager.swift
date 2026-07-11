@@ -171,6 +171,36 @@ final class ExtensionManager: NSObject {
         windowAdapters.removeValue(forKey: key)
     }
 
+    // MARK: - Private-mode toggle reconciliation (called by BrowserViewModel)
+
+    /// A window just switched from normal to private browsing. If it had
+    /// been announced to the controller, tell the controller its tabs and
+    /// itself are gone — otherwise the controller (and any extension that
+    /// already saw `didOpenTab`/`didOpenWindow` for it) would keep believing
+    /// a now-private, now-excluded window is still open forever. Must be
+    /// called with the tab list as it stood BEFORE any tab identity swap
+    /// (e.g. `BrowserViewModel.hardReplaceOnScreenTab`) — those are the exact
+    /// `Tab` instances that were actually announced via `didOpenTab`.
+    func windowBecamePrivate(_ viewModel: BrowserViewModel, tabs: [Tab]) {
+        let key = ObjectIdentifier(viewModel)
+        guard announcedWindows.remove(key) != nil, let adapter = windowAdapters[key] else { return }
+        for tab in tabs {
+            controller.didCloseTab(tab, windowIsClosing: true)
+        }
+        controller.didCloseWindow(adapter)
+        windowAdapters.removeValue(forKey: key)
+    }
+
+    /// A window just switched from private to normal browsing — announce it
+    /// (and its current tabs) exactly like a freshly opened window, since it
+    /// was excluded from every extension-facing API while private and so was
+    /// never previously known to the controller. No-ops until at least one
+    /// extension has loaded (matches `windowOpened`).
+    func windowBecameNormal(_ viewModel: BrowserViewModel) {
+        guard didAnnounceInitialState else { return }
+        announceWindow(viewModel)
+    }
+
     // MARK: - Tab lifecycle notifications (called by TabManager)
 
     func tabOpened(_ tab: Tab) {

@@ -127,6 +127,11 @@ final class TabManager {
         // the secondary tab to primary instead of leaving a dangling secondary.
         let promotedTabID: UUID? = (isSplitActive && selectedTabID == tab.id) ? secondarySelectedTabID : nil
 
+        // The tab is moving to another window, not disappearing — windowIsClosing
+        // is false even when this empties the source window; that window's own
+        // close is announced separately via ExtensionManager.windowClosed.
+        notifyExtensionManager(for: tab) { ExtensionManager.shared.tabClosed(tab, windowIsClosing: false) }
+
         tabs.remove(at: index)
 
         if tabs.isEmpty {
@@ -152,9 +157,12 @@ final class TabManager {
 
     /// Add an existing tab (transferred from another window)
     func addExistingTab(_ tab: Tab, switchTo: Bool = true) {
+        let previous = selectedTab
         tabs.append(tab)
+        notifyExtensionManager(for: tab) { ExtensionManager.shared.tabOpened(tab) }
         if switchTo {
             selectedTabID = tab.id
+            notifyExtensionManager(for: tab) { ExtensionManager.shared.tabActivated(tab, previous: previous) }
         }
     }
 
