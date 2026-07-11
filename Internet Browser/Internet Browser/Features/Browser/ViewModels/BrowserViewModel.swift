@@ -1032,9 +1032,9 @@ final class BrowserViewModel {
         showDevToolsPanel.toggle()
     }
 
-    /// Execute arbitrary JS in the active tab and return a formatted result string.
+    /// Execute arbitrary JS in the focused pane's tab and return a formatted result string.
     func evaluateJSForDevTools(_ js: String, completion: @escaping (String?) -> Void) {
-        guard let webView = currentTab?.webView else { completion(nil); return }
+        guard let webView = tabManager.focusedTab?.webView else { completion(nil); return }
         webView.evaluateJavaScript(js) { result, error in
             DispatchQueue.main.async {
                 if let error {
@@ -1064,7 +1064,7 @@ final class BrowserViewModel {
 
     /// Flash a blue outline around the element matching `selector`.
     func highlightElementInDevTools(selector: String) {
-        guard let webView = currentTab?.webView else { return }
+        guard let webView = tabManager.focusedTab?.webView else { return }
         let js = DevToolsManager.highlightScript(for: selector)
         webView.evaluateJavaScript(js, completionHandler: nil)
     }
@@ -1072,7 +1072,7 @@ final class BrowserViewModel {
     /// Apply edited outer HTML to the element matching `selector` (base64-encoded).
     func applyHTMLInDevTools(selector: String, base64HTML: String,
                              completion: @escaping (String?) -> Void) {
-        guard let webView = currentTab?.webView else { completion("no webview"); return }
+        guard let webView = tabManager.focusedTab?.webView else { completion("no webview"); return }
         let js = DevToolsManager.applyScript(selector: selector, base64HTML: base64HTML)
         webView.evaluateJavaScript(js) { result, _ in
             DispatchQueue.main.async { completion(result as? String) }

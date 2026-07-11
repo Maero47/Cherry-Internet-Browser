@@ -255,6 +255,11 @@ struct BrowserView: View {
                 } else {
                     emptyState
                 }
+
+                // Rendered ONCE here, below the split (not per-pane inside
+                // BrowserContentView), so split view never shows two stacked
+                // dev tools panels. Scoped to the focused pane's tab.
+                devToolsPanelOverlay
             }
             .frame(maxWidth: .infinity)
 
@@ -311,6 +316,28 @@ struct BrowserView: View {
             onSavePDF: { onFocusPane?(); viewModel.savePDF() },
             onToggleFocusMode: { onFocusPane?(); viewModel.toggleFocusMode() }
         )
+    }
+
+    /// The single dev tools panel for the whole window. Rendered once below
+    /// whichever content is showing (split or single pane), bound to the
+    /// FOCUSED pane's tab, so opening dev tools in split view never renders
+    /// a second copy under the other pane and never shows the wrong tab's data.
+    @ViewBuilder
+    private var devToolsPanelOverlay: some View {
+        if viewModel.showDevToolsPanel && !viewModel.isVideoFullscreen,
+           let focusedTabID = viewModel.tabManager.focusedTab?.id {
+            Rectangle()
+                .fill(Color.primary.opacity(0.08))
+                .frame(height: 0.5)
+            DevToolsPanelView(
+                focusedTabID: focusedTabID,
+                onEvaluateJS: { js, cb in viewModel.evaluateJSForDevTools(js, completion: cb) },
+                onHighlightElement: { sel in viewModel.highlightElementInDevTools(selector: sel) },
+                onApplyHTML: { sel, b64, cb in viewModel.applyHTMLInDevTools(selector: sel, base64HTML: b64, completion: cb) },
+                onDismiss: { viewModel.showDevToolsPanel = false }
+            )
+            .transition(.move(edge: .bottom).combined(with: .opacity))
+        }
     }
 
     @ViewBuilder
@@ -839,19 +866,6 @@ struct BrowserContentView: View {
         }
         .onChange(of: tab.url) { _, _ in
             urlVersion += 1
-        }
-
-        if viewModel.showDevToolsPanel && !viewModel.isVideoFullscreen {
-            Rectangle()
-                .fill(Color.primary.opacity(0.08))
-                .frame(height: 0.5)
-            DevToolsPanelView(
-                onEvaluateJS: { js, cb in viewModel.evaluateJSForDevTools(js, completion: cb) },
-                onHighlightElement: { sel in viewModel.highlightElementInDevTools(selector: sel) },
-                onApplyHTML: { sel, b64, cb in viewModel.applyHTMLInDevTools(selector: sel, base64HTML: b64, completion: cb) },
-                onDismiss: { viewModel.showDevToolsPanel = false }
-            )
-            .transition(.move(edge: .bottom).combined(with: .opacity))
         }
     }
 }
