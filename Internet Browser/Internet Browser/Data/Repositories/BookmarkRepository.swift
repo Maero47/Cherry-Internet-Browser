@@ -120,13 +120,10 @@ final class BookmarkRepository {
     }
 
     func deleteAllBookmarks() {
-        let context = persistence.viewContext
         let request = NSFetchRequest<NSFetchRequestResult>(entityName: "BookmarkEntity")
-        let deleteRequest = NSBatchDeleteRequest(fetchRequest: request)
 
         do {
-            try context.execute(deleteRequest)
-            persistence.save()
+            try persistence.batchDelete(fetchRequest: request)
             fetchBookmarks()
         } catch {
             print("Failed to delete all bookmarks: \(error)")

@@ -315,6 +315,24 @@ final class PersistenceController: @unchecked Sendable {
         }
     }
 
+    // MARK: - Batch Delete
+
+    /// Executes a batch delete and merges the deletions into the view context.
+    /// NSBatchDeleteRequest works directly on the store; without the merge,
+    /// deleted objects stay registered in the view context and a later save of
+    /// pending changes to them can fail or resurrect deleted rows.
+    func batchDelete(fetchRequest: NSFetchRequest<NSFetchRequestResult>) throws {
+        let deleteRequest = NSBatchDeleteRequest(fetchRequest: fetchRequest)
+        deleteRequest.resultType = .resultTypeObjectIDs
+        let result = try viewContext.execute(deleteRequest) as? NSBatchDeleteResult
+        if let objectIDs = result?.result as? [NSManagedObjectID], !objectIDs.isEmpty {
+            NSManagedObjectContext.mergeChanges(
+                fromRemoteContextSave: [NSDeletedObjectsKey: objectIDs],
+                into: [viewContext]
+            )
+        }
+    }
+
     // MARK: - Background Context
 
     func newBackgroundContext() -> NSManagedObjectContext {

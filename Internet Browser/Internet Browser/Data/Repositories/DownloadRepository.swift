@@ -152,13 +152,10 @@ final class DownloadRepository {
     }
 
     func clearAllDownloads() {
-        let context = persistence.viewContext
         let request = NSFetchRequest<NSFetchRequestResult>(entityName: "DownloadEntity")
-        let deleteRequest = NSBatchDeleteRequest(fetchRequest: request)
 
         do {
-            try context.execute(deleteRequest)
-            persistence.save()
+            try persistence.batchDelete(fetchRequest: request)
             fetchDownloads()
         } catch {
             print("Failed to clear all downloads: \(error)")

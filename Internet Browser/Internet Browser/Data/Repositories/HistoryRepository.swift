@@ -113,15 +113,11 @@ final class HistoryRepository {
     }
 
     func deleteHistory(from startDate: Date, to endDate: Date) {
-        let context = persistence.viewContext
         let request = NSFetchRequest<NSFetchRequestResult>(entityName: "HistoryEntity")
         request.predicate = NSPredicate(format: "visitDate >= %@ AND visitDate <= %@", startDate as CVarArg, endDate as CVarArg)
 
-        let deleteRequest = NSBatchDeleteRequest(fetchRequest: request)
-
         do {
-            try context.execute(deleteRequest)
-            persistence.save()
+            try persistence.batchDelete(fetchRequest: request)
             fetchHistory()
         } catch {
             print("Failed to delete history: \(error)")
@@ -129,13 +125,10 @@ final class HistoryRepository {
     }
 
     func clearAllHistory() {
-        let context = persistence.viewContext
         let request = NSFetchRequest<NSFetchRequestResult>(entityName: "HistoryEntity")
-        let deleteRequest = NSBatchDeleteRequest(fetchRequest: request)
 
         do {
-            try context.execute(deleteRequest)
-            persistence.save()
+            try persistence.batchDelete(fetchRequest: request)
             fetchHistory()
         } catch {
             print("Failed to clear history: \(error)")
@@ -143,14 +136,11 @@ final class HistoryRepository {
     }
 
     func clearHistory(since date: Date) {
-        let context = persistence.viewContext
         let request = NSFetchRequest<NSFetchRequestResult>(entityName: "HistoryEntity")
         request.predicate = NSPredicate(format: "visitDate >= %@", date as CVarArg)
-        let deleteRequest = NSBatchDeleteRequest(fetchRequest: request)
 
         do {
-            try context.execute(deleteRequest)
-            persistence.save()
+            try persistence.batchDelete(fetchRequest: request)
             fetchHistory()
         } catch {
             print("Failed to clear history since date: \(error)")
@@ -161,15 +151,11 @@ final class HistoryRepository {
         let calendar = Calendar.current
         guard let cutoffDate = calendar.date(byAdding: .day, value: -days, to: Date()) else { return }
 
-        let context = persistence.viewContext
         let request = NSFetchRequest<NSFetchRequestResult>(entityName: "HistoryEntity")
         request.predicate = NSPredicate(format: "visitDate < %@", cutoffDate as CVarArg)
 
-        let deleteRequest = NSBatchDeleteRequest(fetchRequest: request)
-
         do {
-            try context.execute(deleteRequest)
-            persistence.save()
+            try persistence.batchDelete(fetchRequest: request)
             fetchHistory()
         } catch {
             print("Failed to clear old history: \(error)")
