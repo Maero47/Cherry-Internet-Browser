@@ -284,6 +284,18 @@ final class ExtensionManager: NSObject {
     ///    new one. A record whose managed copy has gone missing is skipped
     ///    in pass 1 (silently, rather than crashing launch); a record whose
     ///    `WKWebExtension` init fails is left as a context-less placeholder.
+    ///
+    ///    Never carries a numeric array index across the `await
+    ///    WKWebExtension(resourceBaseURL:)` suspension point — a concurrent
+    ///    `remove(extensionID:)` (the user clicking Remove in the Settings UI
+    ///    while THIS record is still loading) can shrink/reorder
+    ///    `installedExtensions` during that await, so an index captured
+    ///    before it would either write into a different, unrelated entry
+    ///    after the array shifted, or be out of bounds and crash. Instead,
+    ///    the array is re-searched BY `id` once execution resumes after the
+    ///    await, and skipped entirely if that id is no longer present — at
+    ///    that point no context has been created yet, so there's nothing to
+    ///    unload.
     func reloadPersistedExtensions() async {
         let records = Self.loadPersistedRecords()
 
@@ -293,8 +305,16 @@ final class ExtensionManager: NSObject {
         }
 
         for record in records {
-            guard let index = installedExtensions.firstIndex(where: { $0.id == record.id }) else { continue }
+            // Cheap early-out: skip the (potentially slow) WKWebExtension
+            // load entirely if this record was already removed before we
+            // even got to it. Not load-bearing for correctness — the
+            // re-resolve below is — just avoids wasted work.
+            guard installedExtensions.contains(where: { $0.id == record.id }) else { continue }
             guard let webExtension = try? await WKWebExtension(resourceBaseURL: Self.managedPackageURL(for: record)) else { continue }
+
+            // Re-resolve by id AFTER the await, never reuse an index from
+            // before it (see doc comment above).
+            guard let index = installedExtensions.firstIndex(where: { $0.id == record.id }) else { continue }
 
             installedExtensions[index].webExtension = webExtension
             if installedExtensions[index].record.enabled {
