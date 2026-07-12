@@ -5,18 +5,34 @@
 
 import AppKit
 import WebKit
+import Observation
 
 /// App-global owner of the single `WKWebExtensionController` and every loaded
 /// WebExtension context. All open browser windows share one controller —
 /// there is no per-window isolation in v1a. Extensions loaded here are kept
 /// in memory only; nothing is persisted across app launches yet.
 @MainActor
+@Observable
 final class ExtensionManager: NSObject {
     static let shared = ExtensionManager()
 
     let controller = WKWebExtensionController()
 
     private(set) var loadedExtensions: [LoadedExtension] = []
+
+    /// Bumped on every `didUpdateAction` delegate call, for ANY extension
+    /// context. `WKWebExtension.Action` values themselves aren't Observable —
+    /// toolbar button views read this property (even though its value is
+    /// unused) so SwiftUI re-renders them and re-fetches `action(for:)`
+    /// whenever an extension changes its icon/badge/enabled state.
+    private(set) var actionUpdateTick: Int = 0
+
+    /// The toolbar button view to anchor the next popup presentation to, keyed
+    /// by extension context. Set immediately before `performAction(for:tab:anchorView:)`
+    /// calls into `context.performAction(for:)`, consumed by the
+    /// `presentActionPopup` delegate callback that follows it synchronously.
+    @ObservationIgnored
+    private var pendingPopupAnchors: [ObjectIdentifier: NSView] = [:]
 
     /// One stable `WKWebExtensionWindow` adapter per `BrowserViewModel`, so the
     /// same object identity is reused across delegate calls (`didOpenWindow`,
@@ -97,6 +113,52 @@ final class ExtensionManager: NSObject {
     func unload(_ loaded: LoadedExtension) {
         try? controller.unload(loaded.context)
         loadedExtensions.removeAll { $0.id == loaded.id }
+        pendingPopupAnchors.removeValue(forKey: ObjectIdentifier(loaded.context))
+    }
+
+    // MARK: - Toolbar action + popup
+
+    /// The extension's action for `tab` (or its default action if `tab` is
+    /// `nil`), reflecting that tab's icon/badge/enabled state.
+    func action(for loaded: LoadedExtension, tab: Tab?) -> WKWebExtension.Action? {
+        loaded.context.action(for: tab)
+    }
+
+    /// Fires a toolbar button click: marks a user gesture on `tab` and either
+    /// triggers the extension's action event or, if the action has a popup,
+    /// requests it — which arrives back through the `presentActionPopup`
+    /// delegate below. `anchorView` (the button's own NSView) is remembered
+    /// so that callback knows where to anchor the popover.
+    func performAction(for loaded: LoadedExtension, tab: Tab?, anchorView: NSView?) {
+        if let anchorView {
+            pendingPopupAnchors[ObjectIdentifier(loaded.context)] = anchorView
+        }
+        loaded.context.performAction(for: tab)
+    }
+
+    /// Presents `action`'s popup anchored to `anchor`. Prefers the
+    /// ready-to-show `popupPopover` the SDK builds; falls back to wrapping
+    /// `popupWebView` in a fresh `NSPopover` if that's unavailable.
+    private func presentPopover(for action: WKWebExtension.Action, anchoredTo anchor: NSView) {
+        guard anchor.window != nil else { return }
+
+        let popover: NSPopover
+        if let ready = action.popupPopover {
+            popover = ready
+        } else if let webView = action.popupWebView {
+            let contentController = NSViewController()
+            contentController.view = webView
+            let fresh = NSPopover()
+            fresh.contentViewController = contentController
+            fresh.behavior = .transient
+            let size = webView.frame.size
+            fresh.contentSize = size == .zero ? CGSize(width: 320, height: 420) : size
+            popover = fresh
+        } else {
+            return
+        }
+
+        popover.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: .maxY)
     }
 
     // MARK: - Window adapters
@@ -259,6 +321,31 @@ extension ExtensionManager: WKWebExtensionControllerDelegate {
         }
         let newTab = viewModel.tabManager.newTab(url: configuration.url)
         completionHandler(newTab, nil)
+    }
+
+    /// An action's icon/badge/label/enabled state changed — bump the tick so
+    /// every toolbar button view (which reads it) re-renders and re-fetches
+    /// its own `action(for:)`.
+    func webExtensionController(
+        _ controller: WKWebExtensionController,
+        didUpdate action: WKWebExtension.Action,
+        forExtensionContext context: WKWebExtensionContext
+    ) {
+        actionUpdateTick &+= 1
+    }
+
+    /// The extension requested its popup be shown (via `performAction(for:)`
+    /// or its own scripts). Anchor it to whichever button view was recorded
+    /// right before the triggering `performAction` call.
+    func webExtensionController(
+        _ controller: WKWebExtensionController,
+        presentActionPopup action: WKWebExtension.Action,
+        for context: WKWebExtensionContext,
+        completionHandler: @escaping ((any Error)?) -> Void
+    ) {
+        defer { completionHandler(nil) }
+        guard let anchor = pendingPopupAnchors.removeValue(forKey: ObjectIdentifier(context)) else { return }
+        presentPopover(for: action, anchoredTo: anchor)
     }
 
     // v1a auto-allows every permission/URL/pattern prompt — a real prompt UI is a later chunk.
