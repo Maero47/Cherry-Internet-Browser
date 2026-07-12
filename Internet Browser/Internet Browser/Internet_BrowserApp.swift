@@ -206,6 +206,24 @@ func loadExtensionFromOpenPanel() {
     }
 }
 
+/// Opens `url` in a new tab of an existing (non-private) Cherry browser
+/// window — used by the Settings links to addons.mozilla.org, so browsing for
+/// themes/add-ons happens in Cherry itself. Prefers the key window's browser;
+/// falls back to any open one, and only hands off to the default system
+/// browser if no Cherry browser window exists at all (e.g. every window was
+/// closed while Settings stayed open).
+@MainActor
+func openInNewCherryTab(_ url: URL) {
+    let viewModels = BrowserViewModel.windowViewModels.values.filter { !$0.isPrivateMode }
+    let target = viewModels.first { $0.associatedWindow === NSApp.keyWindow } ?? viewModels.first
+    guard let target else {
+        NSWorkspace.shared.open(url)
+        return
+    }
+    target.tabManager.newTab(url: url)
+    target.associatedWindow?.makeKeyAndOrderFront(nil)
+}
+
 @MainActor
 private func presentExtensionAlert(title: String, message: String, style: NSAlert.Style) {
     let alert = NSAlert()

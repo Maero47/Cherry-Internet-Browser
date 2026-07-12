@@ -33,6 +33,17 @@ struct ExtensionsSettingsView: View {
                     .controlSize(.small)
                 }
 
+                HStack(spacing: 8) {
+                    Button("Browse Firefox Add-ons") {
+                        openInNewCherryTab(URL(string: "https://addons.mozilla.org/firefox/extensions/")!)
+                    }
+                    .controlSize(.small)
+
+                    Text("Download an add-on (.xpi), then Load it above.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+
                 if extensionManager.installedExtensions.isEmpty {
                     Text("No extensions installed yet.")
                         .font(.system(size: 12))
