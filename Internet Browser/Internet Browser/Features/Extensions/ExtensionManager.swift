@@ -7,10 +7,23 @@ import AppKit
 import WebKit
 import Observation
 
-/// App-global owner of the single `WKWebExtensionController` and every loaded
-/// WebExtension context. All open browser windows share one controller —
-/// there is no per-window isolation in v1a. Extensions loaded here are kept
-/// in memory only; nothing is persisted across app launches yet.
+/// One row of the persisted extension index (`Extensions/index.json`) —
+/// enough to reload the extension's managed copy and re-create its context
+/// (keyed by the same stable `id`) on a later launch, without depending on
+/// the user's original file/folder location.
+struct PersistedExtensionRecord: Codable {
+    let id: String
+    var displayName: String
+    var packageFileName: String
+    var enabled: Bool
+}
+
+/// App-global owner of the single `WKWebExtensionController` and every
+/// installed WebExtension context. All open browser windows share one
+/// controller — there is no per-window isolation in v1a. Every extension
+/// loaded via `loadExtension(from:)` is copied into an app-managed directory
+/// and its record persisted, so `reloadPersistedExtensions()` can bring it
+/// back on the next launch (see `Features/Extensions/`).
 @MainActor
 @Observable
 final class ExtensionManager: NSObject {
@@ -18,7 +31,20 @@ final class ExtensionManager: NSObject {
 
     let controller = WKWebExtensionController()
 
-    private(set) var loadedExtensions: [LoadedExtension] = []
+    /// Every extension the app knows about, whether or not it's currently
+    /// loaded into the controller — a disabled extension has `context ==
+    /// nil` but is still listed here (and in the persisted index) so the
+    /// management UI can show and re-enable it. Backs `loadedExtensions`.
+    private(set) var installedExtensions: [InstalledExtension] = []
+
+    /// The enabled/active subset of `installedExtensions` — what the toolbar
+    /// (`NavigationBarView`, `ExtensionToolbarButton`) cares about, since only
+    /// a loaded context has an `action(for:)`/popup to show.
+    var loadedExtensions: [LoadedExtension] {
+        installedExtensions.compactMap { installed in
+            installed.context.map { LoadedExtension(id: installed.id, webExtension: installed.webExtension, context: $0) }
+        }
+    }
 
     /// Bumped on every `didUpdateAction` delegate call, for ANY extension
     /// context. `WKWebExtension.Action` values themselves aren't Observable —
@@ -69,7 +95,10 @@ final class ExtensionManager: NSObject {
     private var didAnnounceInitialState = false
 
     struct LoadedExtension: Identifiable {
-        let id = UUID()
+        /// Same value as the owning `InstalledExtension.id` / persisted
+        /// record id / `context.uniqueIdentifier` — one stable identity
+        /// shared across the whole extension's lifetime.
+        let id: String
         let webExtension: WKWebExtension
         let context: WKWebExtensionContext
 
@@ -77,26 +106,93 @@ final class ExtensionManager: NSObject {
         var displayName: String { webExtension.displayName ?? "Untitled Extension" }
     }
 
+    /// One entry in the management UI / persisted index: an extension the
+    /// app has installed, whether currently enabled (loaded) or not.
+    struct InstalledExtension: Identifiable {
+        var record: PersistedExtensionRecord
+        let webExtension: WKWebExtension
+        var context: WKWebExtensionContext?
+
+        var id: String { record.id }
+        var enabled: Bool { record.enabled }
+
+        @MainActor
+        var displayName: String { webExtension.displayName ?? record.displayName }
+
+        @MainActor
+        var version: String? { webExtension.version }
+
+        @MainActor
+        var icon: NSImage? { webExtension.icon(for: NSSize(width: 32, height: 32)) }
+    }
+
     private override init() {
         super.init()
         controller.delegate = self
     }
 
-    // MARK: - Load / Unload
+    // MARK: - Persistence
 
-    /// Loads a WebExtension from a `.xpi`/`.zip` file or an unpacked directory,
-    /// auto-granting exactly the permissions and host patterns it *requests*
-    /// (v1a has no permission prompt yet — see the delegate's prompt methods
-    /// below), then announces every already-open window/tab so content
-    /// scripts inject into pages that were loaded before this call.
+    /// `Application Support/<bundle id, or "Cherry">/Extensions/` — created
+    /// on first access. Each installed extension gets its own `<id>/`
+    /// subfolder holding a COPY of its package (never the user's original
+    /// file/folder, which may move or be deleted before the next launch),
+    /// plus one shared `index.json` listing every installed extension's
+    /// `PersistedExtensionRecord`.
+    private static let extensionsDirectory: URL = {
+        let fileManager = FileManager.default
+        let base = (try? fileManager.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true))
+            ?? fileManager.temporaryDirectory
+        let appDirectoryName = Bundle.main.bundleIdentifier ?? "Cherry"
+        let directory = base
+            .appendingPathComponent(appDirectoryName, isDirectory: true)
+            .appendingPathComponent("Extensions", isDirectory: true)
+        try? fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+        return directory
+    }()
+
+    private static var indexFileURL: URL { extensionsDirectory.appendingPathComponent("index.json") }
+
+    private static func loadPersistedRecords() -> [PersistedExtensionRecord] {
+        guard let data = try? Data(contentsOf: indexFileURL) else { return [] }
+        return (try? JSONDecoder().decode([PersistedExtensionRecord].self, from: data)) ?? []
+    }
+
+    private func persistRecords() {
+        guard let data = try? JSONEncoder().encode(installedExtensions.map(\.record)) else { return }
+        try? data.write(to: Self.indexFileURL, options: .atomic)
+    }
+
+    /// Copies `sourceURL` (a `.xpi`/`.zip` file OR an unpacked extension
+    /// directory) into `id`'s managed subfolder and returns the copy's URL —
+    /// everything downstream (the `WKWebExtension` itself, and every future
+    /// launch's reload) reads from this managed copy, never the original.
+    private func copyIntoManagedDirectory(from sourceURL: URL, id: String) throws -> URL {
+        let fileManager = FileManager.default
+        let extensionDirectory = Self.extensionsDirectory.appendingPathComponent(id, isDirectory: true)
+        try fileManager.createDirectory(at: extensionDirectory, withIntermediateDirectories: true)
+        let destination = extensionDirectory.appendingPathComponent(sourceURL.lastPathComponent)
+        if fileManager.fileExists(atPath: destination.path) {
+            try fileManager.removeItem(at: destination)
+        }
+        try fileManager.copyItem(at: sourceURL, to: destination)
+        return destination
+    }
+
+    /// Creates a context for `webExtension` keyed by the stable `id` (rather
+    /// than the SDK's own random default) — `WKWebExtensionContext.uniqueIdentifier`
+    /// is what WebKit uses to key that extension's own persisted storage
+    /// under the controller's default (persistent) configuration, so reusing
+    /// the same `id` across launches is what keeps that storage intact —
+    /// auto-grants every requested permission/host pattern (no prompt UI yet
+    /// — see the delegate's prompt methods below), then loads it.
     ///
     /// Deliberately does NOT also grant `WKWebExtension.MatchPattern.allURLs()`
     /// — that would give every loaded extension universal host access
     /// regardless of what it actually declared needing.
-    @discardableResult
-    func loadExtension(from fileURL: URL) async throws -> LoadedExtension {
-        let webExtension = try await WKWebExtension(resourceBaseURL: fileURL)
+    private func makeLoadedContext(for webExtension: WKWebExtension, id: String) throws -> WKWebExtensionContext {
         let context = WKWebExtensionContext(for: webExtension)
+        context.uniqueIdentifier = id
 
         for pattern in webExtension.requestedPermissionMatchPatterns {
             context.setPermissionStatus(.grantedExplicitly, for: pattern)
@@ -106,28 +202,113 @@ final class ExtensionManager: NSObject {
         }
 
         try controller.load(context)
-
-        let loaded = LoadedExtension(webExtension: webExtension, context: context)
-        loadedExtensions.append(loaded)
-
-        // Only ever run once, on the very first extension load — see
-        // `didAnnounceInitialState`. A second (or later) extension's content
-        // scripts still reach already-open tabs, because `didOpenTab`/
-        // `didOpenWindow` register a tab/window with the controller itself,
-        // not with any one extension context.
-        if !didAnnounceInitialState {
-            announceExistingWindowsAndTabs()
-            didAnnounceInitialState = true
-        }
-
-        return loaded
+        return context
     }
 
-    func unload(_ loaded: LoadedExtension) {
-        try? controller.unload(loaded.context)
-        loadedExtensions.removeAll { $0.id == loaded.id }
-        let contextID = ObjectIdentifier(loaded.context)
+    /// Runs the "announce every already-open window/tab" sweep exactly once
+    /// — shared by the very first `loadExtension` call and launch-time
+    /// reload, so content scripts inject into tabs that were open before any
+    /// extension finished loading. See `didAnnounceInitialState`.
+    private func announceInitialStateIfNeeded() {
+        guard !didAnnounceInitialState else { return }
+        announceExistingWindowsAndTabs()
+        didAnnounceInitialState = true
+    }
+
+    private func clearPendingPopupAnchors(for context: WKWebExtensionContext) {
+        let contextID = ObjectIdentifier(context)
         pendingPopupAnchors = pendingPopupAnchors.filter { $0.key.context != contextID }
+    }
+
+    // MARK: - Load / Unload
+
+    /// Loads a WebExtension the user picked (via "Load Extension…" — the
+    /// File menu or the management UI) from a `.xpi`/`.zip` file or an
+    /// unpacked directory: copies it into the managed extensions directory,
+    /// persists its record (enabled by default), loads its context, then
+    /// announces every already-open window/tab so content scripts inject
+    /// into pages that were loaded before this call.
+    @discardableResult
+    func loadExtension(from fileURL: URL) async throws -> LoadedExtension {
+        let id = UUID().uuidString
+        let packageURL = try copyIntoManagedDirectory(from: fileURL, id: id)
+        let webExtension = try await WKWebExtension(resourceBaseURL: packageURL)
+        let context = try makeLoadedContext(for: webExtension, id: id)
+
+        let record = PersistedExtensionRecord(
+            id: id,
+            displayName: webExtension.displayName ?? packageURL.deletingPathExtension().lastPathComponent,
+            packageFileName: packageURL.lastPathComponent,
+            enabled: true
+        )
+        installedExtensions.append(InstalledExtension(record: record, webExtension: webExtension, context: context))
+        persistRecords()
+        announceInitialStateIfNeeded()
+
+        return LoadedExtension(id: id, webExtension: webExtension, context: context)
+    }
+
+    /// Reloads every persisted extension from its managed copy — called once
+    /// early at app launch (see `AppDelegate.applicationDidFinishLaunching`).
+    /// Enabled records get a live context loaded into the controller;
+    /// disabled ones are still added to `installedExtensions` (unloaded) so
+    /// the management UI can list and re-enable them. A record whose managed
+    /// copy has gone missing (e.g. the app support directory was tampered
+    /// with) is silently skipped rather than crashing launch.
+    func reloadPersistedExtensions() async {
+        for record in Self.loadPersistedRecords() {
+            let packageURL = Self.extensionsDirectory
+                .appendingPathComponent(record.id, isDirectory: true)
+                .appendingPathComponent(record.packageFileName)
+            guard FileManager.default.fileExists(atPath: packageURL.path) else { continue }
+            guard let webExtension = try? await WKWebExtension(resourceBaseURL: packageURL) else { continue }
+
+            let context = record.enabled ? try? makeLoadedContext(for: webExtension, id: record.id) : nil
+            installedExtensions.append(InstalledExtension(record: record, webExtension: webExtension, context: context))
+        }
+
+        if installedExtensions.contains(where: { $0.context != nil }) {
+            announceInitialStateIfNeeded()
+        }
+    }
+
+    /// Enables or disables an installed extension: loads/unloads its context
+    /// with the controller and persists the flag, so a disabled extension is
+    /// remembered as disabled (not reloaded) on the next launch.
+    func setEnabled(_ enabled: Bool, forExtensionID id: String) {
+        guard let index = installedExtensions.firstIndex(where: { $0.id == id }),
+              installedExtensions[index].enabled != enabled else { return }
+
+        if enabled {
+            guard let context = try? makeLoadedContext(for: installedExtensions[index].webExtension, id: id) else { return }
+            installedExtensions[index].context = context
+            installedExtensions[index].record.enabled = true
+            announceInitialStateIfNeeded()
+        } else {
+            if let context = installedExtensions[index].context {
+                try? controller.unload(context)
+                clearPendingPopupAnchors(for: context)
+            }
+            installedExtensions[index].context = nil
+            installedExtensions[index].record.enabled = false
+        }
+
+        persistRecords()
+    }
+
+    /// Unloads (if currently loaded), deletes the managed copy, and drops
+    /// the persisted record for good — the extension is gone and stays gone
+    /// across future launches.
+    func remove(extensionID id: String) {
+        guard let index = installedExtensions.firstIndex(where: { $0.id == id }) else { return }
+
+        if let context = installedExtensions[index].context {
+            try? controller.unload(context)
+            clearPendingPopupAnchors(for: context)
+        }
+        installedExtensions.remove(at: index)
+        try? FileManager.default.removeItem(at: Self.extensionsDirectory.appendingPathComponent(id, isDirectory: true))
+        persistRecords()
     }
 
     // MARK: - Toolbar action + popup
