@@ -212,7 +212,8 @@ struct BrowserView: View {
                     onDetachTab: { tab in viewModel.detachTab(tab) },
                     onReceiveTab: { tabID in
                         _ = BrowserViewModel.transferTab(tabID: tabID, to: viewModel)
-                    }
+                    },
+                    onSplitOnEdge: { tab, edge in viewModel.splitWith(tab: tab, edge: edge) }
                 )
                 // Above the content column so the collapsed bar's transient
                 // hover-expansion flies OVER the page instead of reflowing it.
