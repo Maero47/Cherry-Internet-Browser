@@ -137,8 +137,11 @@ struct NavigationBarView: View {
             }
             .zIndex(1)
 
-            // Extension toolbar buttons — one per loaded extension, reflecting this tab
-            if showExtensionButtons {
+            // Extension toolbar buttons — one per loaded extension, reflecting
+            // this tab. Extensions have no access to private/incognito
+            // windows at all (see ExtensionManager.extensionVisibleViewModels),
+            // so never show their buttons there, regardless of showExtensionButtons.
+            if showExtensionButtons && !isPrivateMode {
                 extensionButtons
             }
 
