@@ -6,15 +6,25 @@
 import SwiftUI
 import WebKit
 
+/// Plain reference-type holder for a button's anchor `NSView`. Set
+/// synchronously by `PopoverAnchorView.makeNSView` — unlike `@State`, writing
+/// to a class property doesn't need to route through a SwiftUI view update,
+/// so the anchor is available immediately once AppKit creates the backing
+/// view, with no risk of a click racing an async assignment and finding it
+/// still nil.
+private final class PopoverAnchorBox {
+    var view: NSView?
+}
+
 /// A zero-size AppKit view whose only purpose is providing a stable `NSView`
 /// identity to anchor `NSPopover.show(relativeTo:of:preferredEdge:)` to —
 /// SwiftUI's `Button` has no `NSView` of its own to hand the popover.
 private struct PopoverAnchorView: NSViewRepresentable {
-    @Binding var anchor: NSView?
+    let box: PopoverAnchorBox
 
     func makeNSView(context: Context) -> NSView {
         let view = NSView()
-        DispatchQueue.main.async { anchor = view }
+        box.view = view
         return view
     }
 
@@ -28,7 +38,7 @@ struct ExtensionToolbarButton: View {
     let loaded: ExtensionManager.LoadedExtension
     let tab: Tab?
 
-    @State private var anchorView: NSView?
+    @State private var anchorBox = PopoverAnchorBox()
 
     private var action: WKWebExtension.Action? {
         // Reading `actionUpdateTick` (unused otherwise) makes this computed
@@ -40,7 +50,7 @@ struct ExtensionToolbarButton: View {
 
     var body: some View {
         Button {
-            ExtensionManager.shared.performAction(for: loaded, tab: tab, anchorView: anchorView)
+            ExtensionManager.shared.performAction(for: loaded, tab: tab, anchorView: anchorBox.view)
         } label: {
             ZStack(alignment: .bottomTrailing) {
                 Group {
@@ -68,7 +78,7 @@ struct ExtensionToolbarButton: View {
             }
         }
         .buttonStyle(ToolbarButtonStyle())
-        .background(PopoverAnchorView(anchor: $anchorView))
+        .background(PopoverAnchorView(box: anchorBox))
         .help(action?.label ?? loaded.displayName)
     }
 }
