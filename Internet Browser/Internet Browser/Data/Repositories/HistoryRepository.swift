@@ -94,6 +94,52 @@ final class HistoryRepository {
         }
     }
 
+    /// Batch add for browser import, preserving the source browser's real
+    /// visit dates. URLs already in history are merged (visit counts add up,
+    /// the newest visit date wins) rather than duplicated. Saves and
+    /// refetches once. Returns how many entries were new vs merged.
+    @discardableResult
+    func importHistoryItems(_ entries: [(url: URL, title: String, visitDate: Date, visitCount: Int)]) -> (added: Int, merged: Int) {
+        let context = persistence.viewContext
+
+        var existingByURL: [String: HistoryEntity] = [:]
+        let request = NSFetchRequest<HistoryEntity>(entityName: "HistoryEntity")
+        if let existing = try? context.fetch(request) {
+            for entity in existing {
+                existingByURL[entity.url] = entity
+            }
+        }
+
+        var added = 0
+        var merged = 0
+        for entry in entries {
+            let urlString = entry.url.absoluteString
+            if let existing = existingByURL[urlString] {
+                existing.visitCount += Int32(clamping: entry.visitCount)
+                if entry.visitDate > existing.visitDate {
+                    existing.visitDate = entry.visitDate
+                    existing.title = entry.title
+                }
+                merged += 1
+            } else {
+                let entity = HistoryEntity(context: context)
+                entity.id = UUID()
+                entity.url = urlString
+                entity.title = entry.title
+                entity.visitDate = entry.visitDate
+                entity.visitCount = Int32(clamping: entry.visitCount)
+                existingByURL[urlString] = entity
+                added += 1
+            }
+        }
+
+        if added > 0 || merged > 0 {
+            persistence.save()
+            fetchHistory()
+        }
+        return (added, merged)
+    }
+
     // MARK: - Delete
 
     func deleteHistoryItem(_ item: HistoryItem) {

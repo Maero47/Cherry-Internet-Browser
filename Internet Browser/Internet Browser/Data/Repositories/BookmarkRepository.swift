@@ -70,6 +70,40 @@ final class BookmarkRepository {
         return Bookmark(entity: entity)
     }
 
+    /// Batch add for browser import: skips URLs that already exist (in the
+    /// store or earlier in `entries`), saves and refetches once instead of
+    /// per item. Returns how many were added vs skipped as duplicates.
+    @discardableResult
+    func importBookmarks(_ entries: [(url: URL, title: String, folder: String?, isInBookmarkBar: Bool)]) -> (added: Int, skipped: Int) {
+        let context = persistence.viewContext
+        var existingURLs = Set(bookmarks.map { $0.url.absoluteString })
+        var added = 0
+        var sortOrder = Int32(bookmarks.count)
+
+        for entry in entries {
+            let urlString = entry.url.absoluteString
+            guard existingURLs.insert(urlString).inserted else { continue }
+
+            let entity = BookmarkEntity(context: context)
+            entity.id = UUID()
+            entity.url = urlString
+            entity.title = entry.title
+            entity.folder = entry.folder
+            entity.createdAt = Date()
+            entity.visitCount = 0
+            entity.sortOrder = sortOrder
+            entity.isInBookmarkBar = entry.isInBookmarkBar
+            sortOrder += 1
+            added += 1
+        }
+
+        if added > 0 {
+            persistence.save()
+            fetchBookmarks()
+        }
+        return (added, entries.count - added)
+    }
+
     // MARK: - Update
 
     func updateBookmark(_ bookmark: Bookmark) {
