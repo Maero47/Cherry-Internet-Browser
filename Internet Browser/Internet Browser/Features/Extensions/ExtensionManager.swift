@@ -28,11 +28,24 @@ final class ExtensionManager: NSObject {
     private(set) var actionUpdateTick: Int = 0
 
     /// The toolbar button view to anchor the next popup presentation to, keyed
-    /// by extension context. Set immediately before `performAction(for:tab:anchorView:)`
-    /// calls into `context.performAction(for:)`, consumed by the
-    /// `presentActionPopup` delegate callback that follows it synchronously.
+    /// by extension context AND tab. Set immediately before
+    /// `performAction(for:tab:anchorView:)` calls into `context.performAction(for:)`,
+    /// consumed by the `presentActionPopup` delegate callback that follows it
+    /// synchronously. The controller (and every extension context) is shared
+    /// across all windows, so keying by context alone would let a click in one
+    /// window's button get overwritten by a click on the same extension's
+    /// button in another window before either popup callback fires — the tab
+    /// disambiguates which window's button actually triggered this popup.
     @ObservationIgnored
-    private var pendingPopupAnchors: [ObjectIdentifier: NSView] = [:]
+    private var pendingPopupAnchors: [PopupAnchorKey: NSView] = [:]
+
+    /// Key for `pendingPopupAnchors`. `tab` is `nil` only for a default
+    /// (no-tab) action, which can't collide across windows the way per-tab
+    /// actions can.
+    private struct PopupAnchorKey: Hashable {
+        let context: ObjectIdentifier
+        let tab: ObjectIdentifier?
+    }
 
     /// One stable `WKWebExtensionWindow` adapter per `BrowserViewModel`, so the
     /// same object identity is reused across delegate calls (`didOpenWindow`,
@@ -113,7 +126,8 @@ final class ExtensionManager: NSObject {
     func unload(_ loaded: LoadedExtension) {
         try? controller.unload(loaded.context)
         loadedExtensions.removeAll { $0.id == loaded.id }
-        pendingPopupAnchors.removeValue(forKey: ObjectIdentifier(loaded.context))
+        let contextID = ObjectIdentifier(loaded.context)
+        pendingPopupAnchors = pendingPopupAnchors.filter { $0.key.context != contextID }
     }
 
     // MARK: - Toolbar action + popup
@@ -128,10 +142,17 @@ final class ExtensionManager: NSObject {
     /// triggers the extension's action event or, if the action has a popup,
     /// requests it — which arrives back through the `presentActionPopup`
     /// delegate below. `anchorView` (the button's own NSView) is remembered
-    /// so that callback knows where to anchor the popover.
+    /// so that callback knows where to anchor the popover. Only recorded when
+    /// this action will actually present a popup — otherwise (a pure
+    /// background/event action) `presentActionPopup` never fires and the
+    /// entry would never get cleaned up. Falls back to the key window's
+    /// content view if `anchorView` is nil (e.g. the button's backing
+    /// `NSView` hadn't attached yet on a very first click), so the popup
+    /// still appears near the toolbar instead of silently failing.
     func performAction(for loaded: LoadedExtension, tab: Tab?, anchorView: NSView?) {
-        if let anchorView {
-            pendingPopupAnchors[ObjectIdentifier(loaded.context)] = anchorView
+        if let action = loaded.context.action(for: tab), action.presentsPopup {
+            let key = PopupAnchorKey(context: ObjectIdentifier(loaded.context), tab: tab.map(ObjectIdentifier.init))
+            pendingPopupAnchors[key] = anchorView ?? NSApp.keyWindow?.contentView
         }
         loaded.context.performAction(for: tab)
     }
@@ -336,7 +357,10 @@ extension ExtensionManager: WKWebExtensionControllerDelegate {
 
     /// The extension requested its popup be shown (via `performAction(for:)`
     /// or its own scripts). Anchor it to whichever button view was recorded
-    /// right before the triggering `performAction` call.
+    /// right before the triggering `performAction` call — resolved via
+    /// `action.associatedTab` (not just the context, which is shared across
+    /// every window) so a click in one window can't steal the anchor for a
+    /// still-pending popup request from another window.
     func webExtensionController(
         _ controller: WKWebExtensionController,
         presentActionPopup action: WKWebExtension.Action,
@@ -344,7 +368,8 @@ extension ExtensionManager: WKWebExtensionControllerDelegate {
         completionHandler: @escaping ((any Error)?) -> Void
     ) {
         defer { completionHandler(nil) }
-        guard let anchor = pendingPopupAnchors.removeValue(forKey: ObjectIdentifier(context)) else { return }
+        let key = PopupAnchorKey(context: ObjectIdentifier(context), tab: (action.associatedTab as? Tab).map(ObjectIdentifier.init))
+        guard let anchor = pendingPopupAnchors.removeValue(forKey: key) else { return }
         presentPopover(for: action, anchoredTo: anchor)
     }
 
