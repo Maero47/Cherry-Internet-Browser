@@ -21,17 +21,81 @@ struct VerticalTabBarView: View {
     private let expandedWidth: CGFloat = 240
     private let collapsedWidth: CGFloat = 44
 
-    private var barWidth: CGFloat { isCollapsed ? collapsedWidth : expandedWidth }
+    /// Transient hover expansion while collapsed (Arc/Firefox-style flyout).
+    /// Purely visual: never written to `isCollapsed`, so the user's persisted
+    /// collapse preference survives any amount of hovering.
+    @State private var isHoverExpanded = false
+    /// Debounce for both hover edges so brushing past the bar doesn't flicker.
+    @State private var hoverTask: Task<Void, Never>? = nil
+    /// Set when the user clicks "collapse" with the pointer still on the bar,
+    /// so the flyout doesn't immediately reopen; cleared on the next hover exit.
+    @State private var suppressHoverExpand = false
+
+    /// True while the full 240pt content should be visible (pinned open OR
+    /// transiently hover-expanded).
+    private var showsExpandedContent: Bool { !isCollapsed || isHoverExpanded }
+    /// Compact rendering (icons only) — what the old per-view `isCollapsed`
+    /// display checks keyed off.
+    private var isCompact: Bool { !showsExpandedContent }
+    /// Width the sidebar occupies in the window layout. Hover expansion does
+    /// NOT change this — the flyout floats over the content (zIndex above the
+    /// web view) so the page never reflows on hover.
+    private var layoutWidth: CGFloat { isCollapsed ? collapsedWidth : expandedWidth }
+    /// Width of the rendered bar itself (flyout included).
+    private var contentWidth: CGFloat { showsExpandedContent ? expandedWidth : collapsedWidth }
 
     var body: some View {
         barContent
-            .frame(width: barWidth)
+            .frame(width: contentWidth)
             .background { barBackground }
-            // Width and content collapse in ONE animated transaction, keyed to
-            // the state itself so every entry point (button, menu, shortcut)
-            // animates identically.
             .clipped()
+            // Reads as a floating panel only while transiently hover-expanded.
+            .shadow(
+                color: .black.opacity(isCollapsed && isHoverExpanded ? 0.28 : 0),
+                radius: 12, x: 5
+            )
+            .onHover { handleHover($0) }
+            // The layout slot: fixed by isCollapsed alone; the (possibly wider)
+            // bar overflows it to the trailing side while hover-expanded.
+            .frame(width: layoutWidth, alignment: .leading)
+            // Width and content collapse in ONE animated transaction, keyed to
+            // the state itself so every entry point (button, menu, shortcut,
+            // hover) animates identically.
             .animation(.easeInOut(duration: 0.22), value: isCollapsed)
+            .animation(.easeInOut(duration: 0.22), value: isHoverExpanded)
+            .onChange(of: isCollapsed) {
+                // Pin/unpin resets any transient hover state so a stale
+                // flyout can't hold the bar visually open after collapsing.
+                hoverTask?.cancel()
+                isHoverExpanded = false
+            }
+            .onDisappear {
+                hoverTask?.cancel()
+            }
+    }
+
+    /// Debounced hover: expand shortly after the pointer settles on the
+    /// collapsed bar, collapse shortly after it leaves — the delays absorb
+    /// accidental brushes in both directions.
+    private func handleHover(_ hovering: Bool) {
+        hoverTask?.cancel()
+        guard isCollapsed else { return }
+        if hovering {
+            guard !suppressHoverExpand, !isHoverExpanded else { return }
+            hoverTask = Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 120_000_000)
+                guard !Task.isCancelled, isCollapsed else { return }
+                isHoverExpanded = true
+            }
+        } else {
+            suppressHoverExpand = false
+            guard isHoverExpanded else { return }
+            hoverTask = Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 250_000_000)
+                guard !Task.isCancelled else { return }
+                isHoverExpanded = false
+            }
+        }
     }
 
     @ViewBuilder
@@ -39,7 +103,7 @@ struct VerticalTabBarView: View {
         VStack(spacing: 0) {
             // Header
             HStack {
-                if !isCollapsed {
+                if !isCompact {
                     Text("Tabs")
                         .font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(.secondary)
@@ -47,6 +111,12 @@ struct VerticalTabBarView: View {
                 }
 
                 Button {
+                    hoverTask?.cancel()
+                    if !isCollapsed {
+                        // Collapsing with the pointer still on the bar: hold
+                        // the flyout closed until the pointer leaves once.
+                        suppressHoverExpand = true
+                    }
                     // Same curve/duration as the sidebar's own width animation
                     // so views outside it (nav-bar padding) move in lockstep.
                     withAnimation(.easeInOut(duration: 0.22)) {
@@ -73,7 +143,7 @@ struct VerticalTabBarView: View {
                         VerticalTabItemView(
                             tab: tab,
                             tabManager: tabManager,
-                            isCollapsed: isCollapsed,
+                            isCompact: isCompact,
                             onDetachTab: onDetachTab,
                             onReceiveTab: onReceiveTab
                         )
@@ -100,7 +170,7 @@ struct VerticalTabBarView: View {
                             VerticalTabItemView(
                                 tab: tab,
                                 tabManager: tabManager,
-                                isCollapsed: isCollapsed,
+                                isCompact: isCompact,
                                 onDetachTab: onDetachTab,
                                 onReceiveTab: onReceiveTab
                             )
@@ -127,13 +197,13 @@ struct VerticalTabBarView: View {
                 HStack(spacing: 6) {
                     Image(systemName: "plus")
                         .font(.system(size: 12, weight: .medium))
-                    if !isCollapsed {
+                    if !isCompact {
                         Text("New Tab")
                             .font(.system(size: 12))
                     }
                 }
                 .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, alignment: isCollapsed ? .center : .leading)
+                .frame(maxWidth: .infinity, alignment: isCompact ? .center : .leading)
                 .padding(.horizontal, 8)
                 .padding(.vertical, 8)
             }
@@ -170,7 +240,7 @@ struct VerticalTabBarView: View {
                 Circle()
                     .fill(group.swiftUIColor)
                     .frame(width: 8, height: 8)
-                if !isCollapsed {
+                if !isCompact {
                     Text("\(group.name) (\(count))")
                         .font(.system(size: 11, weight: .medium))
                         .foregroundStyle(.secondary)
@@ -191,7 +261,8 @@ struct VerticalTabBarView: View {
 private struct VerticalTabItemView: View {
     @Bindable var tab: Tab
     @Bindable var tabManager: TabManager
-    let isCollapsed: Bool
+    /// Icons-only rendering (collapsed and not hover-expanded).
+    let isCompact: Bool
     var onDetachTab: ((Tab) -> Void)? = nil
     var onReceiveTab: ((UUID) -> Void)? = nil
 
@@ -259,7 +330,7 @@ private struct VerticalTabItemView: View {
                 }
             }
 
-            if !isCollapsed {
+            if !isCompact {
                 Text(tab.displayTitle)
                     .font(.system(size: 12))
                     .foregroundStyle(tab.isSleeping

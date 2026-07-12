@@ -214,6 +214,9 @@ struct BrowserView: View {
                         _ = BrowserViewModel.transferTab(tabID: tabID, to: viewModel)
                     }
                 )
+                // Above the content column so the collapsed bar's transient
+                // hover-expansion flies OVER the page instead of reflowing it.
+                .zIndex(1)
             }
 
             VStack(spacing: 0) {
