@@ -404,8 +404,18 @@ struct TabBarView: View {
     @ViewBuilder
     private var tabBarBackground: some View {
         ZStack(alignment: .top) {
-            Rectangle().fill(.bar)
-            if isPrivateMode { Color.purple.opacity(0.12) }
+            // An imported Firefox theme replaces the material with the
+            // header backdrop — opaque frame color plus the theme's header
+            // images, which the tab strip shows directly like Firefox does
+            // (never in private windows, which keep their purple-tinted bar).
+            if !isPrivateMode, FirefoxThemeManager.shared.hasHeaderBackdrop {
+                ThemeHeaderBackdropView()
+            } else if !isPrivateMode, let themedStrip = FirefoxThemeManager.shared.tabStripBackground {
+                Rectangle().fill(themedStrip)
+            } else {
+                Rectangle().fill(.bar)
+                if isPrivateMode { Color.purple.opacity(0.12) }
+            }
             // Specular highlight — light catching the top edge of the glass
             Color.white.opacity(0.12)
                 .frame(height: 1)

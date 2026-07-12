@@ -188,11 +188,24 @@ struct BrowserView: View {
 
     @ViewBuilder
     private var browserLayout: some View {
+        // The GeometryReader publishes the window content's global frame as
+        // the virtual canvas Firefox theme header images anchor to, so the
+        // tab strip, nav bars (incl. split panes), and vertical sidebar all
+        // render slices of ONE continuous window-wide backdrop.
+        GeometryReader { geometry in
+            browserChrome
+                .environment(\.chromeCanvasFrame, geometry.frame(in: .global))
+        }
+    }
+
+    @ViewBuilder
+    private var browserChrome: some View {
         HStack(spacing: 0) {
             if viewModel.useVerticalTabs && !viewModel.isVideoFullscreen {
                 VerticalTabBarView(
                     tabManager: viewModel.tabManager,
                     isCollapsed: $viewModel.verticalTabBarCollapsed,
+                    isPrivateMode: viewModel.isPrivateMode,
                     onNewTab: { viewModel.newTab() },
                     onDetachTab: { tab in viewModel.detachTab(tab) },
                     onReceiveTab: { tabID in
@@ -373,14 +386,16 @@ struct BrowserView: View {
             BookmarksSidebarView(
                 repository: viewModel.bookmarkRepository,
                 onBookmarkClick: { viewModel.openBookmark($0) },
-                onClose: { viewModel.closeSidebar() }
+                onClose: { viewModel.closeSidebar() },
+                isPrivateMode: viewModel.isPrivateMode
             )
             .frame(minWidth: 300, maxWidth: 300)
         case .downloads:
             DownloadsSidebarView(
                 repository: viewModel.downloadRepository,
                 downloadManager: viewModel.downloadManager,
-                onClose: { viewModel.closeSidebar() }
+                onClose: { viewModel.closeSidebar() },
+                isPrivateMode: viewModel.isPrivateMode
             )
             .frame(minWidth: 300, maxWidth: 300)
         case .none:

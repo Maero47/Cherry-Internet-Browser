@@ -10,6 +10,8 @@ struct DownloadsSidebarView: View {
     @Bindable var repository: DownloadRepository
     let downloadManager: DownloadManager
     let onClose: () -> Void
+    /// Private windows are never themed by an imported Firefox theme.
+    var isPrivateMode: Bool = false
 
     @State private var searchText: String = ""
     @State private var showingClearAlert: Bool = false
@@ -105,7 +107,11 @@ struct DownloadsSidebarView: View {
                 .listStyle(.sidebar)
             }
         }
-        .background(Color(nsColor: .windowBackgroundColor))
+        .foregroundStyle((isPrivateMode ? nil : FirefoxThemeManager.shared.sidebarText) ?? Color.primary)
+        .background(
+            (isPrivateMode ? nil : FirefoxThemeManager.shared.sidebarBackground)
+                ?? Color(nsColor: .windowBackgroundColor)
+        )
         .alert("Clear Downloads", isPresented: $showingClearAlert) {
             Button("Cancel", role: .cancel) {}
             Button("Clear All", role: .destructive) {

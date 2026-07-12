@@ -32,6 +32,17 @@ struct TabItemView: View {
     @State private var showPreview = false
     @State private var previewTask: Task<Void, Never>?
 
+    /// Imported Firefox theme overrides — nil for private tabs (never themed)
+    /// or when no theme is active, keeping the stock material/hierarchy look.
+    private var themedSelectedBackground: Color? {
+        tab.isPrivate ? nil : FirefoxThemeManager.shared.selectedTabBackground
+    }
+    private var themedTitleColor: Color? {
+        guard !tab.isPrivate else { return nil }
+        let manager = FirefoxThemeManager.shared
+        return isSelected ? manager.tabText : manager.tabStripText
+    }
+
     var body: some View {
         HStack(spacing: 8) {
             // Favicon
@@ -47,7 +58,9 @@ struct TabItemView: View {
             if !tab.isPinned && (fixedWidth ?? 999) > 100 {
                 Text(tab.displayTitle)
                     .font(.system(size: 12))
-                    .foregroundStyle(tab.isSleeping ? .tertiary : .primary)
+                    .foregroundStyle(tab.isSleeping
+                                     ? AnyShapeStyle(.tertiary)
+                                     : AnyShapeStyle(themedTitleColor ?? Color.primary))
                     .lineLimit(1)
                     .truncationMode(.tail)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -162,7 +175,11 @@ struct TabItemView: View {
 
     @ViewBuilder
     private var tabBackground: some View {
-        if isSelected {
+        if isSelected, let themedSelectedBackground {
+            RoundedRectangle(cornerRadius: AppConstants.UI.tabCornerRadius)
+                .fill(themedSelectedBackground)
+                .shadow(color: .black.opacity(0.18), radius: 6, y: 2)
+        } else if isSelected {
             RoundedRectangle(cornerRadius: AppConstants.UI.tabCornerRadius)
                 .fill(.regularMaterial)
                 .shadow(color: .black.opacity(0.18), radius: 6, y: 2)

@@ -9,6 +9,8 @@ struct OmniboxView: View {
     @Binding var text: String
     let isLoading: Bool
     let isSecure: Bool
+    /// Private windows are never themed by an imported Firefox theme.
+    var isPrivateMode: Bool = false
     let onSubmit: (String) -> Void
     let onFocus: () -> Void
     var onTextChange: ((String) -> Void)? = nil
@@ -18,6 +20,20 @@ struct OmniboxView: View {
     var onEscape: (() -> Void)? = nil
 
     @FocusState private var isFocused: Bool
+
+    /// Imported Firefox theme overrides (toolbar_field*), nil when no theme
+    /// is active or in a private window — the field then keeps its material.
+    private var themedFieldBackground: Color? {
+        guard !isPrivateMode else { return nil }
+        let manager = FirefoxThemeManager.shared
+        return isFocused ? manager.fieldFocusBackground : manager.fieldBackground
+    }
+    private var themedFieldText: Color? {
+        isPrivateMode ? nil : FirefoxThemeManager.shared.fieldText
+    }
+    private var themedFocusBorder: Color? {
+        isPrivateMode ? nil : FirefoxThemeManager.shared.fieldFocusBorder
+    }
 
     var body: some View {
         HStack(spacing: 8) {
@@ -71,16 +87,26 @@ struct OmniboxView: View {
                     .frame(width: 16, height: 16)
             }
         }
+        .foregroundStyle(themedFieldText ?? Color.primary)
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
-        .background(
-            RoundedRectangle(cornerRadius: 8)
-                .fill(.regularMaterial)
-        )
+        .background {
+            if let themedFieldBackground {
+                // Often semi-transparent (e.g. rgba(0,0,0,0.34)) — it
+                // composites over the nav bar's theme header backdrop
+                // (frame color + header images + toolbar color) behind this
+                // view, exactly like Firefox's URL field over its header.
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(themedFieldBackground)
+            } else {
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(.regularMaterial)
+            }
+        }
         .overlay(
             RoundedRectangle(cornerRadius: 8)
                 .stroke(
-                    isFocused ? SettingsManager.shared.accentColor : Color.primary.opacity(0.12),
+                    isFocused ? (themedFocusBorder ?? SettingsManager.shared.accentColor) : Color.primary.opacity(0.12),
                     lineWidth: isFocused ? 2 : 0.5
                 )
                 .animation(.easeInOut(duration: 0.15), value: isFocused)
