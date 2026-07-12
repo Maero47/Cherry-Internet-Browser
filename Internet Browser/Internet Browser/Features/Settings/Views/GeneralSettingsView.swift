@@ -9,134 +9,166 @@ struct GeneralSettingsView: View {
     @Bindable private var settings = SettingsManager.shared
 
     var body: some View {
-        Form {
-            Section("Search") {
-                Picker("Search Engine", selection: $settings.searchEngine) {
-                    ForEach(SearchEngine.allCases) { engine in
-                        Text(engine.rawValue).tag(engine)
+        SettingsStack {
+            SettingsCard(icon: "magnifyingglass", title: "Search") {
+                SettingsLabeledRow(
+                    title: "Search Engine",
+                    subtitle: "Used for searches from the address bar and homepage."
+                ) {
+                    Picker("", selection: $settings.searchEngine) {
+                        ForEach(SearchEngine.allCases) { engine in
+                            Text(engine.rawValue).tag(engine)
+                        }
                     }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .fixedSize()
                 }
-                .pickerStyle(.menu)
             }
 
-            Section("Theme") {
-                Picker("Appearance", selection: $settings.appearanceMode) {
-                    ForEach(AppearanceMode.allCases) { mode in
-                        Text(mode.rawValue).tag(mode)
+            SettingsCard(
+                icon: "paintpalette",
+                title: "Theme",
+                subtitle: "The accent color tints controls and highlights across Cherry."
+            ) {
+                SettingsLabeledRow(title: "Appearance") {
+                    Picker("", selection: $settings.appearanceMode) {
+                        ForEach(AppearanceMode.allCases) { mode in
+                            Text(mode.rawValue).tag(mode)
+                        }
                     }
+                    .labelsHidden()
+                    .pickerStyle(.segmented)
+                    .frame(width: 210)
                 }
-                .pickerStyle(.segmented)
 
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Accent Color")
-                        .font(.subheadline)
+                Divider()
 
-                    HStack(spacing: 10) {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack {
+                        Text("Accent Color")
+                            .font(.system(size: 13))
+                        Spacer()
+                        Text(currentAccentName)
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                    }
+
+                    HStack(spacing: 11) {
                         ForEach(AccentColorOption.options) { option in
-                            Button {
+                            AccentSwatch(
+                                option: option,
+                                isSelected: settings.accentColorHex == option.hex
+                            ) {
                                 settings.accentColorHex = option.hex
-                            } label: {
-                                ZStack {
-                                    Circle()
-                                        .fill(option.color)
-                                        .frame(width: 28, height: 28)
-
-                                    if settings.accentColorHex == option.hex {
-                                        Image(systemName: "checkmark")
-                                            .font(.system(size: 12, weight: .bold))
-                                            .foregroundStyle(.white)
-                                    }
-
-                                    Circle()
-                                        .strokeBorder(
-                                            settings.accentColorHex == option.hex
-                                                ? option.color
-                                                : Color.clear,
-                                            lineWidth: 2
-                                        )
-                                        .frame(width: 34, height: 34)
-                                }
                             }
-                            .buttonStyle(.plain)
-                            .help(option.name)
                         }
                     }
                 }
-                .padding(.vertical, 4)
             }
 
-            Section("Homepage Background") {
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack(spacing: 10) {
-                        ForEach(HomepageTheme.allCases) { theme in
-                            Button {
-                                settings.homepageTheme = theme
-                            } label: {
-                                VStack(spacing: 4) {
-                                    RoundedRectangle(cornerRadius: 6)
-                                        .fill(theme.previewColor)
-                                        .frame(width: 36, height: 24)
-                                        .overlay(
-                                            RoundedRectangle(cornerRadius: 6)
-                                                .strokeBorder(
-                                                    settings.homepageTheme == theme
-                                                        ? Color.white
-                                                        : Color.clear,
-                                                    lineWidth: 2
-                                                )
-                                        )
-                                        .shadow(color: settings.homepageTheme == theme
-                                                ? theme.previewColor.opacity(0.5)
-                                                : .clear, radius: 4)
+            SettingsCard(
+                icon: "sparkles.rectangle.stack",
+                title: "Homepage Background",
+                subtitle: "Auto follows your accent color. Pick a theme to override it."
+            ) {
+                LazyVGrid(
+                    columns: [GridItem(.adaptive(minimum: 84, maximum: 120), spacing: 10)],
+                    spacing: 12
+                ) {
+                    HomepageSwatch(
+                        name: "Auto",
+                        colors: autoPreviewColors,
+                        isSelected: settings.homepageMatchesAccent,
+                        icon: "wand.and.stars"
+                    ) {
+                        settings.homepageMatchesAccent = true
+                    }
 
-                                    Text(theme.rawValue)
-                                        .font(.system(size: 9))
-                                        .foregroundStyle(settings.homepageTheme == theme ? .primary : .secondary)
-                                }
-                            }
-                            .buttonStyle(.plain)
+                    ForEach(HomepageTheme.allCases) { theme in
+                        HomepageSwatch(
+                            name: theme.rawValue,
+                            colors: previewColors(for: theme),
+                            isSelected: !settings.homepageMatchesAccent && settings.homepageTheme == theme
+                        ) {
+                            settings.homepageTheme = theme
+                            settings.homepageMatchesAccent = false
                         }
                     }
                 }
-                .padding(.vertical, 4)
             }
 
-            Section("Downloads") {
-                HStack {
-                    Text("Save files to")
-                    Spacer()
-                    Text(downloadDirectoryName)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                    Button("Change...") {
-                        chooseDownloadDirectory()
+            SettingsCard(icon: "arrow.down.circle", title: "Downloads") {
+                SettingsLabeledRow(title: "Save files to") {
+                    HStack(spacing: 8) {
+                        Label(downloadDirectoryName, systemImage: "folder.fill")
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                        Button("Change…") {
+                            chooseDownloadDirectory()
+                        }
+                        .controlSize(.small)
                     }
                 }
             }
 
-            Section("Appearance") {
-                Toggle("Show Bookmark Bar", isOn: $settings.showBookmarkBar)
-                Toggle("Use Vertical Tab Bar", isOn: $settings.useVerticalTabs)
+            SettingsCard(icon: "macwindow", title: "Window Layout") {
+                SettingsToggleRow(title: "Show Bookmark Bar", isOn: $settings.showBookmarkBar)
+                Divider()
+                SettingsToggleRow(
+                    title: "Use Vertical Tab Bar",
+                    subtitle: "Docks tabs along the side of the window instead of the top.",
+                    isOn: $settings.useVerticalTabs
+                )
             }
 
-            Section("Tabs") {
-                Toggle("Auto-sleep Inactive Tabs", isOn: $settings.tabSleepEnabled)
+            SettingsCard(icon: "square.on.square", title: "Tabs") {
+                SettingsToggleRow(
+                    title: "Auto-sleep Inactive Tabs",
+                    subtitle: "Frees up memory from tabs you haven't used in a while.",
+                    isOn: $settings.tabSleepEnabled
+                )
 
                 if settings.tabSleepEnabled {
-                    Picker("Sleep After", selection: $settings.tabSleepTimeout) {
-                        Text("15 minutes").tag(15)
-                        Text("30 minutes").tag(30)
-                        Text("1 hour").tag(60)
-                        Text("2 hours").tag(120)
+                    SettingsLabeledRow(title: "Sleep After") {
+                        Picker("", selection: $settings.tabSleepTimeout) {
+                            Text("15 minutes").tag(15)
+                            Text("30 minutes").tag(30)
+                            Text("1 hour").tag(60)
+                            Text("2 hours").tag(120)
+                        }
+                        .labelsHidden()
+                        .pickerStyle(.menu)
+                        .fixedSize()
                     }
-                    .pickerStyle(.menu)
                 }
 
-                Toggle("Restore previous session on launch", isOn: $settings.restorePreviousSession)
+                Divider()
+
+                SettingsToggleRow(
+                    title: "Restore Previous Session on Launch",
+                    isOn: $settings.restorePreviousSession
+                )
             }
         }
-        .formStyle(.grouped)
-        .padding()
+    }
+
+    // MARK: - Helpers
+
+    private var currentAccentName: String {
+        AccentColorOption.options.first { $0.hex == settings.accentColorHex }?.name ?? "Custom"
+    }
+
+    /// Three sample stops (light → mid → deep) for a swatch preview gradient.
+    private var autoPreviewColors: [Color] {
+        let colors = AccentDerivedPalette.gradientColors(fromHex: settings.accentColorHex)
+        return [colors[1], colors[4], colors[8]]
+    }
+
+    private func previewColors(for theme: HomepageTheme) -> [Color] {
+        let colors = theme.gradientColors
+        return [colors[1], colors[4], colors[8]]
     }
 
     private var downloadDirectoryName: String {
