@@ -4,18 +4,35 @@
 //
 
 import SwiftUI
+import AppKit
 import Observation
+import ImageIO
 
 /// The persisted record of the active Firefox theme
 /// (`FirefoxThemes/activeTheme.json`). Colors are stored as the manifest's
-/// raw CSS strings (arrays normalized to `rgb()` at import), so relaunch
-/// only needs this record — the copied package is kept for provenance, not
-/// re-parsed.
+/// raw CSS strings (arrays normalized to `rgb()` at import), and header
+/// background images as paths relative to the theme's managed directory
+/// (extracted from the package at import), so relaunch only needs this
+/// record plus the extracted files — the copied package is kept for
+/// provenance, not re-parsed.
 struct PersistedFirefoxThemeRecord: Codable {
     let id: String
     var displayName: String
     var packageFileName: String
     var colors: [String: String]
+    /// Header images in paint order (first entry is the TOPMOST layer,
+    /// matching CSS background-image layering). Absent in records written
+    /// before image support existed.
+    var backgrounds: [PersistedThemeBackground]?
+}
+
+/// One persisted header image: where its extracted file lives inside the
+/// theme's managed directory, plus its CSS-keyword alignment/tiling from
+/// `theme.properties`.
+struct PersistedThemeBackground: Codable {
+    var path: String
+    var alignment: String
+    var tiling: String
 }
 
 enum FirefoxThemeError: LocalizedError {
@@ -49,11 +66,19 @@ final class FirefoxThemeManager {
     static let shared = FirefoxThemeManager()
 
     /// A parsed, ready-to-apply theme: the manifest's `theme.colors` map
-    /// plus a display name.
+    /// plus a display name and the loaded header background images.
     struct FirefoxTheme {
         let id: String
         let name: String
         let colors: [String: String]
+        let backgrounds: [ThemeBackground]
+
+        init(id: String, name: String, colors: [String: String], backgrounds: [ThemeBackground] = []) {
+            self.id = id
+            self.name = name
+            self.colors = colors
+            self.backgrounds = backgrounds
+        }
 
         /// The first of `keys` that is present AND parses as a CSS color.
         /// Firefox theme keys are frequently absent — every mapped surface
@@ -68,6 +93,20 @@ final class FirefoxThemeManager {
         }
     }
 
+    /// A loaded header background image, ready to render: the raw file data
+    /// (animated formats are re-decoded frame by frame from it), a decoded
+    /// `NSImage` for static drawing/sizing, and the theme's alignment/tiling
+    /// keywords. `isAnimated` is true when the file contains more than one
+    /// frame (GIF/APNG).
+    struct ThemeBackground: Identifiable {
+        let id: String
+        let data: Data
+        let image: NSImage
+        let alignment: String
+        let tiling: String
+        let isAnimated: Bool
+    }
+
     private(set) var activeTheme: FirefoxTheme?
 
     private init() {
@@ -76,7 +115,35 @@ final class FirefoxThemeManager {
 
     // MARK: - Surface overrides (Firefox color key → Cherry surface)
 
+    /// The window `frame` color (legacy alias `accentcolor`) forced OPAQUE —
+    /// the base layer of the header backdrop that the header images and the
+    /// (often semi-transparent) `toolbar`/`toolbar_field` colors composite
+    /// over, exactly like Firefox paints its window header.
+    var frameBackground: Color? {
+        guard let theme = activeTheme else { return nil }
+        for key in ["frame", "accentcolor"] {
+            if let raw = theme.colors[key], let rgba = CSSColor.parse(raw) {
+                return Color(.sRGB, red: rgba.red, green: rgba.green, blue: rgba.blue, opacity: 1)
+            }
+        }
+        return nil
+    }
+
+    /// The theme's header background images, topmost layer first.
+    var headerBackgrounds: [ThemeBackground] { activeTheme?.backgrounds ?? [] }
+
+    /// True when the top chrome should be backed by the theme header
+    /// backdrop (frame color and/or images) instead of a flat surface fill.
+    var hasHeaderBackdrop: Bool {
+        frameBackground != nil || !headerBackgrounds.isEmpty
+    }
+
+    /// The raw `toolbar` color to composite OVER the header backdrop — kept
+    /// transparent when the theme says so, letting frame/images show through.
+    var toolbarColor: Color? { activeTheme?.color("toolbar") }
+
     /// Navigation toolbar background — `toolbar`, else the window `frame`.
+    /// Only used as a direct fill when there is no header backdrop.
     var toolbarBackground: Color? { activeTheme?.color("toolbar", "frame") }
 
     /// Toolbar icon/text color — `toolbar_text` (alias `bookmark_text`), else `icons`.
@@ -130,25 +197,43 @@ final class FirefoxThemeManager {
     // MARK: - Import / Remove
 
     /// Imports a Firefox theme from a `.xpi`/`.zip` file or an unpacked
-    /// directory: parses `manifest.json`'s `theme.colors`, copies the package
-    /// into the managed themes directory, persists the record, and makes the
-    /// theme active (replacing any previous one). Throws `FirefoxThemeError`
-    /// for non-theme packages so the Settings UI can explain the failure.
+    /// directory: parses `manifest.json`'s `theme.colors` and
+    /// `theme.images`, copies the package into the managed themes directory,
+    /// EXTRACTS the referenced header images beside it (so relaunch never
+    /// re-reads the package), persists the record, and makes the theme
+    /// active (replacing any previous one). Throws `FirefoxThemeError` for
+    /// non-theme packages so the Settings UI can explain the failure.
     func importTheme(from fileURL: URL) throws {
-        let parsed = try Self.parseThemePackage(at: fileURL)
+        let (packageRoot, isTemporary) = try Self.unpackedPackageRoot(at: fileURL)
+        defer { if isTemporary { try? FileManager.default.removeItem(at: packageRoot) } }
+
+        let fallbackName = fileURL.deletingPathExtension().lastPathComponent
+        let parsed = try Self.parseTheme(inDirectory: packageRoot, fallbackName: fallbackName)
 
         let id = UUID().uuidString
+        let themeDirectory = Self.themesDirectory.appendingPathComponent(id, isDirectory: true)
         let packageURL = try Self.copyIntoManagedDirectory(from: fileURL, id: id)
+        let backgrounds = Self.extractBackgroundImages(
+            parsed.backgrounds,
+            from: parsed.packageDirectory,
+            into: themeDirectory
+        )
 
         let record = PersistedFirefoxThemeRecord(
             id: id,
             displayName: parsed.name,
             packageFileName: packageURL.lastPathComponent,
-            colors: parsed.colors
+            colors: parsed.colors,
+            backgrounds: backgrounds
         )
         let previousID = activeTheme?.id
         Self.persist(record)
-        activeTheme = FirefoxTheme(id: id, name: parsed.name, colors: parsed.colors)
+        activeTheme = FirefoxTheme(
+            id: id,
+            name: parsed.name,
+            colors: parsed.colors,
+            backgrounds: Self.loadBackgrounds(backgrounds, themeDirectory: themeDirectory)
+        )
 
         if let previousID {
             try? FileManager.default.removeItem(
@@ -169,7 +254,13 @@ final class FirefoxThemeManager {
     private func loadPersistedTheme() {
         guard let data = try? Data(contentsOf: Self.recordFileURL),
               let record = try? JSONDecoder().decode(PersistedFirefoxThemeRecord.self, from: data) else { return }
-        activeTheme = FirefoxTheme(id: record.id, name: record.displayName, colors: record.colors)
+        let themeDirectory = Self.themesDirectory.appendingPathComponent(record.id, isDirectory: true)
+        activeTheme = FirefoxTheme(
+            id: record.id,
+            name: record.displayName,
+            colors: record.colors,
+            backgrounds: Self.loadBackgrounds(record.backgrounds ?? [], themeDirectory: themeDirectory)
+        )
     }
 
     // MARK: - Persistence locations
@@ -210,24 +301,22 @@ final class FirefoxThemeManager {
 
     // MARK: - Package parsing
 
-    /// Reads the theme name + colors out of a theme package: a directory is
-    /// read in place; a `.xpi`/`.zip` file is unpacked to a temporary
-    /// directory first (a .xpi IS a zip).
-    private static func parseThemePackage(at fileURL: URL) throws -> (name: String, colors: [String: String]) {
+    /// The directory a package's contents can be read from: a directory
+    /// input is used in place; a `.xpi`/`.zip` file is unpacked to a
+    /// temporary directory (a .xpi IS a zip) the CALLER must delete when
+    /// `isTemporary` is true.
+    private static func unpackedPackageRoot(at fileURL: URL) throws -> (root: URL, isTemporary: Bool) {
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: fileURL.path, isDirectory: &isDirectory) else {
             throw FirefoxThemeError.unreadablePackage
         }
-
-        let fallbackName = fileURL.deletingPathExtension().lastPathComponent
         if isDirectory.boolValue {
-            return try parseTheme(inDirectory: fileURL, fallbackName: fallbackName)
+            return (fileURL, false)
         }
 
         let tempDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("CherryThemeImport-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: tempDirectory) }
 
         // ditto -x -k unpacks zip archives regardless of the .xpi extension.
         let unzip = Process()
@@ -238,15 +327,22 @@ final class FirefoxThemeManager {
         do {
             try unzip.run()
         } catch {
+            try? FileManager.default.removeItem(at: tempDirectory)
             throw FirefoxThemeError.unreadablePackage
         }
         unzip.waitUntilExit()
-        guard unzip.terminationStatus == 0 else { throw FirefoxThemeError.unreadablePackage }
+        guard unzip.terminationStatus == 0 else {
+            try? FileManager.default.removeItem(at: tempDirectory)
+            throw FirefoxThemeError.unreadablePackage
+        }
 
-        return try parseTheme(inDirectory: tempDirectory, fallbackName: fallbackName)
+        return (tempDirectory, true)
     }
 
-    private static func parseTheme(inDirectory directory: URL, fallbackName: String) throws -> (name: String, colors: [String: String]) {
+    private static func parseTheme(
+        inDirectory directory: URL,
+        fallbackName: String
+    ) throws -> (name: String, colors: [String: String], backgrounds: [PersistedThemeBackground], packageDirectory: URL) {
         guard let manifestURL = findManifest(in: directory) else { throw FirefoxThemeError.missingManifest }
         guard let data = try? Data(contentsOf: manifestURL),
               let manifest = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
@@ -272,9 +368,113 @@ final class FirefoxThemeManager {
         }
         guard !colors.isEmpty else { throw FirefoxThemeError.notATheme }
 
-        let name = displayName(fromManifest: manifest, packageDirectory: manifestURL.deletingLastPathComponent())
+        let packageDirectory = manifestURL.deletingLastPathComponent()
+        let name = displayName(fromManifest: manifest, packageDirectory: packageDirectory)
             ?? fallbackName
-        return (name, colors)
+        return (name, colors, backgroundSpecs(fromTheme: theme), packageDirectory)
+    }
+
+    // MARK: - Header background images
+
+    /// Firefox's documented defaults when `theme.properties` omits the
+    /// per-image alignment/tiling arrays (or leaves them shorter than the
+    /// image list).
+    private static let defaultBackgroundAlignment = "right top"
+    private static let defaultBackgroundTiling = "no-repeat"
+
+    /// The header image layers named by the manifest, TOPMOST FIRST —
+    /// matching CSS `background-image` layering, where Firefox stacks
+    /// `additional_backgrounds` (first entry on top) above the legacy
+    /// single header image (`theme_frame` / `headerURL`).
+    private static func backgroundSpecs(fromTheme theme: [String: Any]) -> [PersistedThemeBackground] {
+        let images = theme["images"] as? [String: Any] ?? [:]
+        let properties = theme["properties"] as? [String: Any] ?? [:]
+        let alignments = properties["additional_backgrounds_alignment"] as? [String] ?? []
+        let tilings = properties["additional_backgrounds_tiling"] as? [String] ?? []
+
+        var specs: [PersistedThemeBackground] = []
+        let additional = images["additional_backgrounds"] as? [String] ?? []
+        for (index, path) in additional.enumerated() {
+            specs.append(PersistedThemeBackground(
+                path: path,
+                alignment: index < alignments.count ? alignments[index] : defaultBackgroundAlignment,
+                tiling: index < tilings.count ? tilings[index] : defaultBackgroundTiling
+            ))
+        }
+        // The legacy single header image, anchored top-right like Firefox
+        // draws it, as the BOTTOM layer under any additional backgrounds.
+        if let headerPath = (images["theme_frame"] as? String) ?? (images["headerURL"] as? String) {
+            specs.append(PersistedThemeBackground(
+                path: headerPath,
+                alignment: defaultBackgroundAlignment,
+                tiling: defaultBackgroundTiling
+            ))
+        }
+        return specs
+    }
+
+    /// Copies the manifest-referenced image files out of the unpacked
+    /// package into the managed theme directory, preserving their relative
+    /// paths (which the persisted record stores). Rejects paths escaping the
+    /// package root and silently drops files that are missing or unreadable
+    /// — a theme with a broken image still imports with its colors.
+    private static func extractBackgroundImages(
+        _ specs: [PersistedThemeBackground],
+        from packageDirectory: URL,
+        into themeDirectory: URL
+    ) -> [PersistedThemeBackground] {
+        let fileManager = FileManager.default
+        let root = packageDirectory.standardizedFileURL
+        var extracted: [PersistedThemeBackground] = []
+        for spec in specs {
+            let relativePath = spec.path.hasPrefix("/") ? String(spec.path.dropFirst()) : spec.path
+            let source = root.appendingPathComponent(relativePath).standardizedFileURL
+            guard source.path.hasPrefix(root.path + "/"),
+                  fileManager.fileExists(atPath: source.path) else { continue }
+            let destination = themeDirectory.appendingPathComponent(relativePath)
+            do {
+                try fileManager.createDirectory(
+                    at: destination.deletingLastPathComponent(),
+                    withIntermediateDirectories: true
+                )
+                if fileManager.fileExists(atPath: destination.path) {
+                    try fileManager.removeItem(at: destination)
+                }
+                try fileManager.copyItem(at: source, to: destination)
+            } catch { continue }
+            extracted.append(PersistedThemeBackground(
+                path: relativePath,
+                alignment: spec.alignment,
+                tiling: spec.tiling
+            ))
+        }
+        return extracted
+    }
+
+    /// Loads the extracted image files back as renderable `ThemeBackground`s
+    /// (both right after import and on launch reload), dropping any that no
+    /// longer read/decode.
+    private static func loadBackgrounds(
+        _ persisted: [PersistedThemeBackground],
+        themeDirectory: URL
+    ) -> [ThemeBackground] {
+        persisted.compactMap { spec in
+            let fileURL = themeDirectory.appendingPathComponent(spec.path)
+            guard let data = try? Data(contentsOf: fileURL),
+                  let image = NSImage(data: data) else { return nil }
+            var isAnimated = false
+            if let source = CGImageSourceCreateWithData(data as CFData, nil) {
+                isAnimated = CGImageSourceGetCount(source) > 1
+            }
+            return ThemeBackground(
+                id: spec.path,
+                data: data,
+                image: image,
+                alignment: spec.alignment,
+                tiling: spec.tiling,
+                isAnimated: isAnimated
+            )
+        }
     }
 
     /// `manifest.json` at the package root, or one directory level down

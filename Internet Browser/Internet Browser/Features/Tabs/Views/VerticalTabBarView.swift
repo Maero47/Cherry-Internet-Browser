@@ -122,8 +122,12 @@ struct VerticalTabBarView: View {
             .help("New Tab (Cmd+T)")
         }
         .background {
-            // Imported Firefox theme: the tab strip takes the frame color.
-            if !isPrivateMode, let themedStrip = FirefoxThemeManager.shared.tabStripBackground {
+            // Imported Firefox theme: the tab strip takes the header
+            // backdrop — frame color plus header images (the sidebar spans
+            // the window's left edge, so left/top-anchored art lands here).
+            if !isPrivateMode, FirefoxThemeManager.shared.hasHeaderBackdrop {
+                ThemeHeaderBackdropView()
+            } else if !isPrivateMode, let themedStrip = FirefoxThemeManager.shared.tabStripBackground {
                 themedStrip
             } else {
                 Rectangle().fill(.bar)

@@ -92,6 +92,10 @@ struct OmniboxView: View {
         .padding(.vertical, 6)
         .background {
             if let themedFieldBackground {
+                // Often semi-transparent (e.g. rgba(0,0,0,0.34)) — it
+                // composites over the nav bar's theme header backdrop
+                // (frame color + header images + toolbar color) behind this
+                // view, exactly like Firefox's URL field over its header.
                 RoundedRectangle(cornerRadius: 8)
                     .fill(themedFieldBackground)
             } else {

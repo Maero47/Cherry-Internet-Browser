@@ -188,6 +188,18 @@ struct BrowserView: View {
 
     @ViewBuilder
     private var browserLayout: some View {
+        // The GeometryReader publishes the window content's global frame as
+        // the virtual canvas Firefox theme header images anchor to, so the
+        // tab strip, nav bars (incl. split panes), and vertical sidebar all
+        // render slices of ONE continuous window-wide backdrop.
+        GeometryReader { geometry in
+            browserChrome
+                .environment(\.chromeCanvasFrame, geometry.frame(in: .global))
+        }
+    }
+
+    @ViewBuilder
+    private var browserChrome: some View {
         HStack(spacing: 0) {
             if viewModel.useVerticalTabs && !viewModel.isVideoFullscreen {
                 VerticalTabBarView(

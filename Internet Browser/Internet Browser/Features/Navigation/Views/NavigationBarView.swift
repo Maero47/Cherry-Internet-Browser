@@ -168,7 +168,17 @@ struct NavigationBarView: View {
         .padding(.top, showWindowDragArea ? 6 : 0)
         .background {
             ZStack {
-                if let themedToolbarBackground {
+                if !isPrivateMode && FirefoxThemeManager.shared.hasHeaderBackdrop {
+                    // Firefox compositing: the opaque frame color + header
+                    // images back the toolbar, and the theme's own `toolbar`
+                    // color (often semi- or fully transparent) is layered on
+                    // top — so transparent-toolbar themes show frame/images
+                    // through instead of the app's default material.
+                    ThemeHeaderBackdropView()
+                    if let toolbarOverlay = FirefoxThemeManager.shared.toolbarColor {
+                        Rectangle().fill(toolbarOverlay)
+                    }
+                } else if let themedToolbarBackground {
                     Rectangle().fill(themedToolbarBackground)
                 } else {
                     Rectangle().fill(.bar)
