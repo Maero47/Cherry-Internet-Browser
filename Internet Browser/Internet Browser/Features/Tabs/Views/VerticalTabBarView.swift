@@ -307,16 +307,23 @@ struct VerticalTabBarView: View {
 
                     // Released INSIDE this window near the left or right content
                     // edge → open split view with this tab on that edge. The
-                    // leading zone starts past the sidebar's own width so a drop
-                    // on/near the bar itself never opens a split.
+                    // leading zone spans an edgeZone-wide band starting at the
+                    // bar's CURRENT layout width (44 collapsed / 240 expanded),
+                    // so a drop on the bar itself never splits, the left
+                    // content edge is always reachable, and — capped at the
+                    // trailing zone's start — the two zones can't overlap on
+                    // narrow windows. Checked before detach so an edge drop
+                    // splits instead of tearing off into a new window.
                     if !leftSourceWindow, onSplitOnEdge != nil, sourceFrame.width > 0 {
                         let relX = mouseLocation.x - sourceFrame.minX
                         let edgeZone = sourceFrame.width * 0.30
-                        if relX > expandedWidth && relX < edgeZone {
+                        let trailingZoneStart = sourceFrame.width - edgeZone
+                        let leadingZoneEnd = min(layoutWidth + edgeZone, trailingZoneStart)
+                        if relX > layoutWidth && relX < leadingZoneEnd {
                             onSplitOnEdge?(tab, .leading)
                             finishDrag()
                             return
-                        } else if relX > sourceFrame.width - edgeZone {
+                        } else if relX > trailingZoneStart {
                             onSplitOnEdge?(tab, .trailing)
                             finishDrag()
                             return
