@@ -11,6 +11,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     case passwords = "Passwords"
     case focus = "Focus"
     case extensions = "Extensions"
+    case importData = "Import"
     case about = "About"
 
     var id: String { rawValue }
@@ -22,6 +23,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         case .passwords: "key.fill"
         case .focus: "brain.head.profile"
         case .extensions: "puzzlepiece.extension"
+        case .importData: "square.and.arrow.down"
         case .about: "info.circle"
         }
     }
@@ -33,6 +35,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         case .passwords: "Saved credentials and AutoFill"
         case .focus: "Block distracting sites while you work"
         case .extensions: "Manage installed WebExtensions"
+        case .importData: "Bring bookmarks and history from another browser"
         case .about: "About Cherry"
         }
     }
@@ -146,6 +149,8 @@ struct SettingsPageView: View {
                         FocusModeSettingsView()
                     case .extensions:
                         ExtensionsSettingsView()
+                    case .importData:
+                        ImportSettingsView()
                     case .passwords, .about:
                         EmptyView() // handled above
                     }
