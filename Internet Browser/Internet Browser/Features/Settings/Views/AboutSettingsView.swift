@@ -15,6 +15,7 @@ struct AboutSettingsView: View {
                 .resizable()
                 .frame(width: 96, height: 96)
                 .clipShape(RoundedRectangle(cornerRadius: 20))
+                .shadow(color: SettingsManager.shared.accentColor.opacity(0.3), radius: 18, y: 6)
 
             Text(AppConstants.appName)
                 .font(.title)

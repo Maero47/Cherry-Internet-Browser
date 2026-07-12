@@ -16,39 +16,58 @@ struct ExtensionsSettingsView: View {
     @Bindable private var extensionManager = ExtensionManager.shared
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack {
-                Text("Extensions")
-                    .font(.headline)
-                Spacer()
-                Button("Load Extension…") {
-                    loadExtensionFromOpenPanel()
+        SettingsStack {
+            SettingsCard(
+                icon: "puzzlepiece.extension",
+                title: "Installed Extensions",
+                subtitle: "Load a WebExtension folder or a .xpi/.zip file."
+            ) {
+                HStack {
+                    Text(installedSummary)
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Load Extension…") {
+                        loadExtensionFromOpenPanel()
+                    }
+                    .controlSize(.small)
                 }
-            }
 
-            if extensionManager.installedExtensions.isEmpty {
-                Text("No extensions installed. Load a WebExtension folder or a .xpi/.zip file to get started.")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-                    .padding(.vertical, 20)
-                    .frame(maxWidth: .infinity, alignment: .center)
-            } else {
-                VStack(spacing: 0) {
-                    ForEach(extensionManager.installedExtensions) { installed in
-                        ExtensionRow(installed: installed)
-                        if installed.id != extensionManager.installedExtensions.last?.id {
-                            Divider()
+                if extensionManager.installedExtensions.isEmpty {
+                    Text("No extensions installed yet.")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                        .padding(.vertical, 20)
+                        .frame(maxWidth: .infinity, alignment: .center)
+                } else {
+                    VStack(spacing: 0) {
+                        ForEach(extensionManager.installedExtensions) { installed in
+                            ExtensionRow(installed: installed)
+                            if installed.id != extensionManager.installedExtensions.last?.id {
+                                Divider()
+                            }
                         }
                     }
+                    .background(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .fill(Color.primary.opacity(0.03))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .strokeBorder(Color.primary.opacity(0.06))
+                    )
                 }
-                .padding(.vertical, 4)
-                .background(
-                    RoundedRectangle(cornerRadius: 10)
-                        .fill(Color(nsColor: .controlBackgroundColor))
-                )
             }
         }
-        .padding()
+    }
+
+    private var installedSummary: String {
+        let count = extensionManager.installedExtensions.count
+        switch count {
+        case 0: return "No extensions installed"
+        case 1: return "1 extension installed"
+        default: return "\(count) extensions installed"
+        }
     }
 }
 
@@ -97,6 +116,6 @@ private struct ExtensionRow: View {
             .buttonStyle(.bordered)
         }
         .padding(.horizontal, 12)
-        .padding(.vertical, 8)
+        .padding(.vertical, 10)
     }
 }

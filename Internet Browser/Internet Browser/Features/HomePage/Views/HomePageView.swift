@@ -12,7 +12,7 @@ private struct HomepageBackground: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isDrifting = false
 
-    private var theme: HomepageTheme { SettingsManager.shared.homepageTheme }
+    private var settings: SettingsManager { SettingsManager.shared }
 
     var body: some View {
         MeshGradient(
@@ -25,7 +25,7 @@ private struct HomepageBackground: View {
                 [1.0, 0.5],
                 [0.0, 1.0], [0.5, 1.0], [1.0, 1.0]
             ],
-            colors: theme.gradientColors
+            colors: settings.homepageGradientColors
         )
         .overlay {
             // The existing themes are intentionally deep. This wash turns them
@@ -56,7 +56,6 @@ struct HomePageView: View {
     @State private var editingShortcut: Shortcut?
 
     private var accent: Color { SettingsManager.shared.accentColor }
-    private var theme: HomepageTheme { SettingsManager.shared.homepageTheme }
     private var foreground: Color {
         colorScheme == .dark ? .white : Color(red: 0.09, green: 0.08, blue: 0.11)
     }
@@ -96,7 +95,7 @@ struct HomePageView: View {
     private var timeHeader: some View {
         TimelineView(.periodic(from: .now, by: 60)) { context in
             VStack(spacing: 10) {
-                Image(theme.logoImageName)
+                Image(SettingsManager.shared.homepageLogoImageName)
                     .resizable()
                     .scaledToFit()
                     .frame(width: 154, height: 44)

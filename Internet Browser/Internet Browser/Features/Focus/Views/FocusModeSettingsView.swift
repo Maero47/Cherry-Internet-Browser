@@ -11,6 +11,8 @@ struct FocusModeSettingsView: View {
     @State private var showAddField: Bool = false
     @FocusState private var addFieldFocused: Bool
 
+    private var accent: Color { SettingsManager.shared.accentColor }
+
     private let quickAddSites: [(String, String)] = [
         ("Twitter / X", "twitter.com"),
         ("Reddit", "reddit.com"),
@@ -23,27 +25,19 @@ struct FocusModeSettingsView: View {
     ]
 
     var body: some View {
-        Form {
+        SettingsStack {
             // MARK: Status
-            Section {
-                HStack {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(manager.focusModeEnabled ? "Focus Mode is On" : "Focus Mode is Off")
-                            .font(.system(size: 13, weight: .medium))
-                        Text(manager.focusModeEnabled
-                             ? "Blocked sites are inaccessible."
-                             : "Enable to block distracting sites.")
-                            .font(.system(size: 11))
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    Toggle("", isOn: Binding(
+            SettingsCard(icon: "brain.head.profile", title: "Focus Mode") {
+                SettingsToggleRow(
+                    title: manager.focusModeEnabled ? "Focus Mode is On" : "Focus Mode is Off",
+                    subtitle: manager.focusModeEnabled
+                        ? "Blocked sites are inaccessible."
+                        : "Enable to block distracting sites.",
+                    isOn: Binding(
                         get: { manager.focusModeEnabled },
                         set: { _ in manager.toggleFocusMode() }
-                    ))
-                    .labelsHidden()
-                    .toggleStyle(.switch)
-                }
+                    )
+                )
 
                 if manager.focusModeEnabled {
                     Button(role: .destructive) {
@@ -58,74 +52,81 @@ struct FocusModeSettingsView: View {
                         Label("Start Focus Session", systemImage: "play.circle")
                     }
                 }
-            } header: {
-                Text("Focus Mode")
             }
 
             // MARK: Timer
-            Section {
-                Toggle("Session Timer", isOn: $manager.timerEnabled)
+            SettingsCard(
+                icon: "timer",
+                title: "Timer",
+                subtitle: "Focus mode will automatically stop when the timer ends."
+            ) {
+                SettingsToggleRow(title: "Session Timer", isOn: $manager.timerEnabled)
 
                 if manager.timerEnabled {
-                    Picker("Duration", selection: $manager.timerDurationMinutes) {
-                        Text("15 minutes").tag(15)
-                        Text("25 minutes").tag(25)
-                        Text("30 minutes").tag(30)
-                        Text("45 minutes").tag(45)
-                        Text("60 minutes").tag(60)
-                        Text("90 minutes").tag(90)
-                        Text("2 hours").tag(120)
+                    SettingsLabeledRow(title: "Duration") {
+                        Picker("", selection: $manager.timerDurationMinutes) {
+                            Text("15 minutes").tag(15)
+                            Text("25 minutes").tag(25)
+                            Text("30 minutes").tag(30)
+                            Text("45 minutes").tag(45)
+                            Text("60 minutes").tag(60)
+                            Text("90 minutes").tag(90)
+                            Text("2 hours").tag(120)
+                        }
+                        .labelsHidden()
+                        .pickerStyle(.menu)
+                        .fixedSize()
                     }
-                    .pickerStyle(.menu)
                 }
 
                 if manager.focusModeEnabled && manager.sessionEndDate != nil {
                     HStack {
                         Image(systemName: "clock")
-                            .foregroundStyle(SettingsManager.shared.accentColor)
+                            .foregroundStyle(accent)
                         Text("Time remaining: \(manager.timeRemainingFormatted)")
                             .font(.system(size: 13, design: .monospaced))
                             .foregroundStyle(.secondary)
                     }
                 }
-            } header: {
-                Text("Timer")
-            } footer: {
-                Text("Focus mode will automatically stop when the timer ends.")
             }
 
             // MARK: Blocked Sites
-            Section {
+            SettingsCard(icon: "hand.raised", title: "Blocked Sites") {
                 if manager.blockedDomains.isEmpty {
                     Text("No sites blocked yet. Add sites below.")
                         .foregroundStyle(.secondary)
                         .font(.system(size: 12))
                 } else {
-                    ForEach(manager.blockedDomains, id: \.self) { domain in
-                        HStack {
-                            Image(systemName: "xmark.circle.fill")
-                                .foregroundStyle(.red.opacity(0.7))
-                                .font(.system(size: 13))
-                            Text(domain)
-                                .font(.system(size: 13, design: .monospaced))
-                            Spacer()
-                            Button {
-                                manager.removeDomain(domain)
-                            } label: {
-                                Image(systemName: "trash")
-                                    .foregroundStyle(.secondary)
-                                    .font(.system(size: 12))
+                    VStack(alignment: .leading, spacing: 8) {
+                        ForEach(manager.blockedDomains, id: \.self) { domain in
+                            HStack {
+                                Image(systemName: "xmark.circle.fill")
+                                    .foregroundStyle(.red.opacity(0.7))
+                                    .font(.system(size: 13))
+                                Text(domain)
+                                    .font(.system(size: 13, design: .monospaced))
+                                Spacer()
+                                Button {
+                                    manager.removeDomain(domain)
+                                } label: {
+                                    Image(systemName: "trash")
+                                        .foregroundStyle(.secondary)
+                                        .font(.system(size: 12))
+                                }
+                                .buttonStyle(.plain)
+                                .help("Remove \(domain)")
                             }
-                            .buttonStyle(.plain)
                         }
                     }
                 }
+
+                Divider()
 
                 // Add domain row
                 if showAddField {
                     HStack {
                         Image(systemName: "plus.circle.fill")
-                            .foregroundStyle(SettingsManager.shared.accentColor)
+                            .foregroundStyle(accent)
                             .font(.system(size: 13))
                         TextField("e.g. reddit.com", text: $newDomain)
                             .textFieldStyle(.plain)
@@ -136,6 +137,7 @@ struct FocusModeSettingsView: View {
                             commitNewDomain()
                         }
                         .buttonStyle(.borderedProminent)
+                        .tint(accent)
                         .controlSize(.small)
                         .disabled(newDomain.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                         Button("Cancel") {
@@ -154,12 +156,14 @@ struct FocusModeSettingsView: View {
                         Label("Add a site to block", systemImage: "plus")
                     }
                 }
-            } header: {
-                Text("Blocked Sites")
             }
 
             // MARK: Quick Add
-            Section {
+            SettingsCard(
+                icon: "bolt",
+                title: "Quick Block",
+                subtitle: "Tap to toggle a site on or off your block list."
+            ) {
                 LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
                     ForEach(quickAddSites, id: \.1) { name, domain in
                         let isBlocked = manager.blockedDomains.contains(domain)
@@ -172,7 +176,7 @@ struct FocusModeSettingsView: View {
                         } label: {
                             HStack(spacing: 6) {
                                 Image(systemName: isBlocked ? "checkmark.circle.fill" : "circle")
-                                    .foregroundStyle(isBlocked ? SettingsManager.shared.accentColor : .secondary)
+                                    .foregroundStyle(isBlocked ? accent : Color.secondary)
                                     .font(.system(size: 13))
                                 Text(name)
                                     .font(.system(size: 12))
@@ -184,20 +188,16 @@ struct FocusModeSettingsView: View {
                             .background(
                                 RoundedRectangle(cornerRadius: 8)
                                     .fill(isBlocked
-                                          ? SettingsManager.shared.accentColor.opacity(0.1)
+                                          ? accent.opacity(0.1)
                                           : Color.primary.opacity(0.04))
                             )
+                            .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
                     }
                 }
-            } header: {
-                Text("Quick Block")
-            } footer: {
-                Text("Tap to toggle a site on or off your block list.")
             }
         }
-        .formStyle(.grouped)
     }
 
     private func commitNewDomain() {

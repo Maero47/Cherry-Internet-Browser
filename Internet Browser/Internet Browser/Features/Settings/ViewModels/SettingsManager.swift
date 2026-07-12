@@ -168,11 +168,6 @@ enum HomepageTheme: String, CaseIterable, Identifiable {
             ]
         }
     }
-
-    /// Preview color for the theme picker (center color of gradient)
-    var previewColor: Color {
-        gradientColors[4]
-    }
 }
 
 @Observable
@@ -215,8 +210,32 @@ final class SettingsManager {
         didSet { UserDefaults.standard.set(homepageTheme.rawValue, forKey: Keys.homepageTheme) }
     }
 
+    /// When true (the default), the homepage background is derived live from
+    /// the accent color; `homepageTheme` then acts as a manual override kept
+    /// for when the user picks a curated theme.
+    var homepageMatchesAccent: Bool {
+        didSet { UserDefaults.standard.set(homepageMatchesAccent, forKey: Keys.homepageMatchesAccent) }
+    }
+
     var accentColor: Color {
         Color(hex: accentColorHex)
+    }
+
+    // MARK: - Homepage appearance
+    // Single source of truth for the homepage background: views read these
+    // instead of `homepageTheme` directly, so the active source (accent-derived
+    // vs. curated theme) stays an implementation detail.
+
+    var homepageGradientColors: [Color] {
+        homepageMatchesAccent
+            ? AccentDerivedPalette.gradientColors(fromHex: accentColorHex)
+            : homepageTheme.gradientColors
+    }
+
+    var homepageLogoImageName: String {
+        homepageMatchesAccent
+            ? AccentDerivedPalette.logoImageName(fromHex: accentColorHex)
+            : homepageTheme.logoImageName
     }
 
     var resolvedColorScheme: ColorScheme? {
@@ -349,6 +368,7 @@ final class SettingsManager {
         } else {
             self.homepageTheme = .cherry
         }
+        self.homepageMatchesAccent = defaults.object(forKey: Keys.homepageMatchesAccent) as? Bool ?? true
 
         // Downloads
         let defaultDownloadsPath = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first!.path
@@ -447,6 +467,7 @@ final class SettingsManager {
         static let appearanceMode = "appearanceMode"
         static let accentColorHex = "accentColorHex"
         static let homepageTheme = "homepageTheme"
+        static let homepageMatchesAccent = "homepageMatchesAccent"
         static let downloadDirectory = "downloadDirectory"
         static let adBlockEnabled = "adBlockEnabled"
         static let adBlockWhitelistedDomains = "adBlockWhitelistedDomains"

@@ -11,82 +11,91 @@ struct PrivacySettingsView: View {
     @State private var isUpdatingFilters = false
 
     var body: some View {
-        Form {
-            Section("Content Blocking") {
-                Toggle("Block Ads & Trackers", isOn: $settings.adBlockEnabled)
-
-                Text("Uses EasyList and EasyPrivacy filter lists to block ads, trackers, and intrusive content. Lists are updated automatically every 24 hours.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+        SettingsStack {
+            SettingsCard(
+                icon: "shield.lefthalf.filled",
+                title: "Content Blocking",
+                subtitle: "Uses EasyList and EasyPrivacy filter lists to block ads, trackers, and intrusive content. Lists are updated automatically every 24 hours."
+            ) {
+                SettingsToggleRow(title: "Block Ads & Trackers", isOn: $settings.adBlockEnabled)
 
                 if settings.adBlockEnabled {
-                    Button("Update Filter Lists Now") {
-                        isUpdatingFilters = true
-                        Task { @MainActor in
-                            AdBlockManager.shared.forceUpdate()
-                            await AdBlockManager.shared.ensureRulesCompiled()
-                            isUpdatingFilters = false
+                    HStack(spacing: 10) {
+                        Button("Update Filter Lists Now") {
+                            isUpdatingFilters = true
+                            Task { @MainActor in
+                                AdBlockManager.shared.forceUpdate()
+                                await AdBlockManager.shared.ensureRulesCompiled()
+                                isUpdatingFilters = false
+                            }
                         }
-                    }
-                    .disabled(isUpdatingFilters)
+                        .controlSize(.small)
+                        .disabled(isUpdatingFilters)
 
-                    if isUpdatingFilters {
-                        HStack(spacing: 8) {
+                        if isUpdatingFilters {
                             ProgressView()
-                                .scaleEffect(0.7)
+                                .scaleEffect(0.55)
                             Text("Downloading and compiling filter lists...")
-                                .font(.caption)
+                                .font(.system(size: 11))
                                 .foregroundStyle(.secondary)
                         }
                     }
                 }
             }
 
-            Section("Web Content") {
-                Toggle("Enable JavaScript", isOn: $settings.enableJavaScript)
+            SettingsCard(icon: "globe", title: "Web Content") {
+                SettingsToggleRow(title: "Enable JavaScript", isOn: $settings.enableJavaScript)
 
-                Toggle("HTTPS-Only Mode", isOn: $settings.httpsOnlyMode)
-                if settings.httpsOnlyMode {
-                    Text("Automatically upgrades connections to HTTPS when available.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
+                Divider()
 
-                Toggle("Block Pop-up Windows", isOn: $settings.blockPopups)
-                if settings.blockPopups {
-                    Text("Blocks pop-up windows that are not triggered by user actions. New tabs will use updated settings.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
+                SettingsToggleRow(
+                    title: "HTTPS-Only Mode",
+                    subtitle: "Automatically upgrades connections to HTTPS when available.",
+                    isOn: $settings.httpsOnlyMode
+                )
+
+                Divider()
+
+                SettingsToggleRow(
+                    title: "Block Pop-up Windows",
+                    subtitle: "Blocks pop-up windows that are not triggered by user actions. New tabs will use updated settings.",
+                    isOn: $settings.blockPopups
+                )
             }
 
-            Section("Cookies") {
-                Picker("Cookie Policy", selection: $settings.blockCookies) {
-                    ForEach(CookieBlockingLevel.allCases) { level in
-                        Text(level.rawValue).tag(level)
+            SettingsCard(icon: "cylinder.split.1x2", title: "Cookies") {
+                SettingsLabeledRow(title: "Cookie Policy") {
+                    Picker("", selection: $settings.blockCookies) {
+                        ForEach(CookieBlockingLevel.allCases) { level in
+                            Text(level.rawValue).tag(level)
+                        }
                     }
-                }
-                .pickerStyle(.menu)
-            }
-
-            Section("Tracking") {
-                Toggle("Send Do Not Track Header", isOn: $settings.sendDoNotTrack)
-
-                if settings.sendDoNotTrack {
-                    Text("Requests that websites do not track your browsing activity. Websites may choose to ignore this.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .fixedSize()
                 }
             }
 
-            Section("Data") {
-                Button("Clear Browsing Data...") {
-                    showClearData = true
+            SettingsCard(icon: "eye.slash", title: "Tracking") {
+                SettingsToggleRow(
+                    title: "Send Do Not Track Header",
+                    subtitle: "Requests that websites do not track your browsing activity. Websites may choose to ignore this.",
+                    isOn: $settings.sendDoNotTrack
+                )
+            }
+
+            SettingsCard(icon: "trash", title: "Data") {
+                SettingsLabeledRow(
+                    title: "Browsing Data",
+                    subtitle: "Remove history, cookies, and caches."
+                ) {
+                    Button("Clear Browsing Data...") {
+                        showClearData = true
+                    }
+                    .controlSize(.small)
                 }
             }
         }
-        .formStyle(.grouped)
-        .padding()
         .sheet(isPresented: $showClearData) {
             ClearDataView()
         }

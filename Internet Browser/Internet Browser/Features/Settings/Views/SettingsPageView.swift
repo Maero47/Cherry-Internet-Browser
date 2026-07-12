@@ -25,6 +25,17 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         case .about: "info.circle"
         }
     }
+
+    var subtitle: String {
+        switch self {
+        case .general: "Search, theme, downloads, and tabs"
+        case .privacy: "Content blocking, cookies, and tracking"
+        case .passwords: "Saved credentials and AutoFill"
+        case .focus: "Block distracting sites while you work"
+        case .extensions: "Manage installed WebExtensions"
+        case .about: "About Cherry"
+        }
+    }
 }
 
 struct SettingsPageView: View {
@@ -39,7 +50,7 @@ struct SettingsPageView: View {
                 // Wide layout: sidebar + content
                 HStack(spacing: 0) {
                     settingsSidebar
-                        .frame(width: 180)
+                        .frame(width: 192)
 
                     Divider()
 
@@ -60,42 +71,22 @@ struct SettingsPageView: View {
 
     @ViewBuilder
     private var settingsSidebar: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: 2) {
             Text("Settings")
-                .font(.title2)
-                .fontWeight(.bold)
-                .padding(.horizontal, 16)
-                .padding(.top, 20)
-                .padding(.bottom, 12)
+                .font(.system(size: 20, weight: .bold))
+                .padding(.horizontal, 20)
+                .padding(.top, 22)
+                .padding(.bottom, 14)
 
             ForEach(SettingsSection.allCases) { section in
-                Button {
+                SettingsSidebarItem(section: section, isSelected: selectedSection == section) {
                     selectedSection = section
-                } label: {
-                    HStack(spacing: 10) {
-                        Image(systemName: section.icon)
-                            .font(.system(size: 14))
-                            .frame(width: 20)
-                        Text(section.rawValue)
-                            .font(.system(size: 13))
-                        Spacer()
-                    }
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .background(
-                        RoundedRectangle(cornerRadius: 8)
-                            .fill(selectedSection == section
-                                  ? SettingsManager.shared.accentColor.opacity(0.15)
-                                  : Color.clear)
-                    )
-                    .foregroundStyle(selectedSection == section ? .primary : .secondary)
                 }
-                .buttonStyle(.plain)
-                .padding(.horizontal, 8)
             }
 
             Spacer()
         }
+        .frame(maxHeight: .infinity)
         .background(colorScheme == .dark
                     ? Color.black.opacity(0.2)
                     : Color.gray.opacity(0.05))
@@ -112,11 +103,12 @@ struct SettingsPageView: View {
 
             Picker("", selection: $selectedSection) {
                 ForEach(SettingsSection.allCases) { section in
-                    Text(section.rawValue).tag(section)
+                    Label(section.rawValue, systemImage: section.icon).tag(section)
                 }
             }
-            .pickerStyle(.segmented)
-            .frame(width: 240)
+            .labelsHidden()
+            .pickerStyle(.menu)
+            .fixedSize()
             .padding(.trailing, 16)
         }
         .padding(.vertical, 10)
@@ -132,9 +124,19 @@ struct SettingsPageView: View {
             // PasswordsSettingsView has its own List — don't wrap in ScrollView
             PasswordsSettingsView()
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+        case .about:
+            // Centered when there's room, scrollable when the window is small
+            GeometryReader { proxy in
+                ScrollView {
+                    AboutSettingsView()
+                        .frame(maxWidth: .infinity, minHeight: proxy.size.height)
+                }
+            }
         default:
             ScrollView {
-                VStack(alignment: .leading, spacing: 0) {
+                VStack(alignment: .leading, spacing: 18) {
+                    sectionHeader
+
                     switch selectedSection {
                     case .general:
                         GeneralSettingsView()
@@ -144,14 +146,64 @@ struct SettingsPageView: View {
                         FocusModeSettingsView()
                     case .extensions:
                         ExtensionsSettingsView()
-                    case .about:
-                        AboutSettingsView()
-                    case .passwords:
+                    case .passwords, .about:
                         EmptyView() // handled above
                     }
                 }
+                .padding(24)
+                .frame(maxWidth: 680, alignment: .leading)
                 .frame(maxWidth: .infinity)
             }
         }
+    }
+
+    private var sectionHeader: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(selectedSection.rawValue)
+                .font(.system(size: 22, weight: .bold))
+            Text(selectedSection.subtitle)
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+        }
+    }
+}
+
+private struct SettingsSidebarItem: View {
+    let section: SettingsSection
+    let isSelected: Bool
+    let action: () -> Void
+
+    @State private var isHovering = false
+    private var accent: Color { SettingsManager.shared.accentColor }
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 9) {
+                Image(systemName: section.icon)
+                    .font(.system(size: 13, weight: isSelected ? .semibold : .regular))
+                    .foregroundStyle(isSelected ? accent : Color.secondary)
+                    .frame(width: 21)
+
+                Text(section.rawValue)
+                    .font(.system(size: 13, weight: isSelected ? .medium : .regular))
+                    .foregroundStyle(isSelected ? .primary : .secondary)
+
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .background(
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(isSelected
+                          ? accent.opacity(0.14)
+                          : (isHovering ? Color.primary.opacity(0.05) : Color.clear))
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 10)
+        .onHover { isHovering = $0 }
+        .animation(.easeOut(duration: 0.12), value: isHovering)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 }
