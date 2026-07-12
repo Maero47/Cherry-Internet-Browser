@@ -205,13 +205,24 @@ final class ExtensionManager: NSObject {
     }
 
     /// The `BrowserViewModel` whose `tabManager.tabs` contains `tab`, restricted
-    /// to extension-visible (non-private) windows — shared by
-    /// `windowAdapter(owningTab:)` and `isTabSelected(_:)`. `Tab` has no
-    /// back-reference to its owning `BrowserViewModel`/`TabManager`, so this is
-    /// the only way to go from a tab back to its window.
+    /// to extension-visible (non-private) windows that have ALREADY been
+    /// announced to the controller via `didOpenWindow` (i.e. present in
+    /// `announcedWindows`) — shared by `windowAdapter(owningTab:)` and
+    /// `isTabSelected(_:)`. `Tab` has no back-reference to its owning
+    /// `BrowserViewModel`/`TabManager`, so this is the only way to go from a
+    /// tab back to its window.
+    ///
+    /// A window registers in `BrowserViewModel.windowViewModels` synchronously
+    /// in `init`, but only reaches `announcedWindows` later, once
+    /// `windowOpened`/`announceWindow` actually calls `didOpenWindow`. Gating
+    /// here keeps this lookup from ever handing WebKit a `WKWebExtensionWindow`
+    /// it hasn't been told about yet — during that gap the tab's window simply
+    /// isn't resolvable, matching how the tab itself isn't visible to
+    /// `tabs.query` until announced either.
     private func owningViewModel(for tab: Tab) -> BrowserViewModel? {
         extensionVisibleViewModels.first { viewModel in
-            viewModel.tabManager.tabs.contains { $0 === tab }
+            announcedWindows.contains(ObjectIdentifier(viewModel)) &&
+                viewModel.tabManager.tabs.contains { $0 === tab }
         }
     }
 
