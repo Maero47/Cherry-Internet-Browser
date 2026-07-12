@@ -177,12 +177,11 @@ struct Internet_BrowserApp: App {
 // MARK: - Load Extension…
 
 /// Opens a file/folder picker for a `.xpi`/`.zip` WebExtension or an unpacked
-/// extension directory, then loads it into the app-global `ExtensionManager`.
-/// v1a has no management UI yet, so success/failure is reported via a plain
-/// alert — good enough for manually verifying a loaded extension's content
-/// scripts run.
+/// extension directory, then loads it into the app-global `ExtensionManager`
+/// (same flow the Extensions settings page's "Load Extension…" button uses).
+/// Success/failure is reported via a plain alert.
 @MainActor
-private func loadExtensionFromOpenPanel() {
+func loadExtensionFromOpenPanel() {
     let panel = NSOpenPanel()
     panel.canChooseFiles = true
     panel.canChooseDirectories = true
@@ -227,6 +226,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             Task { @MainActor in
                 await AdBlockManager.shared.ensureRulesCompiled()
             }
+        }
+
+        // Reload every persisted+enabled extension as early as possible so
+        // their content scripts are ready to inject once the first window's
+        // tabs get announced (`ExtensionManager.windowOpened`, called from
+        // `WindowRegistrar`, re-fires on every SwiftUI update pass — so it
+        // still picks up the window even if this finishes slightly later).
+        Task { @MainActor in
+            await ExtensionManager.shared.reloadPersistedExtensions()
         }
 
         for window in NSApplication.shared.windows {
