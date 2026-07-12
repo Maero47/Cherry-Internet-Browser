@@ -193,6 +193,7 @@ struct BrowserView: View {
                 VerticalTabBarView(
                     tabManager: viewModel.tabManager,
                     isCollapsed: $viewModel.verticalTabBarCollapsed,
+                    isPrivateMode: viewModel.isPrivateMode,
                     onNewTab: { viewModel.newTab() },
                     onDetachTab: { tab in viewModel.detachTab(tab) },
                     onReceiveTab: { tabID in
@@ -373,14 +374,16 @@ struct BrowserView: View {
             BookmarksSidebarView(
                 repository: viewModel.bookmarkRepository,
                 onBookmarkClick: { viewModel.openBookmark($0) },
-                onClose: { viewModel.closeSidebar() }
+                onClose: { viewModel.closeSidebar() },
+                isPrivateMode: viewModel.isPrivateMode
             )
             .frame(minWidth: 300, maxWidth: 300)
         case .downloads:
             DownloadsSidebarView(
                 repository: viewModel.downloadRepository,
                 downloadManager: viewModel.downloadManager,
-                onClose: { viewModel.closeSidebar() }
+                onClose: { viewModel.closeSidebar() },
+                isPrivateMode: viewModel.isPrivateMode
             )
             .frame(minWidth: 300, maxWidth: 300)
         case .none:

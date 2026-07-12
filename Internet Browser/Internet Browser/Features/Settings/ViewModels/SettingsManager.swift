@@ -223,11 +223,17 @@ final class SettingsManager {
 
     // MARK: - Homepage appearance
     // Single source of truth for the homepage background: views read these
-    // instead of `homepageTheme` directly, so the active source (accent-derived
-    // vs. curated theme) stays an implementation detail.
+    // instead of `homepageTheme` directly, so the active source (imported
+    // Firefox theme vs. accent-derived vs. curated theme) stays an
+    // implementation detail.
 
     var homepageGradientColors: [Color] {
-        homepageMatchesAccent
+        // An imported Firefox theme's ntp_background wins outright while
+        // active — a flat fill, matching how Firefox renders its new-tab page.
+        if let themeBackground = FirefoxThemeManager.shared.homepageBackground {
+            return Array(repeating: themeBackground, count: 9)
+        }
+        return homepageMatchesAccent
             ? AccentDerivedPalette.gradientColors(fromHex: accentColorHex)
             : homepageTheme.gradientColors
     }

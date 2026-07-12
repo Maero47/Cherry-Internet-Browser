@@ -9,6 +9,8 @@ struct BookmarksSidebarView: View {
     @Bindable var repository: BookmarkRepository
     let onBookmarkClick: (Bookmark) -> Void
     let onClose: () -> Void
+    /// Private windows are never themed by an imported Firefox theme.
+    var isPrivateMode: Bool = false
 
     @State private var searchText: String = ""
     @State private var selectedFolder: String? = nil
@@ -136,7 +138,11 @@ struct BookmarksSidebarView: View {
                 .listStyle(.sidebar)
             }
         }
-        .background(Color(nsColor: .windowBackgroundColor))
+        .foregroundStyle((isPrivateMode ? nil : FirefoxThemeManager.shared.sidebarText) ?? Color.primary)
+        .background(
+            (isPrivateMode ? nil : FirefoxThemeManager.shared.sidebarBackground)
+                ?? Color(nsColor: .windowBackgroundColor)
+        )
     }
 }
 

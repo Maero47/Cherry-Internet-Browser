@@ -30,7 +30,11 @@ private struct HomepageBackground: View {
         .overlay {
             // The existing themes are intentionally deep. This wash turns them
             // into soft, legible pastels in light mode without changing a theme's hue.
-            Color.white.opacity(colorScheme == .light ? 0.7 : 0.035)
+            // An imported Firefox theme's ntp_background is an absolute color
+            // (not light/dark adaptive), so it gets no wash at all.
+            if FirefoxThemeManager.shared.homepageBackground == nil {
+                Color.white.opacity(colorScheme == .light ? 0.7 : 0.035)
+            }
         }
         .ignoresSafeArea()
         .onAppear {
@@ -57,7 +61,12 @@ struct HomePageView: View {
 
     private var accent: Color { SettingsManager.shared.accentColor }
     private var foreground: Color {
-        colorScheme == .dark ? .white : Color(red: 0.09, green: 0.08, blue: 0.11)
+        // An active Firefox theme's ntp_text keeps text legible against its
+        // absolute ntp_background; otherwise stay scheme-adaptive as before.
+        if let themeText = FirefoxThemeManager.shared.homepageText {
+            return themeText
+        }
+        return colorScheme == .dark ? .white : Color(red: 0.09, green: 0.08, blue: 0.11)
     }
 
     var body: some View {

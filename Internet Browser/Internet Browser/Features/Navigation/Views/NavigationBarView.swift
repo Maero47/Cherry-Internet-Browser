@@ -44,6 +44,15 @@ struct NavigationBarView: View {
         SettingsManager.shared.isAdBlockPaused(for: tab.url)
     }
 
+    /// Imported Firefox theme overrides. Both nil when no theme is active or
+    /// this is a private window (private windows keep their stock look).
+    private var themedToolbarBackground: Color? {
+        isPrivateMode ? nil : FirefoxThemeManager.shared.toolbarBackground
+    }
+    private var themedToolbarText: Color? {
+        isPrivateMode ? nil : FirefoxThemeManager.shared.toolbarText
+    }
+
     @State private var addressText: String = ""
     @State private var isEditing: Bool = false
     @State private var suggestService = SearchSuggestService()
@@ -68,6 +77,7 @@ struct NavigationBarView: View {
                 text: $addressText,
                 isLoading: tab.isLoading,
                 isSecure: tab.url?.scheme == "https",
+                isPrivateMode: isPrivateMode,
                 onSubmit: { input in
                     // If a suggestion is selected via keyboard, use that instead
                     if let idx = selectedSuggestionIndex,
@@ -148,14 +158,22 @@ struct NavigationBarView: View {
             // Action buttons
             actionButtons
         }
+        // Hierarchical styles (.primary/.secondary) on the buttons resolve
+        // against this, so the whole toolbar's icons/text follow the theme's
+        // toolbar_text; Color.primary is the stock look when unthemed.
+        .foregroundStyle(themedToolbarText ?? Color.primary)
         .padding(.leading, verticalTabsCollapsedPadding)
         .padding(.trailing, 12)
         .padding(.vertical, 8)
         .padding(.top, showWindowDragArea ? 6 : 0)
         .background {
             ZStack {
-                Rectangle().fill(.bar)
-                if isPrivateMode { Color.purple.opacity(0.12) }
+                if let themedToolbarBackground {
+                    Rectangle().fill(themedToolbarBackground)
+                } else {
+                    Rectangle().fill(.bar)
+                    if isPrivateMode { Color.purple.opacity(0.12) }
+                }
             }
         }
         .overlay(alignment: .top) {

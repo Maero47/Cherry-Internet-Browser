@@ -9,6 +9,8 @@ import UniformTypeIdentifiers
 struct VerticalTabBarView: View {
     @Bindable var tabManager: TabManager
     @Binding var isCollapsed: Bool
+    /// Private windows are never themed by an imported Firefox theme.
+    var isPrivateMode: Bool = false
     let onNewTab: () -> Void
     var onDetachTab: ((Tab) -> Void)? = nil
     var onReceiveTab: ((UUID) -> Void)? = nil
@@ -119,7 +121,14 @@ struct VerticalTabBarView: View {
             .buttonStyle(.plain)
             .help("New Tab (Cmd+T)")
         }
-        .background(.bar)
+        .background {
+            // Imported Firefox theme: the tab strip takes the frame color.
+            if !isPrivateMode, let themedStrip = FirefoxThemeManager.shared.tabStripBackground {
+                themedStrip
+            } else {
+                Rectangle().fill(.bar)
+            }
+        }
     }
 
     @ViewBuilder
@@ -174,6 +183,17 @@ private struct VerticalTabItemView: View {
             (tabManager.selectedTabID == tab.id || tabManager.secondarySelectedTabID == tab.id)
     }
 
+    /// Imported Firefox theme overrides — nil for private tabs (never themed)
+    /// or when no theme is active, keeping the stock accent/hierarchy look.
+    private var themedSelectedBackground: Color? {
+        tab.isPrivate ? nil : FirefoxThemeManager.shared.selectedTabBackground
+    }
+    private var themedTitleColor: Color? {
+        guard !tab.isPrivate else { return nil }
+        let manager = FirefoxThemeManager.shared
+        return isSelected ? manager.tabText : manager.tabStripText
+    }
+
     var body: some View {
         HStack(spacing: 8) {
             // Group color dot
@@ -217,7 +237,9 @@ private struct VerticalTabItemView: View {
             if !isCollapsed {
                 Text(tab.displayTitle)
                     .font(.system(size: 12))
-                    .foregroundStyle(tab.isSleeping ? .tertiary : .primary)
+                    .foregroundStyle(tab.isSleeping
+                                     ? AnyShapeStyle(.tertiary)
+                                     : AnyShapeStyle(themedTitleColor ?? Color.primary))
                     .lineLimit(1)
                     .truncationMode(.tail)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -256,7 +278,7 @@ private struct VerticalTabItemView: View {
         .background(
             RoundedRectangle(cornerRadius: 6)
                 .fill(isSelected
-                      ? SettingsManager.shared.accentColor.opacity(0.15)
+                      ? (themedSelectedBackground ?? SettingsManager.shared.accentColor.opacity(0.15))
                       : (isHovering ? Color.gray.opacity(0.1) : Color.clear))
         )
         .animation(.easeInOut(duration: 0.12), value: isHovering)
