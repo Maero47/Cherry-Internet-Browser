@@ -202,6 +202,8 @@ struct BrowserView: View {
     private var browserChrome: some View {
         HStack(spacing: 0) {
             if viewModel.useVerticalTabs && !viewModel.isVideoFullscreen {
+                // The sidebar sizes itself (single source of truth for the
+                // collapsed/expanded width lives in VerticalTabBarView).
                 VerticalTabBarView(
                     tabManager: viewModel.tabManager,
                     isCollapsed: $viewModel.verticalTabBarCollapsed,
@@ -210,12 +212,12 @@ struct BrowserView: View {
                     onDetachTab: { tab in viewModel.detachTab(tab) },
                     onReceiveTab: { tabID in
                         _ = BrowserViewModel.transferTab(tabID: tabID, to: viewModel)
-                    }
+                    },
+                    onSplitOnEdge: { tab, edge in viewModel.splitWith(tab: tab, edge: edge) }
                 )
-                .frame(
-                    minWidth: viewModel.verticalTabBarCollapsed ? 44 : 240,
-                    maxWidth: viewModel.verticalTabBarCollapsed ? 44 : 240
-                )
+                // Above the content column so the collapsed bar's transient
+                // hover-expansion flies OVER the page instead of reflowing it.
+                .zIndex(1)
             }
 
             VStack(spacing: 0) {
@@ -826,7 +828,8 @@ struct BrowserContentView: View {
                     isViewingPDF: viewModel.isViewingPDF,
                     onSavePDF: onSavePDF,
                     onToggleFocusMode: onToggleFocusMode,
-                    showExtensionButtons: isFocused
+                    showExtensionButtons: isFocused,
+                    isVerticalTabBarCollapsed: viewModel.verticalTabBarCollapsed
                 )
                 .overlay(alignment: .topTrailing) {
                     if viewModel.showAutoFillPopup {

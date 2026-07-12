@@ -58,10 +58,14 @@ struct NavigationBarView: View {
     @State private var suggestService = SearchSuggestService()
     @State private var selectedSuggestionIndex: Int? = nil
 
+    /// Whether THIS window's vertical tab bar is collapsed. Passed in because
+    /// the collapse state is per-window (BrowserViewModel) — the value kept in
+    /// SettingsManager is only the seed/default for newly opened windows.
+    var isVerticalTabBarCollapsed: Bool = false
+
     /// Extra leading padding when vertical tabs are collapsed so nav buttons don't overlap traffic lights
     private var verticalTabsCollapsedPadding: CGFloat {
-        let settings = SettingsManager.shared
-        if settings.useVerticalTabs && settings.verticalTabBarCollapsed {
+        if SettingsManager.shared.useVerticalTabs && isVerticalTabBarCollapsed {
             return 36  // traffic lights extend ~70pt, collapsed sidebar is 44pt, need ~26pt extra + normal 12
         }
         return 12
