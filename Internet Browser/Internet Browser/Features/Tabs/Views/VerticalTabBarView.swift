@@ -15,10 +15,27 @@ struct VerticalTabBarView: View {
     var onDetachTab: ((Tab) -> Void)? = nil
     var onReceiveTab: ((UUID) -> Void)? = nil
 
+    /// Single source of truth for the sidebar width — BrowserView no longer
+    /// applies its own (previously duplicated) 44/240 frame, so the outer
+    /// layout and the inner content can never animate out of step.
     private let expandedWidth: CGFloat = 240
     private let collapsedWidth: CGFloat = 44
 
+    private var barWidth: CGFloat { isCollapsed ? collapsedWidth : expandedWidth }
+
     var body: some View {
+        barContent
+            .frame(width: barWidth)
+            .background { barBackground }
+            // Width and content collapse in ONE animated transaction, keyed to
+            // the state itself so every entry point (button, menu, shortcut)
+            // animates identically.
+            .clipped()
+            .animation(.easeInOut(duration: 0.22), value: isCollapsed)
+    }
+
+    @ViewBuilder
+    private var barContent: some View {
         VStack(spacing: 0) {
             // Header
             HStack {
@@ -30,7 +47,9 @@ struct VerticalTabBarView: View {
                 }
 
                 Button {
-                    withAnimation(.easeInOut(duration: 0.2)) {
+                    // Same curve/duration as the sidebar's own width animation
+                    // so views outside it (nav-bar padding) move in lockstep.
+                    withAnimation(.easeInOut(duration: 0.22)) {
                         isCollapsed.toggle()
                     }
                 } label: {
@@ -121,17 +140,19 @@ struct VerticalTabBarView: View {
             .buttonStyle(.plain)
             .help("New Tab (Cmd+T)")
         }
-        .background {
-            // Imported Firefox theme: the tab strip takes the header
-            // backdrop — frame color plus header images (the sidebar spans
-            // the window's left edge, so left/top-anchored art lands here).
-            if !isPrivateMode, FirefoxThemeManager.shared.hasHeaderBackdrop {
-                ThemeHeaderBackdropView()
-            } else if !isPrivateMode, let themedStrip = FirefoxThemeManager.shared.tabStripBackground {
-                themedStrip
-            } else {
-                Rectangle().fill(.bar)
-            }
+    }
+
+    @ViewBuilder
+    private var barBackground: some View {
+        // Imported Firefox theme: the tab strip takes the header
+        // backdrop — frame color plus header images (the sidebar spans
+        // the window's left edge, so left/top-anchored art lands here).
+        if !isPrivateMode, FirefoxThemeManager.shared.hasHeaderBackdrop {
+            ThemeHeaderBackdropView()
+        } else if !isPrivateMode, let themedStrip = FirefoxThemeManager.shared.tabStripBackground {
+            themedStrip
+        } else {
+            Rectangle().fill(.bar)
         }
     }
 

@@ -37,9 +37,13 @@ final class BrowserViewModel {
         get { SettingsManager.shared.useVerticalTabs }
         set { SettingsManager.shared.useVerticalTabs = newValue }
     }
-    var verticalTabBarCollapsed: Bool {
-        get { SettingsManager.shared.verticalTabBarCollapsed }
-        set { SettingsManager.shared.verticalTabBarCollapsed = newValue }
+    /// Per-window collapse state for the vertical tab bar. Seeded from the
+    /// persisted preference and written back on change so NEW windows open
+    /// with the last-used state — but toggling here never yanks the sidebar
+    /// of other already-open windows (the old global-only state made every
+    /// window collapse at once, which read as the bars desyncing/jumping).
+    var verticalTabBarCollapsed: Bool = SettingsManager.shared.verticalTabBarCollapsed {
+        didSet { SettingsManager.shared.verticalTabBarCollapsed = verticalTabBarCollapsed }
     }
 
     let bookmarkRepository = BookmarkRepository.shared
@@ -602,7 +606,11 @@ final class BrowserViewModel {
     }
 
     func toggleVerticalTabBarCollapsed() {
-        verticalTabBarCollapsed.toggle()
+        // Same transaction the sidebar's own collapse button uses, so a
+        // programmatic toggle animates identically instead of snapping.
+        withAnimation(.easeInOut(duration: 0.22)) {
+            verticalTabBarCollapsed.toggle()
+        }
     }
 
     // MARK: - Bookmarks
