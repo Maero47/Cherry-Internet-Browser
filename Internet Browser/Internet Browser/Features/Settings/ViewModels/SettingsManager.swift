@@ -168,11 +168,6 @@ enum HomepageTheme: String, CaseIterable, Identifiable {
             ]
         }
     }
-
-    /// Preview color for the theme picker (center color of gradient)
-    var previewColor: Color {
-        gradientColors[4]
-    }
 }
 
 @Observable

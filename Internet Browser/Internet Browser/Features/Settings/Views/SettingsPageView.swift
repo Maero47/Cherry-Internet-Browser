@@ -125,8 +125,13 @@ struct SettingsPageView: View {
             PasswordsSettingsView()
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         case .about:
-            AboutSettingsView()
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            // Centered when there's room, scrollable when the window is small
+            GeometryReader { proxy in
+                ScrollView {
+                    AboutSettingsView()
+                        .frame(maxWidth: .infinity, minHeight: proxy.size.height)
+                }
+            }
         default:
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {

@@ -46,12 +46,6 @@ enum AccentDerivedPalette {
         ]
     }
 
-    /// Center (brightest) color of the derived gradient — used as the swatch
-    /// preview, matching `HomepageTheme.previewColor`'s convention.
-    static func previewColor(fromHex hex: String) -> Color {
-        gradientColors(fromHex: hex)[4]
-    }
-
     // MARK: - Logo selection
 
     /// Picks the closest-hue Cherry logo asset for the accent, falling back to
