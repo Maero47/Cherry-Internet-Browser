@@ -42,7 +42,8 @@ final class ExtensionManager: NSObject {
     /// a loaded context has an `action(for:)`/popup to show.
     var loadedExtensions: [LoadedExtension] {
         installedExtensions.compactMap { installed in
-            installed.context.map { LoadedExtension(id: installed.id, webExtension: installed.webExtension, context: $0) }
+            guard let webExtension = installed.webExtension, let context = installed.context else { return nil }
+            return LoadedExtension(id: installed.id, webExtension: webExtension, context: context)
         }
     }
 
@@ -108,22 +109,28 @@ final class ExtensionManager: NSObject {
 
     /// One entry in the management UI / persisted index: an extension the
     /// app has installed, whether currently enabled (loaded) or not.
+    ///
+    /// `webExtension` is `nil` only transiently, during launch-time reload,
+    /// between the placeholder being seeded (from the persisted record
+    /// alone) and its `WKWebExtension(resourceBaseURL:)` init resolving —
+    /// see `reloadPersistedExtensions()`. `context` is `nil` whenever the
+    /// extension is disabled OR its `webExtension` hasn't loaded yet.
     struct InstalledExtension: Identifiable {
         var record: PersistedExtensionRecord
-        let webExtension: WKWebExtension
+        var webExtension: WKWebExtension?
         var context: WKWebExtensionContext?
 
         var id: String { record.id }
         var enabled: Bool { record.enabled }
 
         @MainActor
-        var displayName: String { webExtension.displayName ?? record.displayName }
+        var displayName: String { webExtension?.displayName ?? record.displayName }
 
         @MainActor
-        var version: String? { webExtension.version }
+        var version: String? { webExtension?.version }
 
         @MainActor
-        var icon: NSImage? { webExtension.icon(for: NSSize(width: 32, height: 32)) }
+        var icon: NSImage? { webExtension?.icon(for: NSSize(width: 32, height: 32)) }
     }
 
     private override init() {
@@ -152,6 +159,12 @@ final class ExtensionManager: NSObject {
     }()
 
     private static var indexFileURL: URL { extensionsDirectory.appendingPathComponent("index.json") }
+
+    private static func managedPackageURL(for record: PersistedExtensionRecord) -> URL {
+        extensionsDirectory
+            .appendingPathComponent(record.id, isDirectory: true)
+            .appendingPathComponent(record.packageFileName)
+    }
 
     private static func loadPersistedRecords() -> [PersistedExtensionRecord] {
         guard let data = try? Data(contentsOf: indexFileURL) else { return [] }
@@ -250,21 +263,43 @@ final class ExtensionManager: NSObject {
 
     /// Reloads every persisted extension from its managed copy — called once
     /// early at app launch (see `AppDelegate.applicationDidFinishLaunching`).
-    /// Enabled records get a live context loaded into the controller;
-    /// disabled ones are still added to `installedExtensions` (unloaded) so
-    /// the management UI can list and re-enable them. A record whose managed
-    /// copy has gone missing (e.g. the app support directory was tampered
-    /// with) is silently skipped rather than crashing launch.
+    ///
+    /// Runs in two passes so `installedExtensions` (and therefore whatever
+    /// `persistRecords()` writes) is NEVER a partial view of `index.json`:
+    ///
+    /// 1. Synchronous pass, no `await` anywhere in it: seeds one placeholder
+    ///    `InstalledExtension` per persisted record whose managed copy still
+    ///    exists (`webExtension`/`context` both `nil` for now). By the time
+    ///    this method reaches its first `await`, `installedExtensions`
+    ///    already holds the FULL persisted set — so if the user triggers
+    ///    Load/toggle/Remove from the Settings UI while pass 2 is still
+    ///    mid-flight, that call's `persistRecords()` write includes every
+    ///    record, not just the ones pass 2 has gotten to yet. (Without this,
+    ///    a concurrent `persistRecords()` mid-loop would overwrite
+    ///    `index.json` with only the records processed so far — silently
+    ///    dropping the rest and orphaning their managed directories.)
+    /// 2. Async pass: loads each placeholder's `WKWebExtension`, and — if
+    ///    still enabled at that point — its context, UPDATING the existing
+    ///    entry in place (matched by persisted `id`) rather than appending a
+    ///    new one. A record whose managed copy has gone missing is skipped
+    ///    in pass 1 (silently, rather than crashing launch); a record whose
+    ///    `WKWebExtension` init fails is left as a context-less placeholder.
     func reloadPersistedExtensions() async {
-        for record in Self.loadPersistedRecords() {
-            let packageURL = Self.extensionsDirectory
-                .appendingPathComponent(record.id, isDirectory: true)
-                .appendingPathComponent(record.packageFileName)
-            guard FileManager.default.fileExists(atPath: packageURL.path) else { continue }
-            guard let webExtension = try? await WKWebExtension(resourceBaseURL: packageURL) else { continue }
+        let records = Self.loadPersistedRecords()
 
-            let context = record.enabled ? try? makeLoadedContext(for: webExtension, id: record.id) : nil
-            installedExtensions.append(InstalledExtension(record: record, webExtension: webExtension, context: context))
+        for record in records {
+            guard FileManager.default.fileExists(atPath: Self.managedPackageURL(for: record).path) else { continue }
+            installedExtensions.append(InstalledExtension(record: record, webExtension: nil, context: nil))
+        }
+
+        for record in records {
+            guard let index = installedExtensions.firstIndex(where: { $0.id == record.id }) else { continue }
+            guard let webExtension = try? await WKWebExtension(resourceBaseURL: Self.managedPackageURL(for: record)) else { continue }
+
+            installedExtensions[index].webExtension = webExtension
+            if installedExtensions[index].record.enabled {
+                installedExtensions[index].context = try? makeLoadedContext(for: webExtension, id: record.id)
+            }
         }
 
         if installedExtensions.contains(where: { $0.context != nil }) {
@@ -279,18 +314,24 @@ final class ExtensionManager: NSObject {
         guard let index = installedExtensions.firstIndex(where: { $0.id == id }),
               installedExtensions[index].enabled != enabled else { return }
 
+        installedExtensions[index].record.enabled = enabled
+
         if enabled {
-            guard let context = try? makeLoadedContext(for: installedExtensions[index].webExtension, id: id) else { return }
-            installedExtensions[index].context = context
-            installedExtensions[index].record.enabled = true
-            announceInitialStateIfNeeded()
-        } else {
-            if let context = installedExtensions[index].context {
-                try? controller.unload(context)
-                clearPendingPopupAnchors(for: context)
+            // If `webExtension` hasn't finished loading yet (this entry is
+            // still a launch-time-reload placeholder — see
+            // `reloadPersistedExtensions()`), there's nothing to load a
+            // context FOR yet. That method's async pass re-reads this
+            // record's (now-updated) `enabled` flag once the extension
+            // itself finishes loading and creates the context then.
+            if let webExtension = installedExtensions[index].webExtension,
+               let context = try? makeLoadedContext(for: webExtension, id: id) {
+                installedExtensions[index].context = context
+                announceInitialStateIfNeeded()
             }
+        } else if let context = installedExtensions[index].context {
+            try? controller.unload(context)
+            clearPendingPopupAnchors(for: context)
             installedExtensions[index].context = nil
-            installedExtensions[index].record.enabled = false
         }
 
         persistRecords()
