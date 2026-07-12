@@ -28,6 +28,11 @@ struct SettingsView: View {
                     Label("Focus", systemImage: "brain.head.profile")
                 }
 
+            ExtensionsSettingsView()
+                .tabItem {
+                    Label("Extensions", systemImage: "puzzlepiece.extension")
+                }
+
             AboutSettingsView()
                 .tabItem {
                     Label("About", systemImage: "info.circle")
