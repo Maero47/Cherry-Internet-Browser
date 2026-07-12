@@ -163,8 +163,18 @@ final class ExtensionManager: NSObject {
     private func presentPopover(for action: WKWebExtension.Action, anchoredTo anchor: NSView) {
         guard anchor.window != nil else { return }
 
+        // WebKit hands back a popover/popup web view with a ZERO contentSize —
+        // shown as-is it looks empty even though the popup HTML is loaded. Give
+        // it a non-zero starting size; WebKit then lays the popup web view out
+        // and auto-fits the popover to the popup's real content. (Verified: a
+        // zero-size popover renders blank; seeding a size makes it appear.)
+        let defaultPopupSize = CGSize(width: 380, height: 520)
+
         let popover: NSPopover
         if let ready = action.popupPopover {
+            if ready.contentSize.width < 1 || ready.contentSize.height < 1 {
+                ready.contentSize = defaultPopupSize
+            }
             popover = ready
         } else if let webView = action.popupWebView {
             let contentController = NSViewController()
