@@ -10,6 +10,15 @@ struct BookmarkBarView: View {
     let onBookmarkClick: (Bookmark) -> Void
     var isPrivateMode: Bool = false
 
+    /// Imported Firefox theme overrides. Both nil when no theme is active or
+    /// this is a private window (private windows keep their stock look).
+    private var themedToolbarBackground: Color? {
+        isPrivateMode ? nil : FirefoxThemeManager.shared.toolbarBackground
+    }
+    private var themedToolbarText: Color? {
+        isPrivateMode ? nil : FirefoxThemeManager.shared.toolbarText
+    }
+
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 4) {
@@ -29,10 +38,28 @@ struct BookmarkBarView: View {
             .padding(.horizontal, 8)
         }
         .frame(height: 28)
+        // Hierarchical styles (.secondary) on the items resolve against this,
+        // so bookmark titles/icons follow the theme's toolbar_text;
+        // Color.primary is the stock look when unthemed.
+        .foregroundStyle(themedToolbarText ?? Color.primary)
         .background {
             ZStack {
-                Rectangle().fill(.bar)
-                if isPrivateMode { Color.purple.opacity(0.12) }
+                if !isPrivateMode && FirefoxThemeManager.shared.hasHeaderBackdrop {
+                    // Firefox compositing: the opaque frame color + header
+                    // images back the bar, and the theme's own `toolbar`
+                    // color (often semi- or fully transparent) is layered on
+                    // top — so transparent-toolbar themes show frame/images
+                    // through instead of the app's default material.
+                    ThemeHeaderBackdropView()
+                    if let toolbarOverlay = FirefoxThemeManager.shared.toolbarColor {
+                        Rectangle().fill(toolbarOverlay)
+                    }
+                } else if let themedToolbarBackground {
+                    Rectangle().fill(themedToolbarBackground)
+                } else {
+                    Rectangle().fill(.bar)
+                    if isPrivateMode { Color.purple.opacity(0.12) }
+                }
             }
         }
     }
