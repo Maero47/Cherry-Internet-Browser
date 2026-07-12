@@ -810,7 +810,8 @@ struct BrowserContentView: View {
                     onQRCode: onQRCode,
                     isViewingPDF: viewModel.isViewingPDF,
                     onSavePDF: onSavePDF,
-                    onToggleFocusMode: onToggleFocusMode
+                    onToggleFocusMode: onToggleFocusMode,
+                    showExtensionButtons: isFocused
                 )
                 .overlay(alignment: .topTrailing) {
                     if viewModel.showAutoFillPopup {

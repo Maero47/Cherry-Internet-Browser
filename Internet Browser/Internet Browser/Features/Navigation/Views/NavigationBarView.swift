@@ -34,6 +34,10 @@ struct NavigationBarView: View {
     var isViewingPDF: Bool = false
     var onSavePDF: (() -> Void)? = nil
     var onToggleFocusMode: (() -> Void)? = nil
+    /// Whether to show the per-extension toolbar buttons in this nav bar.
+    /// `false` for the unfocused pane in split view, so an extension's
+    /// buttons/popup only ever appear once, reflecting the FOCUSED pane's tab.
+    var showExtensionButtons: Bool = true
 
     /// Computed from the current tab's URL so it always reflects the correct per-domain state
     private var isAdBlockPaused: Bool {
@@ -133,6 +137,11 @@ struct NavigationBarView: View {
             }
             .zIndex(1)
 
+            // Extension toolbar buttons — one per loaded extension, reflecting this tab
+            if showExtensionButtons {
+                extensionButtons
+            }
+
             // Action buttons
             actionButtons
         }
@@ -219,6 +228,18 @@ struct NavigationBarView: View {
                 }
                 .buttonStyle(ToolbarButtonStyle())
                 .help("Reload Page (Cmd+R)")
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var extensionButtons: some View {
+        let extensions = ExtensionManager.shared.loadedExtensions
+        if !extensions.isEmpty {
+            HStack(spacing: 2) {
+                ForEach(extensions) { loaded in
+                    ExtensionToolbarButton(loaded: loaded, tab: tab)
+                }
             }
         }
     }
