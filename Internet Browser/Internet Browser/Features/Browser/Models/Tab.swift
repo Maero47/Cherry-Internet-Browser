@@ -242,5 +242,25 @@ extension Tab: WKWebExtensionTab {
     func isMuted(for context: WKWebExtensionContext) -> Bool { isMuted }
     func isPrivate(for context: WKWebExtensionContext) -> Bool { isPrivate }
     func isLoadingComplete(for context: WKWebExtensionContext) -> Bool { !isLoading }
+
+    // `Tab` isn't `@MainActor`-isolated but WebKit only ever calls these on
+    // the main thread — `assumeIsolated` to reach the `@MainActor`-isolated
+    // `ExtensionManager.shared`, matching `TabManager.notifyExtensionManager`'s
+    // pattern elsewhere in the extension integration.
+
+    /// The `WKWebExtensionWindow` for this tab's owning browser window. Without
+    /// this, WebKit can't associate a tab with a window, so `tabs.query`
+    /// filters like `{active: true, currentWindow: true}` return nothing.
+    func window(for context: WKWebExtensionContext) -> (any WKWebExtensionWindow)? {
+        MainActor.assumeIsolated {
+            ExtensionManager.shared.windowAdapter(owningTab: self)
+        }
+    }
+
+    func isSelected(for context: WKWebExtensionContext) -> Bool {
+        MainActor.assumeIsolated {
+            ExtensionManager.shared.isTabSelected(self)
+        }
+    }
 }
 
