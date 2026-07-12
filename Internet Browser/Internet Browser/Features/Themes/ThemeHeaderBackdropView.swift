@@ -126,6 +126,13 @@ final class ThemeHeaderCanvasNSView: NSView {
         restartTimerIfNeeded()
     }
 
+    // viewDidMoveToWindow(nil) covers normal removal, but a closing window
+    // can dealloc the view tree without it — without this, the repeating
+    // .common-mode timer (which does not retain self) would keep firing.
+    deinit {
+        timer?.invalidate()
+    }
+
     private func restartTimerIfNeeded() {
         timer?.invalidate()
         timer = nil

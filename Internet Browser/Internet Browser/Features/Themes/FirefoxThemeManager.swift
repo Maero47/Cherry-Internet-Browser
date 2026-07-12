@@ -416,8 +416,10 @@ final class FirefoxThemeManager {
     /// Copies the manifest-referenced image files out of the unpacked
     /// package into the managed theme directory, preserving their relative
     /// paths (which the persisted record stores). Rejects paths escaping the
-    /// package root and silently drops files that are missing or unreadable
-    /// — a theme with a broken image still imports with its colors.
+    /// package root — including via symlinks, which `ditto -x -k` preserves,
+    /// by resolving both sides and requiring a REGULAR file — and silently
+    /// drops files that are missing or unreadable, so a theme with a broken
+    /// image still imports with its colors.
     private static func extractBackgroundImages(
         _ specs: [PersistedThemeBackground],
         from packageDirectory: URL,
@@ -425,12 +427,16 @@ final class FirefoxThemeManager {
     ) -> [PersistedThemeBackground] {
         let fileManager = FileManager.default
         let root = packageDirectory.standardizedFileURL
+        let resolvedRoot = root.resolvingSymlinksInPath()
         var extracted: [PersistedThemeBackground] = []
         for spec in specs {
             let relativePath = spec.path.hasPrefix("/") ? String(spec.path.dropFirst()) : spec.path
             let source = root.appendingPathComponent(relativePath).standardizedFileURL
+            let resolvedSource = source.resolvingSymlinksInPath()
             guard source.path.hasPrefix(root.path + "/"),
-                  fileManager.fileExists(atPath: source.path) else { continue }
+                  resolvedSource.path.hasPrefix(resolvedRoot.path + "/"),
+                  let resourceValues = try? resolvedSource.resourceValues(forKeys: [.isRegularFileKey]),
+                  resourceValues.isRegularFile == true else { continue }
             let destination = themeDirectory.appendingPathComponent(relativePath)
             do {
                 try fileManager.createDirectory(
@@ -440,7 +446,7 @@ final class FirefoxThemeManager {
                 if fileManager.fileExists(atPath: destination.path) {
                     try fileManager.removeItem(at: destination)
                 }
-                try fileManager.copyItem(at: source, to: destination)
+                try fileManager.copyItem(at: resolvedSource, to: destination)
             } catch { continue }
             extracted.append(PersistedThemeBackground(
                 path: relativePath,
