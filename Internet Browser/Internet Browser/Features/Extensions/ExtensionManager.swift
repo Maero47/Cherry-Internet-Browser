@@ -204,6 +204,39 @@ final class ExtensionManager: NSObject {
         return adapter
     }
 
+    /// The `BrowserViewModel` whose `tabManager.tabs` contains `tab`, restricted
+    /// to extension-visible (non-private) windows — shared by
+    /// `windowAdapter(owningTab:)` and `isTabSelected(_:)`. `Tab` has no
+    /// back-reference to its owning `BrowserViewModel`/`TabManager`, so this is
+    /// the only way to go from a tab back to its window.
+    private func owningViewModel(for tab: Tab) -> BrowserViewModel? {
+        extensionVisibleViewModels.first { viewModel in
+            viewModel.tabManager.tabs.contains { $0 === tab }
+        }
+    }
+
+    /// The SAME `ExtensionWindowAdapter` already announced for `tab`'s window
+    /// (see `windowAdapter(for:)`) — never a second adapter for the same
+    /// window, so object identity stays consistent with what the controller
+    /// was told via `didOpenWindow`. Backs `Tab.window(for:)`. Returns `nil`
+    /// for a private window or a detached/transient tab that isn't in any
+    /// open window's tab list.
+    func windowAdapter(owningTab tab: Tab) -> ExtensionWindowAdapter? {
+        owningViewModel(for: tab).map(windowAdapter(for:))
+    }
+
+    /// Whether `tab` is its window's active tab — the primary selection, or
+    /// (in split view) the secondary pane's selection, since both panes are
+    /// simultaneously on-screen and either can be the one an extension means
+    /// by "active". Backs `Tab.isSelected(for:)`; kept in sync with
+    /// `ExtensionWindowAdapter.activeTab(for:)`, which resolves to
+    /// `focusedTab` (itself always either `selectedTab` or
+    /// `secondarySelectedTab`).
+    func isTabSelected(_ tab: Tab) -> Bool {
+        guard let viewModel = owningViewModel(for: tab) else { return false }
+        return viewModel.tabManager.selectedTab === tab || viewModel.tabManager.secondarySelectedTab === tab
+    }
+
     /// Windows extensions are allowed to see. v1a has no per-extension
     /// "allow in private browsing" opt-in (`WKWebExtensionContext.hasAccessToPrivateData`
     /// is left at its default `false` for every context), so private/incognito
