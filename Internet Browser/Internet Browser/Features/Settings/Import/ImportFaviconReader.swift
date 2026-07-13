@@ -120,7 +120,13 @@ enum ImportFaviconReader {
             if let known = decodable[candidate.data] {
                 decodes = known
             } else {
-                decodes = NSImage(data: candidate.data) != nil
+                // Non-nil isn't enough: NSImage accepts malformed SVG and
+                // yields an empty 0x0 image, which would show as a blank icon.
+                if let image = NSImage(data: candidate.data) {
+                    decodes = image.size.width >= 1 && image.size.height >= 1
+                } else {
+                    decodes = false
+                }
                 decodable[candidate.data] = decodes
             }
             guard decodes else { continue }
