@@ -115,7 +115,7 @@ final class HistoryRepository {
         for entry in entries {
             let urlString = entry.url.absoluteString
             if let existing = existingByURL[urlString] {
-                existing.visitCount += Int32(clamping: entry.visitCount)
+                existing.visitCount = Int32(clamping: Int64(existing.visitCount) + Int64(entry.visitCount))
                 if entry.visitDate > existing.visitDate {
                     existing.visitDate = entry.visitDate
                     existing.title = entry.title
