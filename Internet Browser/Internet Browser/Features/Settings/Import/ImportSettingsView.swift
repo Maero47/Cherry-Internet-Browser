@@ -7,6 +7,7 @@
 //
 
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct ImportSettingsView: View {
     @State private var service = BrowserImportService()
@@ -36,6 +37,7 @@ struct ImportSettingsView: View {
             if selectedSource != nil {
                 optionsCard
             }
+            csvCard
             if let result = service.lastResult {
                 resultCard(result)
             }
@@ -180,41 +182,32 @@ struct ImportSettingsView: View {
 
     @ViewBuilder
     private func dataTypeRow(_ type: ImportableDataType) -> some View {
-        if type.isSupported {
-            let isAvailable = selectedProfile?.availableTypes.contains(type) ?? false
-            SettingsToggleRow(
-                title: type.displayName,
-                subtitle: isAvailable ? nil : "Not found in this profile",
-                isOn: Binding(
-                    get: { selectedTypes.contains(type) && isAvailable },
-                    set: { isOn in
-                        if isOn { selectedTypes.insert(type) } else { selectedTypes.remove(type) }
-                    }
-                )
+        let isAvailable = selectedProfile?.availableTypes.contains(type) ?? false
+        SettingsToggleRow(
+            title: type.displayName,
+            subtitle: subtitle(for: type, isAvailable: isAvailable),
+            isOn: Binding(
+                get: { selectedTypes.contains(type) && isAvailable },
+                set: { isOn in
+                    if isOn { selectedTypes.insert(type) } else { selectedTypes.remove(type) }
+                }
             )
-            .disabled(!isAvailable || service.isImporting)
-            .opacity(isAvailable ? 1 : 0.5)
-        } else {
-            // Seam for the next phase: shown but not yet importable.
-            HStack(spacing: 12) {
-                Text(type.displayName)
-                    .font(.system(size: 13))
-                    .foregroundStyle(.secondary)
-                Text("Coming soon")
-                    .font(.system(size: 10, weight: .semibold))
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(Color.primary.opacity(0.08), in: Capsule())
-                    .foregroundStyle(.secondary)
-                Spacer(minLength: 12)
-                Toggle("", isOn: .constant(false))
-                    .labelsHidden()
-                    .toggleStyle(.switch)
-                    .controlSize(.small)
-                    .disabled(true)
+        )
+        .disabled(!isAvailable || service.isImporting)
+        .opacity(isAvailable ? 1 : 0.5)
+    }
+
+    /// Per-row hint text. Passwords get the Keychain-prompt heads-up when
+    /// available, and a nudge toward CSV for browsers we can't decrypt directly.
+    private func subtitle(for type: ImportableDataType, isAvailable: Bool) -> String? {
+        if type == .passwords {
+            if isAvailable {
+                let name = selectedSource?.browser.displayName ?? "the browser"
+                return "macOS will ask permission to read \(name)’s saved passwords."
             }
-            .opacity(0.6)
+            return "Direct import isn’t available here — use “Import Passwords from CSV” below."
         }
+        return isAvailable ? nil : "Not found in this profile"
     }
 
     private var profileBinding: Binding<SourceProfile.ID> {
@@ -222,6 +215,54 @@ struct ImportSettingsView: View {
             get: { selectedProfile?.id ?? "" },
             set: { selectedProfileID = $0 }
         )
+    }
+
+    // MARK: - CSV import
+
+    private var csvCard: some View {
+        SettingsCard(
+            icon: "doc.text",
+            title: "Import Passwords from CSV",
+            subtitle: "Works with any browser, including Firefox and Safari"
+        ) {
+            Text("Export saved passwords to a .csv file from another browser, then choose it here. Cherry reads the url, username, and password columns and skips duplicates.")
+                .font(.system(size: 11.5))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack(spacing: 12) {
+                Button {
+                    chooseCSVFile()
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "doc.badge.plus")
+                        Text("Choose CSV File…")
+                    }
+                    .font(.system(size: 12.5, weight: .semibold))
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 6)
+                    .background(accent, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                    .foregroundStyle(.white)
+                    .opacity(service.isImporting ? 0.5 : 1)
+                }
+                .buttonStyle(.plain)
+                .disabled(service.isImporting)
+
+                Spacer(minLength: 0)
+            }
+        }
+    }
+
+    private func chooseCSVFile() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.commaSeparatedText, .text]
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.message = "Choose a passwords CSV file exported from another browser"
+        panel.prompt = "Import"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        Task { await service.importCSV(from: url) }
     }
 
     // MARK: - Result
