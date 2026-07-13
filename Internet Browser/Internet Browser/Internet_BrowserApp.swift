@@ -20,6 +20,16 @@ struct Internet_BrowserApp: App {
         }
         .windowStyle(.hiddenTitleBar)
         .commands {
+            // App menu: Cmd+, opens cherry://settings in the key window's
+            // focused tab (Chrome-style in-tab settings) instead of the old
+            // separate native Settings window.
+            CommandGroup(replacing: .appSettings) {
+                Button("Settings…") {
+                    NotificationCenter.default.post(name: .showSettingsPage, object: nil)
+                }
+                .keyboardShortcut(",", modifiers: .command)
+            }
+
             // File menu
             CommandGroup(replacing: .newItem) {
                 Button("New Tab") {
@@ -167,10 +177,6 @@ struct Internet_BrowserApp: App {
             }
         }
 
-        // Settings window (Cmd+,)
-        Settings {
-            SettingsView()
-        }
     }
 }
 
@@ -394,6 +400,7 @@ extension Notification.Name {
     static let actualSize = Notification.Name("actualSize")
     static let showHistory = Notification.Name("showHistory")
     static let showBookmarks = Notification.Name("showBookmarks")
+    static let showSettingsPage = Notification.Name("showSettingsPage")
     static let addBookmark = Notification.Name("addBookmark")
     static let showDownloads = Notification.Name("showDownloads")
     static let showWebInspector = Notification.Name("showWebInspector")

@@ -63,6 +63,16 @@ struct NavigationBarView: View {
     /// SettingsManager is only the seed/default for newly opened windows.
     var isVerticalTabBarCollapsed: Bool = false
 
+    /// What the omnibox shows when NOT editing: the internal page's full
+    /// `cherry://` URL while one is active, else the site's host (the
+    /// pre-existing resting display).
+    private var restingAddress: String {
+        if let page = tab.internalPage {
+            return page.url.absoluteString
+        }
+        return tab.url?.host ?? tab.url?.absoluteString ?? ""
+    }
+
     /// Extra leading padding when vertical tabs are collapsed so nav buttons don't overlap traffic lights
     private var verticalTabsCollapsedPadding: CGFloat {
         if SettingsManager.shared.useVerticalTabs && isVerticalTabBarCollapsed {
@@ -98,8 +108,10 @@ struct NavigationBarView: View {
                 onFocus: {
                     isEditing = true
                     selectedSuggestionIndex = nil
-                    // Update address text to full URL when focused
-                    addressText = tab.url?.absoluteString ?? ""
+                    // Update address text to the full displayed location when
+                    // focused — the cherry:// URL while an internal page is
+                    // active, else the web URL.
+                    addressText = tab.displayURL
                 },
                 onTextChange: { newText in
                     selectedSuggestionIndex = nil
@@ -197,19 +209,26 @@ struct NavigationBarView: View {
                     .frame(maxWidth: .infinity)
             }
         }
-        .onChange(of: tab.url) { _, newURL in
+        .onChange(of: tab.url) { _, _ in
             // Update display text when URL changes (show host when not editing)
             if !isEditing {
-                addressText = newURL?.host ?? newURL?.absoluteString ?? ""
+                addressText = restingAddress
+            }
+        }
+        .onChange(of: tab.internalPage) { _, _ in
+            // Entering/leaving an internal cherry:// page changes the tab's
+            // displayed location even though it isn't a web navigation.
+            if !isEditing {
+                addressText = restingAddress
             }
         }
         .onChange(of: tab.id) { _, _ in
             // Reset when tab changes
             isEditing = false
-            addressText = tab.url?.host ?? tab.url?.absoluteString ?? ""
+            addressText = restingAddress
         }
         .onAppear {
-            addressText = tab.url?.host ?? tab.url?.absoluteString ?? ""
+            addressText = restingAddress
         }
     }
 

@@ -240,14 +240,17 @@ struct CommandPaletteView: View {
             CommandPaletteItem(id: "action-bookmark", title: "Bookmark This Page", subtitle: "Add current page to bookmarks", icon: "bookmark", iconColor: .orange) {
                 viewModel.showAddBookmark = true
             },
-            CommandPaletteItem(id: "action-history", title: "Show History", subtitle: "Open history sidebar", icon: "clock.arrow.circlepath", iconColor: Color.secondary) {
-                viewModel.toggleHistory()
+            CommandPaletteItem(id: "action-history", title: "Show History", subtitle: "Open cherry://history", icon: "clock.arrow.circlepath", iconColor: Color.secondary) {
+                viewModel.openInternalPage(.history)
             },
-            CommandPaletteItem(id: "action-bookmarks", title: "Show Bookmarks", subtitle: "Open bookmarks sidebar", icon: "bookmark.square", iconColor: .orange) {
-                viewModel.toggleBookmarks()
+            CommandPaletteItem(id: "action-bookmarks", title: "Show Bookmarks", subtitle: "Open cherry://bookmarks", icon: "bookmark.square", iconColor: .orange) {
+                viewModel.openInternalPage(.bookmarks)
             },
-            CommandPaletteItem(id: "action-downloads", title: "Show Downloads", subtitle: "Open downloads sidebar", icon: "arrow.down.circle", iconColor: .blue) {
-                viewModel.toggleDownloads()
+            CommandPaletteItem(id: "action-downloads", title: "Show Downloads", subtitle: "Open cherry://downloads", icon: "arrow.down.circle", iconColor: .blue) {
+                viewModel.openInternalPage(.downloads)
+            },
+            CommandPaletteItem(id: "action-extensions", title: "Show Extensions", subtitle: "Open cherry://extensions", icon: "puzzlepiece.extension", iconColor: .teal) {
+                viewModel.openInternalPage(.extensions)
             },
             CommandPaletteItem(id: "action-reopen", title: "Reopen Closed Tab", subtitle: "Restore last closed tab", icon: "arrow.uturn.backward", iconColor: Color.secondary) {
                 viewModel.reopenClosedTab()
