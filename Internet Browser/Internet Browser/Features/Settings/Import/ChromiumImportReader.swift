@@ -14,6 +14,10 @@ import Foundation
 
 struct ChromiumImportReader: BrowserDataReader {
 
+    /// Which browser this reader serves — selects the Keychain "Safe Storage"
+    /// item used to decrypt saved passwords.
+    let brand: ChromiumBrand
+
     func read(_ type: ImportableDataType, from profile: SourceProfile) throws -> ImportedPayload {
         switch type {
         case .bookmarks:
@@ -21,7 +25,7 @@ struct ChromiumImportReader: BrowserDataReader {
         case .history:
             .history(try readHistory(from: profile))
         case .passwords:
-            throw ImportError.unsupportedDataType(type)
+            .passwords(try readPasswords(from: profile))
         }
     }
 
@@ -97,5 +101,37 @@ struct ChromiumImportReader: BrowserDataReader {
             rows.append(ImportedHistoryRow(url: url, title: title, lastVisit: lastVisit, visitCount: visitCount))
         }
         return rows
+    }
+
+    // MARK: - Passwords
+
+    /// Reads and decrypts saved logins from <profile>/Login Data. Reads the
+    /// browser's Safe-Storage secret from the Keychain (may prompt the user),
+    /// derives the AES key once, then decrypts each row. Blacklisted rows and
+    /// empty/undecryptable values are skipped, never fatal. A denied Keychain
+    /// prompt throws `keychainAccessDenied` for the whole run.
+    private func readPasswords(from profile: SourceProfile) throws -> [ImportedCredential] {
+        let secret = try ChromiumPasswordDecryptor.safeStorageKey(for: brand)
+        guard let key = ChromiumPasswordDecryptor.deriveKey(fromSecret: secret) else {
+            throw ImportError.databaseError("could not derive the password decryption key")
+        }
+
+        let fileURL = profile.directory.appendingPathComponent("Login Data")
+        let database = try ImportSQLiteDatabase(copying: fileURL)
+        defer { database.close() }
+
+        var credentials: [ImportedCredential] = []
+        try database.forEachRow(
+            "SELECT origin_url, username_value, password_value, blacklisted_by_user FROM logins"
+        ) { row in
+            guard row.int64(3) != 1 else { return } // blacklisted_by_user
+            guard let urlString = row.text(0), !urlString.isEmpty else { return }
+            let username = row.text(1) ?? ""
+            guard let blob = row.blob(2), !blob.isEmpty else { return }
+            guard let password = ChromiumPasswordDecryptor.decrypt(blob, withKey: key),
+                  !password.isEmpty else { return }
+            credentials.append(ImportedCredential(url: urlString, username: username, password: password))
+        }
+        return credentials
     }
 }

@@ -55,6 +55,9 @@ struct BrowserSourceDetector: Sendable {
             if fileManager.fileExists(atPath: directory.appendingPathComponent("History").path) {
                 types.insert(.history)
             }
+            if fileManager.fileExists(atPath: directory.appendingPathComponent("Login Data").path) {
+                types.insert(.passwords)
+            }
             guard !types.isEmpty else { continue }
 
             var name = entry
