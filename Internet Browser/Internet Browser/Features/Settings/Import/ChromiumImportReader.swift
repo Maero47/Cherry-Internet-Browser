@@ -24,6 +24,8 @@ struct ChromiumImportReader: BrowserDataReader {
             .bookmarks(try readBookmarks(from: profile))
         case .history:
             .history(try readHistory(from: profile))
+        case .favorites:
+            .favorites(try readBookmarks(from: profile).filter(\.isInBookmarkBar))
         case .passwords:
             .passwords(try readPasswords(from: profile))
         }

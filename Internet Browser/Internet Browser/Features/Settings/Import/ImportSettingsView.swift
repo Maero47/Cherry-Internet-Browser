@@ -13,7 +13,7 @@ struct ImportSettingsView: View {
     @State private var service = BrowserImportService()
     @State private var selectedBrowserID: SourceBrowser.ID?
     @State private var selectedProfileID: SourceProfile.ID?
-    @State private var selectedTypes: Set<ImportableDataType> = [.bookmarks, .history]
+    @State private var selectedTypes: Set<ImportableDataType> = [.bookmarks, .history, .favorites]
 
     private var accent: Color { SettingsManager.shared.accentColor }
 
@@ -206,6 +206,10 @@ struct ImportSettingsView: View {
                 return "macOS will ask permission to read \(name)’s saved passwords."
             }
             return "Direct import isn’t available here — use “Import Passwords from CSV” below."
+        }
+        if type == .favorites, isAvailable {
+            let name = selectedSource?.browser.displayName ?? "the browser"
+            return "Adds \(name)’s bookmarks bar to Cherry’s home screen (first \(BrowserImportService.favoritesImportCap))."
         }
         return isAvailable ? nil : "Not found in this profile"
     }

@@ -51,6 +51,8 @@ struct BrowserSourceDetector: Sendable {
             var types: Set<ImportableDataType> = []
             if fileManager.fileExists(atPath: directory.appendingPathComponent("Bookmarks").path) {
                 types.insert(.bookmarks)
+                // The bookmarks bar doubles as the source of home-screen favorites.
+                types.insert(.favorites)
             }
             if fileManager.fileExists(atPath: directory.appendingPathComponent("History").path) {
                 types.insert(.history)
@@ -139,7 +141,7 @@ struct BrowserSourceDetector: Sendable {
                 id: candidate.directory.lastPathComponent,
                 displayName: candidate.name,
                 directory: candidate.directory,
-                availableTypes: [.bookmarks, .history]
+                availableTypes: [.bookmarks, .history, .favorites]
             ))
         }
         return profiles
@@ -159,12 +161,13 @@ struct BrowserSourceDetector: Sendable {
         var types: Set<ImportableDataType> = []
         if fileManager.fileExists(atPath: directory.appendingPathComponent("Bookmarks.plist").path) {
             types.insert(.bookmarks)
+            types.insert(.favorites)
         }
         if fileManager.fileExists(atPath: directory.appendingPathComponent("History.db").path) {
             types.insert(.history)
         }
         if types.isEmpty {
-            types = [.bookmarks, .history]
+            types = [.bookmarks, .history, .favorites]
         }
 
         return [SourceProfile(id: "Safari", displayName: "Safari", directory: directory, availableTypes: types)]

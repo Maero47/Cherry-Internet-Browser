@@ -17,6 +17,10 @@ import Security
 enum ImportableDataType: String, CaseIterable, Identifiable, Sendable {
     case bookmarks
     case history
+    /// The source browser's bookmarks-bar items, imported as Cherry's
+    /// home-screen "Favorites" (speed-dial shortcuts) — a separate store
+    /// from bookmarks.
+    case favorites
     case passwords
 
     var id: String { rawValue }
@@ -25,6 +29,7 @@ enum ImportableDataType: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .bookmarks: "Bookmarks"
         case .history: "History"
+        case .favorites: "Favorites (home screen shortcuts)"
         case .passwords: "Passwords"
         }
     }
@@ -33,6 +38,7 @@ enum ImportableDataType: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .bookmarks: "star"
         case .history: "clock.arrow.circlepath"
+        case .favorites: "square.grid.2x2"
         case .passwords: "key.fill"
         }
     }
@@ -40,7 +46,7 @@ enum ImportableDataType: String, CaseIterable, Identifiable, Sendable {
     /// Whether the current import engine can actually import this type.
     var isSupported: Bool {
         switch self {
-        case .bookmarks, .history, .passwords: true
+        case .bookmarks, .history, .favorites, .passwords: true
         }
     }
 }
@@ -152,6 +158,8 @@ struct ImportedCredential: Sendable {
 enum ImportedPayload: Sendable {
     case bookmarks([ImportedBookmark])
     case history([ImportedHistoryRow])
+    /// Bookmarks-bar items destined for the home-screen Favorites.
+    case favorites([ImportedBookmark])
     case passwords([ImportedCredential])
 }
 
@@ -190,6 +198,12 @@ extension ImportedPayload {
                 var row = row
                 row.favicon = store.icon(for: row.url)
                 return row
+            })
+        case .favorites(let items):
+            return .favorites(items.map { item in
+                var item = item
+                item.favicon = store.icon(for: item.url)
+                return item
             })
         case .passwords:
             return self
@@ -279,6 +293,10 @@ struct ImportResult: Sendable {
     var historyMerged = 0
     /// How many imported history entries carried a site icon from the source.
     var historyFavicons = 0
+    var favoritesAdded = 0
+    var favoritesSkipped = 0
+    /// Bookmarks-bar items beyond the import cap that were left out.
+    var favoritesDropped = 0
     var passwordsAdded = 0
     var passwordsSkipped = 0
     var errors: [String] = []
@@ -299,6 +317,14 @@ struct ImportResult: Sendable {
             var notes: [String] = []
             if historyFavicons > 0 { notes.append("\(historyFavicons.formatted()) with site icons") }
             if historyMerged > 0 { notes.append("\(historyMerged.formatted()) merged with existing") }
+            if !notes.isEmpty { line += " (\(notes.joined(separator: ", ")))" }
+            lines.append(line)
+        }
+        if favoritesAdded > 0 || favoritesSkipped > 0 || favoritesDropped > 0 {
+            var line = "Added \(favoritesAdded.formatted()) home screen favorite\(favoritesAdded == 1 ? "" : "s")"
+            var notes: [String] = []
+            if favoritesSkipped > 0 { notes.append("\(favoritesSkipped.formatted()) already existed") }
+            if favoritesDropped > 0 { notes.append("kept the first \(favoritesAdded + favoritesSkipped), left out \(favoritesDropped.formatted())") }
             if !notes.isEmpty { line += " (\(notes.joined(separator: ", ")))" }
             lines.append(line)
         }

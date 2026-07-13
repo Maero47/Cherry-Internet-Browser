@@ -16,6 +16,11 @@ import Observation
 @Observable
 final class BrowserImportService {
 
+    /// At most this many bookmarks-bar items become home-screen favorites;
+    /// the speed-dial is a small grid, not a second bookmarks store. Anything
+    /// beyond the cap is reported as left out.
+    static let favoritesImportCap = 24
+
     private(set) var sources: [DetectedSource] = []
     private(set) var isDetecting = false
     private(set) var isImporting = false
@@ -49,7 +54,7 @@ final class BrowserImportService {
         // Load the source's favicon store once per run so imported records
         // can carry their site icons. Best-effort: an unreadable store is
         // just empty and the import proceeds icon-less.
-        let iconCarryingTypes: Set<ImportableDataType> = [.bookmarks, .history]
+        let iconCarryingTypes: Set<ImportableDataType> = [.bookmarks, .history, .favorites]
         var faviconStore = ImportedFaviconStore.empty
         if !types.intersection(iconCarryingTypes).isEmpty {
             statusText = "Reading site icons from \(browser.displayName)…"
@@ -87,6 +92,14 @@ final class BrowserImportService {
                     result.historyAdded += outcome.added
                     result.historyMerged += outcome.merged
                     result.historyFavicons += outcome.withFavicons
+                case .favorites(let items):
+                    let capped = Array(items.prefix(Self.favoritesImportCap))
+                    let outcome = ShortcutRepository.shared.importShortcuts(capped.map {
+                        (url: $0.url, title: $0.title, favicon: $0.favicon)
+                    })
+                    result.favoritesAdded += outcome.added
+                    result.favoritesSkipped += outcome.skipped
+                    result.favoritesDropped += items.count - capped.count
                 case .passwords(let credentials):
                     let outcome = PasswordRepository.shared.importCredentials(credentials.map {
                         (url: $0.url, username: $0.username, password: $0.password)
