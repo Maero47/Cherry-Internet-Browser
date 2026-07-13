@@ -16,8 +16,14 @@ final class BookmarkRepository {
     private(set) var bookmarkBarItems: [Bookmark] = []
     private(set) var folders: [String] = []
 
+    /// Hosts whose favicon lookup already failed this run — not retried until
+    /// the next launch so an unreachable host can't cause a retry storm.
+    private var failedFaviconHosts: Set<String> = []
+    private var isFetchingMissingFavicons = false
+
     init() {
         fetchBookmarks()
+        fetchMissingFavicons()
     }
 
     // MARK: - Fetch
@@ -107,6 +113,94 @@ final class BookmarkRepository {
             fetchBookmarks()
         }
         return (added, entries.count - added, withFavicons)
+    }
+
+    // MARK: - Favicon Fetching
+
+    /// Fills in `faviconData` for every bookmark that has none, using
+    /// Google's favicon service. Fetches run off-main, one per distinct host
+    /// (50 GitHub bookmarks fetch one icon) with a small concurrency cap;
+    /// results are written back on the view context in a single save. A
+    /// failed fetch just leaves the placeholder glyph.
+    func fetchMissingFavicons() {
+        guard !isFetchingMissingFavicons else { return }
+
+        var hostsToFetch: [String: String] = [:] // host key -> host to query
+        for bookmark in bookmarks where bookmark.favicon == nil {
+            guard let host = bookmark.url.host,
+                  let key = bookmark.url.faviconHostKey,
+                  !failedFaviconHosts.contains(key) else { continue }
+            if hostsToFetch[key] == nil { hostsToFetch[key] = host }
+        }
+        guard !hostsToFetch.isEmpty else { return }
+        isFetchingMissingFavicons = true
+
+        Task.detached(priority: .utility) { [hostsToFetch] in
+            let icons = await Self.fetchFavicons(forHosts: hostsToFetch)
+            await MainActor.run {
+                self.applyFetchedFavicons(icons, requested: Set(hostsToFetch.keys))
+            }
+        }
+    }
+
+    /// Downloads icons for `hosts` (host key -> query host), keeping at most
+    /// a handful of requests in flight. Returns only icons whose bytes decode
+    /// to a real image.
+    private static func fetchFavicons(forHosts hosts: [String: String]) async -> [String: Data] {
+        let pairs = Array(hosts)
+        let maxConcurrent = 6
+        var icons: [String: Data] = [:]
+
+        await withTaskGroup(of: (String, Data?).self) { group in
+            var next = 0
+            while next < pairs.count && next < maxConcurrent {
+                let (key, host) = pairs[next]
+                group.addTask { (key, await fetchFaviconData(host: host)) }
+                next += 1
+            }
+            while let (key, data) = await group.next() {
+                if let data = data { icons[key] = data }
+                if next < pairs.count {
+                    let (key, host) = pairs[next]
+                    group.addTask { (key, await fetchFaviconData(host: host)) }
+                    next += 1
+                }
+            }
+        }
+        return icons
+    }
+
+    private static func fetchFaviconData(host: String) async -> Data? {
+        guard let url = URL(string: "https://www.google.com/s2/favicons?domain=\(host)&sz=64"),
+              let (data, _) = try? await URLSession.shared.data(from: url),
+              let image = NSImage(data: data), image.size.width > 1 else { return nil }
+        return data
+    }
+
+    private func applyFetchedFavicons(_ icons: [String: Data], requested: Set<String>) {
+        isFetchingMissingFavicons = false
+        failedFaviconHosts.formUnion(requested.subtracting(icons.keys))
+        guard !icons.isEmpty else { return }
+
+        let context = persistence.viewContext
+        let request = NSFetchRequest<BookmarkEntity>(entityName: "BookmarkEntity")
+        request.predicate = NSPredicate(format: "faviconData == nil")
+
+        do {
+            var changed = false
+            for entity in try context.fetch(request) {
+                guard let key = entity.urlValue?.faviconHostKey,
+                      let data = icons[key] else { continue }
+                entity.faviconData = data
+                changed = true
+            }
+            if changed {
+                persistence.save()
+                fetchBookmarks()
+            }
+        } catch {
+            print("Failed to apply fetched favicons: \(error)")
+        }
     }
 
     // MARK: - Update
