@@ -1032,18 +1032,23 @@ struct WebViewWrapper: NSViewRepresentable {
             """
 
             webView.evaluateJavaScript(script) { [weak self] result, _ in
+                let pageURL = webView.url
                 guard let urlString = result as? String,
                       let url = URL(string: urlString) else {
                     if let faviconURL = webView.url?.faviconURL {
-                        self?.downloadFavicon(from: faviconURL)
+                        self?.downloadFavicon(from: faviconURL, pageURL: pageURL)
                     }
                     return
                 }
-                self?.downloadFavicon(from: url)
+                self?.downloadFavicon(from: url, pageURL: pageURL)
             }
         }
 
-        private func downloadFavicon(from url: URL) {
+        /// `pageURL` is the page the icon belongs to, captured when the fetch
+        /// starts — the tab may have navigated elsewhere by the time the
+        /// download finishes, and the old page's icon must not be written
+        /// onto the new page's saved bookmarks or shortcuts.
+        private func downloadFavicon(from url: URL, pageURL: URL?) {
             Task {
                 do {
                     let (data, _) = try await URLSession.shared.data(from: url)
@@ -1052,7 +1057,7 @@ struct WebViewWrapper: NSViewRepresentable {
                             self.tab?.favicon = image
                             // The real page icon also refreshes any saved
                             // bookmark or home-screen shortcut for this page.
-                            if let pageURL = self.tab?.url {
+                            if let pageURL = pageURL {
                                 BookmarkRepository.shared.updateFavicon(forURL: pageURL, image: image)
                                 ShortcutRepository.shared.updateFavicon(forURL: pageURL, image: image)
                             }
