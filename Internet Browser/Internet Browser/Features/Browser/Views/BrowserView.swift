@@ -129,7 +129,7 @@ struct BrowserView: View {
 
     // Split from body to keep the modifier chain short enough for the Swift type-checker
     private var configuredLayout: some View {
-        browserLayout
+        menuRoutedLayout
             .frame(minWidth: viewModel.tabManager.isSplitActive ? 1300 : 1000, minHeight: 600)
             .ignoresSafeArea(.all, edges: .top)
             .background(Color(nsColor: .windowBackgroundColor))
@@ -185,6 +185,36 @@ struct BrowserView: View {
     }
 
     // MARK: - Extracted Sub-Views
+
+    /// Menu-bar commands arrive as app-wide notifications, so only the key
+    /// window's browser reacts — otherwise every open window would navigate
+    /// its tab to the internal page at once.
+    private var isKeyBrowserWindow: Bool {
+        viewModel.associatedWindow === NSApp.keyWindow
+    }
+
+    /// Routes the History/Bookmarks/Downloads/Settings menu commands to
+    /// cherry:// navigation in the focused tab. Kept out of
+    /// `configuredLayout` so its modifier chain stays type-checkable.
+    private var menuRoutedLayout: some View {
+        browserLayout
+            .onReceive(NotificationCenter.default.publisher(for: .showHistory)) { _ in
+                guard isKeyBrowserWindow else { return }
+                viewModel.openInternalPage(.history)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .showBookmarks)) { _ in
+                guard isKeyBrowserWindow else { return }
+                viewModel.openInternalPage(.bookmarks)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .showDownloads)) { _ in
+                guard isKeyBrowserWindow else { return }
+                viewModel.openInternalPage(.downloads)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .showSettingsPage)) { _ in
+                guard isKeyBrowserWindow else { return }
+                viewModel.openInternalPage(.settings)
+            }
+    }
 
     @ViewBuilder
     private var browserLayout: some View {
@@ -334,10 +364,12 @@ struct BrowserView: View {
             onStop: { onFocusPane?(); viewModel.stopLoading(for: tab) },
             onHome: { onFocusPane?(); viewModel.goHome(for: tab) },
             onBookmark: { onFocusPane?(); viewModel.showAddBookmark = true },
-            onToggleHistory: { onFocusPane?(); viewModel.toggleHistory() },
-            onToggleBookmarks: { onFocusPane?(); viewModel.toggleBookmarks() },
-            onDownloads: { onFocusPane?(); viewModel.toggleDownloads() },
-            onSettings: { onFocusPane?(); viewModel.showSettings() },
+            // These navigate THIS pane's tab to the matching cherry:// page,
+            // so each split pane tracks its own internal page independently.
+            onToggleHistory: { onFocusPane?(); viewModel.openInternalPage(.history, in: tab) },
+            onToggleBookmarks: { onFocusPane?(); viewModel.openInternalPage(.bookmarks, in: tab) },
+            onDownloads: { onFocusPane?(); viewModel.openInternalPage(.downloads, in: tab) },
+            onSettings: { onFocusPane?(); viewModel.openInternalPage(.settings, in: tab) },
             onToggleAdBlock: { onFocusPane?(); viewModel.toggleAdBlockForCurrentSite() },
             onTogglePrivateMode: { onFocusPane?(); viewModel.requestTogglePrivateMode() },
             onAutoFill: { onFocusPane?(); viewModel.toggleAutoFillPopup() },
@@ -651,12 +683,12 @@ struct BrowserView: View {
             Button("") { viewModel.showAddBookmark = true }
                 .keyboardShortcut("d", modifiers: .command)
 
-            // Toggle History (Cmd+Y)
-            Button("") { viewModel.toggleHistory() }
+            // History page (Cmd+Y) — cherry://history in the focused tab
+            Button("") { viewModel.openInternalPage(.history) }
                 .keyboardShortcut("y", modifiers: .command)
 
-            // Toggle Bookmarks (Cmd+Shift+B)
-            Button("") { viewModel.toggleBookmarks() }
+            // Bookmarks page (Cmd+Shift+B) — cherry://bookmarks in the focused tab
+            Button("") { viewModel.openInternalPage(.bookmarks) }
                 .keyboardShortcut("b", modifiers: [.command, .shift])
 
             // Toggle Bookmark Bar (Cmd+Option+B)
@@ -679,8 +711,8 @@ struct BrowserView: View {
             Button("") { viewModel.toggleVerticalTabs() }
                 .keyboardShortcut("v", modifiers: [.command, .option])
 
-            // Downloads (Cmd+Shift+J)
-            Button("") { viewModel.toggleDownloads() }
+            // Downloads page (Cmd+Shift+J) — cherry://downloads in the focused tab
+            Button("") { viewModel.openInternalPage(.downloads) }
                 .keyboardShortcut("j", modifiers: [.command, .shift])
 
             // Auto-fill Password (Cmd+\)
@@ -882,8 +914,13 @@ struct BrowserContentView: View {
                     .frame(height: 0.5)
             }
 
-            // Content - show settings, homepage, or web view
-            if tab.showSettingsPage {
+            // Content - show internal cherry:// page, settings, homepage, or web view.
+            // While an internal page is active the WKWebView is NOT rendered,
+            // so the background site's connection is released.
+            if let page = tab.internalPage {
+                CherryPageView(page: page, viewModel: viewModel, tab: tab)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if tab.showSettingsPage {
                 SettingsPageView()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if tab.showHomePage {
