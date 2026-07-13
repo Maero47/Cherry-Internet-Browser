@@ -72,12 +72,15 @@ final class BookmarkRepository {
 
     /// Batch add for browser import: skips URLs that already exist (in the
     /// store or earlier in `entries`), saves and refetches once instead of
-    /// per item. Returns how many were added vs skipped as duplicates.
+    /// per item. `favicon` is the already-encoded icon bytes (PNG) from the
+    /// source browser, stored as-is. Returns how many were added vs skipped
+    /// as duplicates, and how many added entries carried an icon.
     @discardableResult
-    func importBookmarks(_ entries: [(url: URL, title: String, folder: String?, isInBookmarkBar: Bool)]) -> (added: Int, skipped: Int) {
+    func importBookmarks(_ entries: [(url: URL, title: String, favicon: Data?, folder: String?, isInBookmarkBar: Bool)]) -> (added: Int, skipped: Int, withFavicons: Int) {
         let context = persistence.viewContext
         var existingURLs = Set(bookmarks.map { $0.url.absoluteString })
         var added = 0
+        var withFavicons = 0
         var sortOrder = Int32(bookmarks.count)
 
         for entry in entries {
@@ -88,6 +91,7 @@ final class BookmarkRepository {
             entity.id = UUID()
             entity.url = urlString
             entity.title = entry.title
+            entity.faviconData = entry.favicon
             entity.folder = entry.folder
             entity.createdAt = Date()
             entity.visitCount = 0
@@ -95,13 +99,14 @@ final class BookmarkRepository {
             entity.isInBookmarkBar = entry.isInBookmarkBar
             sortOrder += 1
             added += 1
+            if entry.favicon != nil { withFavicons += 1 }
         }
 
         if added > 0 {
             persistence.save()
             fetchBookmarks()
         }
-        return (added, entries.count - added)
+        return (added, entries.count - added, withFavicons)
     }
 
     // MARK: - Update

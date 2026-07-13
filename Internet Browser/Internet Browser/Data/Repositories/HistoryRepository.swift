@@ -96,10 +96,13 @@ final class HistoryRepository {
 
     /// Batch add for browser import, preserving the source browser's real
     /// visit dates. URLs already in history are merged (visit counts add up,
-    /// the newest visit date wins) rather than duplicated. Saves and
-    /// refetches once. Returns how many entries were new vs merged.
+    /// the newest visit date wins, an icon fills in a missing one) rather
+    /// than duplicated. `favicon` is the already-encoded icon bytes (PNG)
+    /// from the source browser, stored as-is. Saves and refetches once.
+    /// Returns how many entries were new vs merged, and how many received
+    /// a source icon.
     @discardableResult
-    func importHistoryItems(_ entries: [(url: URL, title: String, visitDate: Date, visitCount: Int)]) -> (added: Int, merged: Int) {
+    func importHistoryItems(_ entries: [(url: URL, title: String, favicon: Data?, visitDate: Date, visitCount: Int)]) -> (added: Int, merged: Int, withFavicons: Int) {
         let context = persistence.viewContext
 
         var existingByURL: [String: HistoryEntity] = [:]
@@ -112,6 +115,7 @@ final class HistoryRepository {
 
         var added = 0
         var merged = 0
+        var withFavicons = 0
         for entry in entries {
             let urlString = entry.url.absoluteString
             if let existing = existingByURL[urlString] {
@@ -120,16 +124,22 @@ final class HistoryRepository {
                     existing.visitDate = entry.visitDate
                     existing.title = entry.title
                 }
+                if existing.faviconData == nil, let favicon = entry.favicon {
+                    existing.faviconData = favicon
+                    withFavicons += 1
+                }
                 merged += 1
             } else {
                 let entity = HistoryEntity(context: context)
                 entity.id = UUID()
                 entity.url = urlString
                 entity.title = entry.title
+                entity.faviconData = entry.favicon
                 entity.visitDate = entry.visitDate
                 entity.visitCount = Int32(clamping: entry.visitCount)
                 existingByURL[urlString] = entity
                 added += 1
+                if entry.favicon != nil { withFavicons += 1 }
             }
         }
 
@@ -137,7 +147,7 @@ final class HistoryRepository {
             persistence.save()
             fetchHistory()
         }
-        return (added, merged)
+        return (added, merged, withFavicons)
     }
 
     // MARK: - Delete

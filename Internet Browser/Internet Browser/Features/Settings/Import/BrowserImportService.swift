@@ -45,12 +45,25 @@ final class BrowserImportService {
         var result = ImportResult(browserName: browser.displayName)
 
         let reader = browser.reader
+
+        // Load the source's favicon store once per run so imported records
+        // can carry their site icons. Best-effort: an unreadable store is
+        // just empty and the import proceeds icon-less.
+        let iconCarryingTypes: Set<ImportableDataType> = [.bookmarks, .history]
+        var faviconStore = ImportedFaviconStore.empty
+        if !types.intersection(iconCarryingTypes).isEmpty {
+            statusText = "Reading site icons from \(browser.displayName)…"
+            faviconStore = await Task.detached(priority: .userInitiated) {
+                reader.readFavicons(from: profile)
+            }.value
+        }
+
         // Fixed enum order keeps runs deterministic (bookmarks before history).
         for type in ImportableDataType.allCases where types.contains(type) && type.isSupported {
             statusText = "Reading \(type.displayName.lowercased()) from \(browser.displayName)…"
             do {
-                let payload = try await Task.detached(priority: .userInitiated) {
-                    try reader.read(type, from: profile)
+                let payload = try await Task.detached(priority: .userInitiated) { [faviconStore] in
+                    try reader.read(type, from: profile).attachingFavicons(from: faviconStore)
                 }.value
 
                 statusText = "Importing \(type.displayName.lowercased())…"
@@ -60,17 +73,20 @@ final class BrowserImportService {
                     let outcome = BookmarkRepository.shared.importBookmarks(items.map {
                         (url: $0.url,
                          title: $0.title,
+                         favicon: $0.favicon,
                          folder: $0.folderPath.isEmpty ? nil : $0.folderPath.joined(separator: "/"),
                          isInBookmarkBar: $0.isInBookmarkBar)
                     })
                     result.bookmarksAdded += outcome.added
                     result.bookmarksSkipped += outcome.skipped
+                    result.bookmarkFavicons += outcome.withFavicons
                 case .history(let rows):
                     let outcome = HistoryRepository.shared.importHistoryItems(rows.map {
-                        (url: $0.url, title: $0.title, visitDate: $0.lastVisit, visitCount: $0.visitCount)
+                        (url: $0.url, title: $0.title, favicon: $0.favicon, visitDate: $0.lastVisit, visitCount: $0.visitCount)
                     })
                     result.historyAdded += outcome.added
                     result.historyMerged += outcome.merged
+                    result.historyFavicons += outcome.withFavicons
                 case .passwords(let credentials):
                     let outcome = PasswordRepository.shared.importCredentials(credentials.map {
                         (url: $0.url, username: $0.username, password: $0.password)

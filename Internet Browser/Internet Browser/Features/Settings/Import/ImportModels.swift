@@ -273,8 +273,12 @@ struct ImportResult: Sendable {
     let browserName: String
     var bookmarksAdded = 0
     var bookmarksSkipped = 0
+    /// How many imported bookmarks carried a site icon from the source.
+    var bookmarkFavicons = 0
     var historyAdded = 0
     var historyMerged = 0
+    /// How many imported history entries carried a site icon from the source.
+    var historyFavicons = 0
     var passwordsAdded = 0
     var passwordsSkipped = 0
     var errors: [String] = []
@@ -284,12 +288,18 @@ struct ImportResult: Sendable {
         var lines: [String] = []
         if bookmarksAdded > 0 || bookmarksSkipped > 0 {
             var line = "Imported \(bookmarksAdded.formatted()) bookmark\(bookmarksAdded == 1 ? "" : "s")"
-            if bookmarksSkipped > 0 { line += " (\(bookmarksSkipped.formatted()) already existed)" }
+            var notes: [String] = []
+            if bookmarkFavicons > 0 { notes.append("\(bookmarkFavicons.formatted()) with site icons") }
+            if bookmarksSkipped > 0 { notes.append("\(bookmarksSkipped.formatted()) already existed") }
+            if !notes.isEmpty { line += " (\(notes.joined(separator: ", ")))" }
             lines.append(line)
         }
         if historyAdded > 0 || historyMerged > 0 {
             var line = "Imported \(historyAdded.formatted()) history entr\(historyAdded == 1 ? "y" : "ies")"
-            if historyMerged > 0 { line += " (\(historyMerged.formatted()) merged with existing)" }
+            var notes: [String] = []
+            if historyFavicons > 0 { notes.append("\(historyFavicons.formatted()) with site icons") }
+            if historyMerged > 0 { notes.append("\(historyMerged.formatted()) merged with existing") }
+            if !notes.isEmpty { line += " (\(notes.joined(separator: ", ")))" }
             lines.append(line)
         }
         if passwordsAdded > 0 || passwordsSkipped > 0 {
