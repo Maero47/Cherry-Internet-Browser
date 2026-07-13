@@ -66,29 +66,48 @@ final class ShortcutRepository {
     /// browser's bookmarks bar): skips URLs already present as shortcuts (or
     /// earlier in `entries`), saves and refetches once. `favicon` is the
     /// already-encoded icon bytes (PNG) from the source browser; entries
-    /// without one fall back to the usual lazy favicon fetch. Returns how
-    /// many were added vs skipped as duplicates.
+    /// without one fall back to the usual lazy favicon fetch. An already-
+    /// present shortcut still gets its icon backfilled when it has none and
+    /// the entry carries one. Returns how many were added vs skipped as
+    /// duplicates.
     @discardableResult
     func importShortcuts(_ entries: [(url: URL, title: String, favicon: Data?)]) -> (added: Int, skipped: Int) {
         let context = persistence.viewContext
-        var existingURLs = Set(shortcuts.map { $0.url.absoluteString })
+
+        var existingByURL: [String: ShortcutEntity] = [:]
+        let request = NSFetchRequest<ShortcutEntity>(entityName: "ShortcutEntity")
+        if let existing = try? context.fetch(request) {
+            for entity in existing {
+                existingByURL[entity.url] = entity
+            }
+        }
+
         var added = 0
+        var backfilled = 0
         var sortOrder = Int32(shortcuts.count)
 
         for entry in entries {
-            guard existingURLs.insert(entry.url.absoluteString).inserted else { continue }
+            let urlString = entry.url.absoluteString
+            if let existing = existingByURL[urlString] {
+                if existing.faviconData == nil, let favicon = entry.favicon {
+                    existing.faviconData = favicon
+                    backfilled += 1
+                }
+                continue
+            }
 
             let entity = ShortcutEntity(context: context)
             entity.id = UUID()
-            entity.url = entry.url.absoluteString
+            entity.url = urlString
             entity.title = entry.title
             entity.faviconData = entry.favicon
             entity.sortOrder = sortOrder
+            existingByURL[urlString] = entity
             sortOrder += 1
             added += 1
         }
 
-        if added > 0 {
+        if added > 0 || backfilled > 0 {
             persistence.save()
             fetchShortcuts()
             fetchMissingFavicons()

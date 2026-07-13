@@ -79,19 +79,37 @@ final class BookmarkRepository {
     /// Batch add for browser import: skips URLs that already exist (in the
     /// store or earlier in `entries`), saves and refetches once instead of
     /// per item. `favicon` is the already-encoded icon bytes (PNG) from the
-    /// source browser, stored as-is. Returns how many were added vs skipped
-    /// as duplicates, and how many added entries carried an icon.
+    /// source browser, stored as-is. An already-present bookmark still gets
+    /// its icon backfilled when it has none and the entry carries one — so
+    /// re-running an import fills icons on bookmarks imported before favicons
+    /// existed. Returns how many were added vs skipped as duplicates, and how
+    /// many records gained an icon (added-with-icon plus backfilled).
     @discardableResult
     func importBookmarks(_ entries: [(url: URL, title: String, favicon: Data?, folder: String?, isInBookmarkBar: Bool)]) -> (added: Int, skipped: Int, withFavicons: Int) {
         let context = persistence.viewContext
-        var existingURLs = Set(bookmarks.map { $0.url.absoluteString })
+
+        var existingByURL: [String: BookmarkEntity] = [:]
+        let request = NSFetchRequest<BookmarkEntity>(entityName: "BookmarkEntity")
+        if let existing = try? context.fetch(request) {
+            for entity in existing {
+                existingByURL[entity.url] = entity
+            }
+        }
+
         var added = 0
+        var backfilled = 0
         var withFavicons = 0
         var sortOrder = Int32(bookmarks.count)
 
         for entry in entries {
             let urlString = entry.url.absoluteString
-            guard existingURLs.insert(urlString).inserted else { continue }
+            if let existing = existingByURL[urlString] {
+                if existing.faviconData == nil, let favicon = entry.favicon {
+                    existing.faviconData = favicon
+                    backfilled += 1
+                }
+                continue
+            }
 
             let entity = BookmarkEntity(context: context)
             entity.id = UUID()
@@ -103,16 +121,18 @@ final class BookmarkRepository {
             entity.visitCount = 0
             entity.sortOrder = sortOrder
             entity.isInBookmarkBar = entry.isInBookmarkBar
+            existingByURL[urlString] = entity
             sortOrder += 1
             added += 1
             if entry.favicon != nil { withFavicons += 1 }
         }
 
-        if added > 0 {
+        if added > 0 || backfilled > 0 {
             persistence.save()
             fetchBookmarks()
         }
-        return (added, entries.count - added, withFavicons)
+        fetchMissingFavicons()
+        return (added, entries.count - added, withFavicons + backfilled)
     }
 
     // MARK: - Favicon Fetching
