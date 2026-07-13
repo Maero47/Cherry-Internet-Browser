@@ -20,6 +20,15 @@ extension URL {
         return URL(string: "\(scheme)://\(host)/favicon.ico")
     }
 
+    /// Lowercased host with any leading "www." stripped — the key used to
+    /// decide whether two URLs belong to the same site when sharing favicons,
+    /// so `https://github.com/x` and `https://www.github.com` compare equal.
+    var faviconHostKey: String? {
+        guard let host = host?.lowercased() else { return nil }
+        let stripped = host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
+        return stripped.isEmpty ? nil : stripped
+    }
+
     /// Schemes the browser recognizes in typed input. Anything else that
     /// parses "with a scheme" is almost always a host:port ("localhost:8080"
     /// parses with scheme "localhost", "example.com:8080" with scheme
