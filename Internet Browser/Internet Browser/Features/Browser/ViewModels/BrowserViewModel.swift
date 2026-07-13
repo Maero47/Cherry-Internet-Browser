@@ -149,6 +149,12 @@ final class BrowserViewModel {
         // handling below: the cherry scheme isn't a recognized web-input
         // scheme, so it would otherwise fall through to a search.
         if trimmedInput.lowercased().hasPrefix("\(CherryPage.urlScheme):") {
+            // cherry://newtab is the home page: it's the root state, not a
+            // site-covering internal page, so route it to goHome.
+            if CherryPage.isNewTabInput(trimmedInput) {
+                goHome(for: tab)
+                return
+            }
             if let page = CherryPage(input: trimmedInput) {
                 tab.openInternalPage(page)
                 return

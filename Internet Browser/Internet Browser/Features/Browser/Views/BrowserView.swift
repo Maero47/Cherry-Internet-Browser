@@ -908,7 +908,7 @@ struct BrowserContentView: View {
             // Loading progress bar. Suppressed while an internal cherry://
             // page is shown — the still-live covered site's load progress
             // must not animate over cherry://settings.
-            if tab.isLoading && tab.internalPage == nil && !viewModel.isVideoFullscreen {
+            if tab.isLoading && tab.internalPage == nil && !tab.showHomePage && !viewModel.isVideoFullscreen {
                 ProgressBarView(progress: tab.loadingProgress)
             } else if !viewModel.isVideoFullscreen {
                 Rectangle()

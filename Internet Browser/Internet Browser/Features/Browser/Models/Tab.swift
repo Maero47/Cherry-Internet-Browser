@@ -87,10 +87,13 @@ final class Tab: NSObject, Identifiable {
         return title
     }
 
-    /// The tab's displayed location: the internal page's `cherry://` URL
-    /// while one is active, else the web URL. This is what the omnibox reads.
+    /// The tab's displayed location: the internal page's `cherry://` URL while
+    /// one is active, the `cherry://newtab` home address while on the home page,
+    /// else the web URL. This is what the omnibox reads.
     var displayURL: String {
-        internalPage?.url.absoluteString ?? url?.absoluteString ?? ""
+        if let page = internalPage { return page.url.absoluteString }
+        if showHomePage { return CherryPage.newTabURLString }
+        return url?.absoluteString ?? ""
     }
 
     static let dragUTType: UTType = .cherryBrowserTab

@@ -18,6 +18,22 @@ enum CherryPage: String, CaseIterable {
 
     static let urlScheme = "cherry"
 
+    /// The home / new-tab page's canonical address. It is intentionally NOT a
+    /// `CherryPage` case: the cases above COVER a live site (Back returns to it),
+    /// whereas the home page is the root state (`Tab.showHomePage`) with no site
+    /// behind it. This keeps home addressable — the omnibox shows this URL and
+    /// typing it opens home — while the whole `cherry://` vocabulary lives here.
+    static let newTabURLString = "\(urlScheme)://newtab"
+
+    /// True when typed omnibox input is the new-tab address (`cherry://newtab`,
+    /// with or without a trailing slash, plus the slash-less `cherry:newtab`).
+    static func isNewTabInput(_ input: String) -> Bool {
+        let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard trimmed.hasPrefix("\(urlScheme):") else { return false }
+        if trimmed == "\(urlScheme):newtab" { return true }
+        return URL(string: trimmed)?.host?.lowercased() == "newtab"
+    }
+
     /// Canonical URL for this page, e.g. `cherry://settings`.
     var url: URL {
         URL(string: "\(Self.urlScheme)://\(rawValue)")!

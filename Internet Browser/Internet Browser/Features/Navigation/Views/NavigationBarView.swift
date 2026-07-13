@@ -67,15 +67,21 @@ struct NavigationBarView: View {
     /// The covered site stays live behind an internal cherry:// page, but its
     /// loading state must not leak onto the internal page's chrome.
     private var showsLoadingChrome: Bool {
-        tab.isLoading && tab.internalPage == nil
+        // The home page is a static internal location — never surface a spinner
+        // or Stop button on it, even if a just-released web view's KVO briefly
+        // reports loading.
+        tab.isLoading && tab.internalPage == nil && !tab.showHomePage
     }
 
     /// What the omnibox shows when NOT editing: the internal page's full
-    /// `cherry://` URL while one is active, else the site's host (the
-    /// pre-existing resting display).
+    /// `cherry://` URL while one is active, the `cherry://newtab` home address
+    /// on the home page, else the site's host (the pre-existing resting display).
     private var restingAddress: String {
         if let page = tab.internalPage {
             return page.url.absoluteString
+        }
+        if tab.showHomePage {
+            return CherryPage.newTabURLString
         }
         return tab.url?.host ?? tab.url?.absoluteString ?? ""
     }
