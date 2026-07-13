@@ -145,6 +145,18 @@ final class BrowserViewModel {
     func navigate(to input: String, in tab: Tab) {
         let trimmedInput = input.trimmingCharacters(in: .whitespacesAndNewlines)
 
+        // cherry:// internal pages — must be detected before the URL/search
+        // handling below: the cherry scheme isn't a recognized web-input
+        // scheme, so it would otherwise fall through to a search.
+        if trimmedInput.lowercased().hasPrefix("\(CherryPage.urlScheme):") {
+            if let page = CherryPage(input: trimmedInput) {
+                tab.openInternalPage(page)
+                return
+            }
+            // Unknown cherry:// page (e.g. cherry://nope): fall through and
+            // treat it as a search — there's no "page not found" internal page.
+        }
+
         // Try to parse as URL first
         if let url = URL.fromUserInput(trimmedInput) {
             tab.loadURL(url)
@@ -173,10 +185,24 @@ final class BrowserViewModel {
     }
 
     func goBack() {
-        currentTab?.goBack()
+        if let tab = currentTab {
+            goBack(for: tab)
+        }
     }
 
     func goBack(for tab: Tab) {
+        if tab.internalPage != nil {
+            // Back out of an internal cherry:// page returns to the site that
+            // was showing. Its connection was dropped when the page opened,
+            // so the URL is reloaded; with no site to return to, fall back to
+            // the home/new-tab state.
+            if let returnURL = tab.closeInternalPage() {
+                tab.loadURL(returnURL)
+            } else {
+                goHome(for: tab)
+            }
+            return
+        }
         tab.goBack()
     }
 
@@ -228,14 +254,23 @@ final class BrowserViewModel {
         tab.isLoading = false
         tab.loadingProgress = 0
         tab.showSettingsPage = false
+        tab.internalPage = nil
+        tab.returnURL = nil
         tab.showHomePage = true
     }
 
+    // MARK: - Internal cherry:// Pages
+
+    /// Navigates a tab to an internal `cherry://` page, making it the tab's
+    /// location: the omnibox shows the page's URL, the web view is unloaded
+    /// (connection dropped), and Back returns to the site that was showing.
+    func openInternalPage(_ page: CherryPage, in tab: Tab? = nil) {
+        guard let tab = tab ?? tabManager.focusedTab else { return }
+        tab.openInternalPage(page)
+    }
+
     func showSettings() {
-        guard let tab = currentTab else { return }
-        tab.showSettingsPage = true
-        tab.showHomePage = false
-        tab.title = "Settings"
+        openInternalPage(.settings)
     }
 
     func toggleAdBlockForCurrentSite() {
@@ -644,6 +679,13 @@ final class BrowserViewModel {
         bookmarkRepository.incrementVisitCount(for: bookmark)
     }
 
+    /// Pane-targeted variant used by the full-page cherry://bookmarks view,
+    /// so a bookmark opened from a split pane's page loads in THAT pane.
+    func openBookmark(_ bookmark: Bookmark, in tab: Tab) {
+        tab.loadURL(bookmark.url)
+        bookmarkRepository.incrementVisitCount(for: bookmark)
+    }
+
     // MARK: - Sidebar
 
     func toggleHistory() {
@@ -677,7 +719,7 @@ final class BrowserViewModel {
     }
 
     func showDownloadsFromToast() {
-        sidebarContent = .downloads
+        openInternalPage(.downloads)
         dismissDownloadToast()
     }
 
@@ -729,6 +771,11 @@ final class BrowserViewModel {
         } else {
             newTab(url: item.url)
         }
+    }
+
+    /// Pane-targeted variant used by the full-page cherry://history view.
+    func openHistoryItem(_ item: HistoryItem, in tab: Tab) {
+        tab.loadURL(item.url)
     }
 
     // MARK: - Find in Page
