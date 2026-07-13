@@ -30,6 +30,15 @@ final class Tab: NSObject, Identifiable {
     }
     var showHomePage: Bool
     var showSettingsPage: Bool
+    /// The internal `cherry://` page this tab is showing, if any. While set,
+    /// the tab's location IS the page's cherry:// URL: the omnibox displays
+    /// it, the web view is not rendered (releasing the site's connection),
+    /// and Back returns to `returnURL`.
+    var internalPage: CherryPage? = nil
+    /// The web URL that was showing when the internal page opened — the one
+    /// logical "Back" step out of an internal page. Nil when the internal
+    /// page was opened from the home page / a blank tab.
+    var returnURL: URL? = nil
     var webView: WKWebView?
     var group: TabGroup?
     var isSleeping: Bool
@@ -82,8 +91,10 @@ final class Tab: NSObject, Identifiable {
         return title
     }
 
+    /// The tab's displayed location: the internal page's `cherry://` URL
+    /// while one is active, else the web URL. This is what the omnibox reads.
     var displayURL: String {
-        url?.absoluteString ?? ""
+        internalPage?.url.absoluteString ?? url?.absoluteString ?? ""
     }
 
     static let dragUTType: UTType = .cherryBrowserTab
@@ -173,9 +184,54 @@ final class Tab: NSObject, Identifiable {
         self.url = url
         self.showHomePage = false
         self.showSettingsPage = false
+        // Loading web content always leaves any internal cherry:// page.
+        self.internalPage = nil
+        self.returnURL = nil
         self.isSleeping = false
         self.lastActiveDate = Date()
         webView?.load(URLRequest(url: url))
+    }
+
+    // MARK: - Internal cherry:// Pages
+
+    /// Makes `page` this tab's location. Snapshots the current web URL into
+    /// `returnURL` (the one logical Back step) and releases the web view so
+    /// the site's connection is dropped while the internal page is shown —
+    /// the content slot stops rendering the WKWebView because
+    /// `internalPage != nil`, mirroring how the settings page already worked.
+    func openInternalPage(_ page: CherryPage) {
+        if internalPage == nil {
+            returnURL = url
+        }
+        internalPage = page
+        title = page.displayTitle
+        favicon = nil
+        showHomePage = false
+        showSettingsPage = false
+        url = nil
+        // Release the old page like goHome does, so its audio/JS/timers stop
+        // instead of lingering invisibly behind the internal page.
+        webView?.stopLoading()
+        webView?.loadHTMLString("", baseURL: nil)
+        webView = nil
+        isLoading = false
+        loadingProgress = 0
+        // Back from an internal page is always available: it returns to
+        // `returnURL`, or to the home page when there was no site. Forward
+        // never re-enters internal pages (single logical back-step model).
+        canGoBack = true
+        canGoForward = false
+        isSleeping = false
+        lastActiveDate = Date()
+    }
+
+    /// Leaves the internal page and returns the web URL to go back to
+    /// (nil means there was no site — go to the home/new-tab state).
+    func closeInternalPage() -> URL? {
+        let target = returnURL
+        internalPage = nil
+        returnURL = nil
+        return target
     }
 
     func reload() {
@@ -197,7 +253,9 @@ final class Tab: NSObject, Identifiable {
     // MARK: - Tab Sleeping
 
     func sleep() {
-        guard !isSleeping, !showHomePage else { return }
+        // Internal cherry:// pages have no web view to release and no URL to
+        // restore on wake — sleeping one would only corrupt its state.
+        guard !isSleeping, !showHomePage, internalPage == nil else { return }
         sleepURL = url
         isSleeping = true
         // Release the WebView to free memory
