@@ -27,6 +27,11 @@ struct FirefoxImportReader: BrowserDataReader {
         }
     }
 
+    /// Site icons live in <profile>/favicons.sqlite (separate DB since FF 55).
+    func readFavicons(from profile: SourceProfile) -> ImportedFaviconStore {
+        ImportFaviconReader.firefoxStore(profileDirectory: profile.directory)
+    }
+
     private func placesDatabase(for profile: SourceProfile) throws -> ImportSQLiteDatabase {
         try ImportSQLiteDatabase(copying: profile.directory.appendingPathComponent("places.sqlite"))
     }

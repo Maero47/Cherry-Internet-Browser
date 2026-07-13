@@ -29,6 +29,11 @@ struct ChromiumImportReader: BrowserDataReader {
         }
     }
 
+    /// Site icons live in <profile>/Favicons (SQLite).
+    func readFavicons(from profile: SourceProfile) -> ImportedFaviconStore {
+        ImportFaviconReader.chromiumStore(profileDirectory: profile.directory)
+    }
+
     // MARK: - Bookmarks
 
     private func readBookmarks(from profile: SourceProfile) throws -> [ImportedBookmark] {

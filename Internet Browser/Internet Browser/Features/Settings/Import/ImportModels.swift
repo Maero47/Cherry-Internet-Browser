@@ -119,6 +119,10 @@ struct ImportedBookmark: Sendable {
     let folderPath: [String]
     /// True for items sitting directly on the source's bookmarks bar.
     let isInBookmarkBar: Bool
+    /// Encoded icon bytes (PNG) matched from the source browser's favicon
+    /// store, attached by the import engine after reading. Nil when the
+    /// store has no icon for this URL.
+    var favicon: Data? = nil
 }
 
 /// A history entry parsed from a source browser, aggregated per URL.
@@ -128,6 +132,9 @@ struct ImportedHistoryRow: Sendable {
     /// The real most-recent visit time from the source browser.
     let lastVisit: Date
     let visitCount: Int
+    /// Encoded icon bytes (PNG) matched from the source browser's favicon
+    /// store, attached by the import engine after reading.
+    var favicon: Data? = nil
 }
 
 /// A saved credential parsed from a source browser (decrypted Chromium
@@ -155,6 +162,39 @@ enum ImportedPayload: Sendable {
 /// opening anything SQLite).
 protocol BrowserDataReader: Sendable {
     func read(_ type: ImportableDataType, from profile: SourceProfile) throws -> ImportedPayload
+
+    /// Loads the profile's favicon store for attaching icons to imported
+    /// records. Best-effort: browsers without a readable store (Safari)
+    /// return `.empty`, and failures must never throw.
+    func readFavicons(from profile: SourceProfile) -> ImportedFaviconStore
+}
+
+extension BrowserDataReader {
+    func readFavicons(from profile: SourceProfile) -> ImportedFaviconStore { .empty }
+}
+
+extension ImportedPayload {
+    /// Returns the payload with each record's `favicon` filled from `store`
+    /// (exact page URL first, then host). Passwords pass through unchanged.
+    func attachingFavicons(from store: ImportedFaviconStore) -> ImportedPayload {
+        guard !store.isEmpty else { return self }
+        switch self {
+        case .bookmarks(let items):
+            return .bookmarks(items.map { item in
+                var item = item
+                item.favicon = store.icon(for: item.url)
+                return item
+            })
+        case .history(let rows):
+            return .history(rows.map { row in
+                var row = row
+                row.favicon = store.icon(for: row.url)
+                return row
+            })
+        case .passwords:
+            return self
+        }
+    }
 }
 
 extension SourceBrowser {
