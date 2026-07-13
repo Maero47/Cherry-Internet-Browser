@@ -29,6 +29,13 @@ struct ImportSQLiteRow {
         sqlite3_column_double(statement, column)
     }
 
+    func blob(_ column: Int32) -> Data? {
+        guard let bytes = sqlite3_column_blob(statement, column) else { return nil }
+        let count = Int(sqlite3_column_bytes(statement, column))
+        guard count > 0 else { return nil }
+        return Data(bytes: bytes, count: count)
+    }
+
     func isNull(_ column: Int32) -> Bool {
         sqlite3_column_type(statement, column) == SQLITE_NULL
     }

@@ -63,6 +63,43 @@ final class PasswordRepository {
         )
     }
 
+    /// Batch add for browser import: skips a credential whose (url, username)
+    /// already exists (in the store or earlier in `entries`), writes each
+    /// secret to the Keychain, and saves + refetches once. Returns how many
+    /// were added vs skipped as duplicates. Case-insensitive on the dedup key.
+    @discardableResult
+    func importCredentials(_ entries: [(url: String, username: String, password: String)]) -> (added: Int, skipped: Int) {
+        let context = persistence.viewContext
+
+        func key(_ url: String, _ username: String) -> String {
+            "\(url.lowercased())\u{0}\(username.lowercased())"
+        }
+        var existing = Set(passwords.map { key($0.url, $0.username) })
+
+        var pendingSecrets: [(id: UUID, password: String)] = []
+        for entry in entries {
+            guard existing.insert(key(entry.url, entry.username)).inserted else { continue }
+
+            let id = UUID()
+            let entity = PasswordEntity(context: context)
+            entity.id = id
+            entity.url = entry.url
+            entity.username = entry.username
+            entity.createdAt = Date()
+            pendingSecrets.append((id, entry.password))
+        }
+
+        let added = pendingSecrets.count
+        if added > 0 {
+            for secret in pendingSecrets {
+                KeychainHelper.save(password: secret.password, for: secret.id)
+            }
+            persistence.save()
+            fetchPasswords()
+        }
+        return (added, entries.count - added)
+    }
+
     // MARK: - Update
 
     func updateCredential(id: UUID, username: String? = nil, password: String? = nil, notes: String? = nil) {
