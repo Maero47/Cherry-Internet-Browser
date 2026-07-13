@@ -228,6 +228,41 @@ final class BookmarkRepository {
         }
     }
 
+    /// Writes a page's real favicon onto every saved bookmark for that page:
+    /// exact-URL matches plus same normalized host, so visiting
+    /// `https://github.com` refreshes a bookmark saved as
+    /// `https://www.github.com/x`. Entities whose stored icon already equals
+    /// the new bytes are left untouched to avoid needless Core Data churn.
+    func updateFavicon(forURL pageURL: URL, image: NSImage) {
+        guard let data = image.pngData else { return }
+        let pageURLString = pageURL.absoluteString
+        let hostKey = pageURL.faviconHostKey
+
+        let matchIDs = bookmarks.filter { bookmark in
+            bookmark.url.absoluteString == pageURLString ||
+            (hostKey != nil && bookmark.url.faviconHostKey == hostKey)
+        }.map { $0.id }
+        guard !matchIDs.isEmpty else { return }
+
+        let context = persistence.viewContext
+        let request = NSFetchRequest<BookmarkEntity>(entityName: "BookmarkEntity")
+        request.predicate = NSPredicate(format: "id IN %@", matchIDs)
+
+        do {
+            var changed = false
+            for entity in try context.fetch(request) where entity.faviconData != data {
+                entity.faviconData = data
+                changed = true
+            }
+            if changed {
+                persistence.save()
+                fetchBookmarks()
+            }
+        } catch {
+            print("Failed to update bookmark favicons: \(error)")
+        }
+    }
+
     func incrementVisitCount(for bookmark: Bookmark) {
         var updated = bookmark
         updated.visitCount += 1

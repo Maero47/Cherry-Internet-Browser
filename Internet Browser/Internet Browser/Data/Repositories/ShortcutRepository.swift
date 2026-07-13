@@ -163,6 +163,40 @@ final class ShortcutRepository {
         updateShortcut(updated)
     }
 
+    /// URL-keyed variant used when a page's real favicon arrives from
+    /// navigation: updates every shortcut matching the page exactly or by
+    /// normalized host (lowercased, leading "www." stripped). Shortcuts whose
+    /// stored icon already equals the new bytes are left untouched.
+    func updateFavicon(forURL pageURL: URL, image: NSImage) {
+        guard let data = image.pngData else { return }
+        let pageURLString = pageURL.absoluteString
+        let hostKey = pageURL.faviconHostKey
+
+        let matchIDs = shortcuts.filter { shortcut in
+            shortcut.url.absoluteString == pageURLString ||
+            (hostKey != nil && shortcut.url.faviconHostKey == hostKey)
+        }.map { $0.id }
+        guard !matchIDs.isEmpty else { return }
+
+        let context = persistence.viewContext
+        let request = NSFetchRequest<ShortcutEntity>(entityName: "ShortcutEntity")
+        request.predicate = NSPredicate(format: "id IN %@", matchIDs)
+
+        do {
+            var changed = false
+            for entity in try context.fetch(request) where entity.faviconData != data {
+                entity.faviconData = data
+                changed = true
+            }
+            if changed {
+                persistence.save()
+                fetchShortcuts()
+            }
+        } catch {
+            print("Failed to update shortcut favicons: \(error)")
+        }
+    }
+
     // MARK: - Delete
 
     func deleteShortcut(_ shortcut: Shortcut) {

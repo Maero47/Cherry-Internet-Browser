@@ -1047,9 +1047,15 @@ struct WebViewWrapper: NSViewRepresentable {
             Task {
                 do {
                     let (data, _) = try await URLSession.shared.data(from: url)
-                    if let image = NSImage(data: data) {
+                    if let image = NSImage(data: data), image.size.width >= 1 {
                         await MainActor.run {
                             self.tab?.favicon = image
+                            // The real page icon also refreshes any saved
+                            // bookmark or home-screen shortcut for this page.
+                            if let pageURL = self.tab?.url {
+                                BookmarkRepository.shared.updateFavicon(forURL: pageURL, image: image)
+                                ShortcutRepository.shared.updateFavicon(forURL: pageURL, image: image)
+                            }
                         }
                     }
                 } catch {
