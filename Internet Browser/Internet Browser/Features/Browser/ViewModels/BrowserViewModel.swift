@@ -209,18 +209,29 @@ final class BrowserViewModel {
     }
 
     func goForward() {
-        currentTab?.goForward()
+        if let tab = currentTab {
+            goForward(for: tab)
+        }
     }
 
     func goForward(for tab: Tab) {
+        // Forward never re-enters internal pages, and it must not silently
+        // navigate the hidden covered site while one is shown.
+        guard tab.internalPage == nil else { return }
         tab.goForward()
     }
 
     func reload() {
-        currentTab?.reload()
+        if let tab = currentTab {
+            reload(for: tab)
+        }
     }
 
     func reload(for tab: Tab) {
+        // Internal cherry:// pages are always-fresh SwiftUI views; reloading
+        // would only act on the hidden covered site, which would be silent
+        // and surprising — no-op instead.
+        guard tab.internalPage == nil else { return }
         tab.reload()
     }
 
@@ -257,7 +268,6 @@ final class BrowserViewModel {
         tab.loadingProgress = 0
         tab.showSettingsPage = false
         tab.internalPage = nil
-        tab.returnURL = nil
         tab.showHomePage = true
     }
 
@@ -565,7 +575,14 @@ final class BrowserViewModel {
         // so a plain reload can never switch between private and normal.)
         for tab in tabManager.tabs {
             tab.isPrivate = isPrivateMode
-            tab.webView = nil
+            // Background tabs showing an internal cherry:// page keep their
+            // covered site's web view (like sleep() spares them), so the
+            // preserved history survives the toggle. Trade-off: that web view
+            // keeps its pre-toggle data store until the next navigation
+            // replaces it.
+            if tab.internalPage == nil {
+                tab.webView = nil
+            }
         }
         // The on-screen WKWebView(s) are keyed by tab.id, so nilling webView
         // alone leaves the old view (with the old data store) visible.

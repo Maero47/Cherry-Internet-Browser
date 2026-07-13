@@ -1067,7 +1067,10 @@ struct WebViewWrapper: NSViewRepresentable {
                     let (data, _) = try await URLSession.shared.data(from: url)
                     if let image = NSImage(data: data), image.size.width >= 1 {
                         await MainActor.run {
-                            self.tab?.favicon = image
+                            // Routes around an internal cherry:// page if one
+                            // is covering the site (updates the parked icon
+                            // instead of repainting the internal page's tab).
+                            self.tab?.updateSiteFavicon(image)
                             // The real page icon also refreshes any saved
                             // bookmark or home-screen shortcut for this page.
                             if let pageURL = pageURL {

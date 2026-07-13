@@ -63,6 +63,13 @@ struct NavigationBarView: View {
     /// SettingsManager is only the seed/default for newly opened windows.
     var isVerticalTabBarCollapsed: Bool = false
 
+    /// Whether to surface loading chrome (omnibox spinner, Stop button).
+    /// The covered site stays live behind an internal cherry:// page, but its
+    /// loading state must not leak onto the internal page's chrome.
+    private var showsLoadingChrome: Bool {
+        tab.isLoading && tab.internalPage == nil
+    }
+
     /// What the omnibox shows when NOT editing: the internal page's full
     /// `cherry://` URL while one is active, else the site's host (the
     /// pre-existing resting display).
@@ -89,7 +96,7 @@ struct NavigationBarView: View {
             // Omnibox
             OmniboxView(
                 text: $addressText,
-                isLoading: tab.isLoading,
+                isLoading: showsLoadingChrome,
                 // The covered site's URL is preserved while an internal page
                 // is shown — don't wear its https lock on a cherry:// location.
                 isSecure: tab.internalPage == nil && tab.url?.scheme == "https",
@@ -270,7 +277,7 @@ struct NavigationBarView: View {
             .help("Go Forward (Cmd+])")
 
             // Reload/Stop button
-            if tab.isLoading {
+            if showsLoadingChrome {
                 Button(action: onStop) {
                     Image(systemName: "xmark")
                         .font(.system(size: AppConstants.UI.toolbarIconSize, weight: .medium))

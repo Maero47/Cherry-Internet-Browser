@@ -32,13 +32,9 @@ final class Tab: NSObject, Identifiable {
     var showSettingsPage: Bool
     /// The internal `cherry://` page this tab is showing, if any. While set,
     /// the tab's location IS the page's cherry:// URL: the omnibox displays
-    /// it, the web view is not rendered (releasing the site's connection),
-    /// and Back returns to `returnURL`.
+    /// it and the web view is not rendered — but `url` and `webView` keep the
+    /// covered site, so Back simply re-shows it with history intact.
     var internalPage: CherryPage? = nil
-    /// The web URL that was showing when the internal page opened — the one
-    /// logical "Back" step out of an internal page. Nil when the internal
-    /// page was opened from the home page / a blank tab.
-    var returnURL: URL? = nil
     var webView: WKWebView?
     var group: TabGroup?
     var isSleeping: Bool
@@ -187,7 +183,6 @@ final class Tab: NSObject, Identifiable {
         // Loading web content always leaves any internal cherry:// page; the
         // new navigation brings its own favicon, so drop the parked one.
         self.internalPage = nil
-        self.returnURL = nil
         self.faviconBeforeInternalPage = nil
         self.isSleeping = false
         self.lastActiveDate = Date()
@@ -201,15 +196,27 @@ final class Tab: NSObject, Identifiable {
     /// by `closeInternalPage`. Not observed — bookkeeping, not UI state.
     @ObservationIgnored private var faviconBeforeInternalPage: NSImage?
 
+    /// Sets the covered SITE's favicon. Writes the tab icon directly unless
+    /// an internal page is shown — then it updates the parked snapshot
+    /// instead, so a slow background favicon fetch can't repaint the internal
+    /// page's tab, and Back restores the fresh site icon rather than a stale
+    /// one. Used by the WebViewWrapper coordinator's favicon download.
+    func updateSiteFavicon(_ image: NSImage?) {
+        if internalPage == nil {
+            favicon = image
+        } else {
+            faviconBeforeInternalPage = image
+        }
+    }
+
     /// Makes `page` this tab's location. The WKWebView and `url` are
     /// deliberately KEPT (mirroring how `showSettingsPage` always worked):
     /// the content slot merely stops rendering the web view while
     /// `internalPage != nil`, so the site's back/forward list, scroll
     /// position, and form state all survive, and Back re-inserts the very
-    /// same web view. `returnURL` records the covered site's URL.
+    /// same web view.
     func openInternalPage(_ page: CherryPage) {
         if internalPage == nil {
-            returnURL = url
             faviconBeforeInternalPage = favicon
         }
         internalPage = page
@@ -234,7 +241,6 @@ final class Tab: NSObject, Identifiable {
     /// (nil means there was no site — go to the home/new-tab state).
     func closeInternalPage() {
         internalPage = nil
-        returnURL = nil
         canGoBack = webView?.canGoBack ?? false
         canGoForward = webView?.canGoForward ?? false
         if let webTitle = webView?.title, !webTitle.isEmpty {
