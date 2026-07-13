@@ -247,6 +247,11 @@ final class Tab: NSObject, Identifiable {
             title = webTitle
         } else if url == nil {
             title = "New Tab"
+            // No covered site to return to (opened from a home/new tab) —
+            // restore the home page, which openInternalPage cleared. Without
+            // this the tab falls through to a blank WebView that reports
+            // about:blank.
+            showHomePage = true
         }
         favicon = faviconBeforeInternalPage
         faviconBeforeInternalPage = nil
