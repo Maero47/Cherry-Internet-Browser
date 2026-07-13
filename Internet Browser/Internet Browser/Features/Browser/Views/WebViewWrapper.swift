@@ -424,6 +424,10 @@ struct WebViewWrapper: NSViewRepresentable {
                             self.lastLoadedURL = url
                             tab.url = url
                         }
+                        // While an internal cherry:// page covers this (still
+                        // live) web view, Back/Forward belong to the internal
+                        // page, not the background site — don't clobber them.
+                        guard tab.internalPage == nil else { return }
                         tab.canGoBack = canBack
                         tab.canGoForward = canForward
                     }
@@ -434,8 +438,14 @@ struct WebViewWrapper: NSViewRepresentable {
                 webView.observe(\.title, options: [.new]) { [weak self] webView, _ in
                     let title = webView.title
                     Task { @MainActor in
+                        guard let tab = self?.tab,
+                              // The tab is titled after the internal page
+                              // while one is shown ("Settings" etc.); the
+                              // covered site's title is restored from the
+                              // web view by closeInternalPage.
+                              tab.internalPage == nil else { return }
                         if let title, !title.isEmpty {
-                            self?.tab?.title = title
+                            tab.title = title
                         }
                     }
                 }
@@ -449,6 +459,9 @@ struct WebViewWrapper: NSViewRepresentable {
                     Task { @MainActor in
                         guard let self, let tab = self.tab else { return }
                         tab.isLoading = loading
+                        // Same guard as the url observer: internal pages own
+                        // the Back/Forward state while they're shown.
+                        guard tab.internalPage == nil else { return }
                         tab.canGoBack = canBack
                         tab.canGoForward = canForward
                     }

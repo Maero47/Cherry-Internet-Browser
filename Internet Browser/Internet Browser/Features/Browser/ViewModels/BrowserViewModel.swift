@@ -192,13 +192,15 @@ final class BrowserViewModel {
 
     func goBack(for tab: Tab) {
         if tab.internalPage != nil {
-            // Back out of an internal cherry:// page returns to the site that
-            // was showing. Its connection was dropped when the page opened,
-            // so the URL is reloaded; with no site to return to, fall back to
-            // the home/new-tab state.
-            if let returnURL = tab.closeInternalPage() {
-                tab.loadURL(returnURL)
-            } else {
+            // Back out of an internal cherry:// page re-shows the site that
+            // was showing: its WKWebView was kept alive the whole time, so
+            // the content slot simply re-adopts it with back/forward history,
+            // scroll position, and form state intact (no reload). If the tab
+            // was sleeping, WebViewWrapper recreates the web view and loads
+            // `tab.url` itself. With no site at all, fall back to the
+            // home/new-tab state.
+            tab.closeInternalPage()
+            if tab.url == nil {
                 goHome(for: tab)
             }
             return

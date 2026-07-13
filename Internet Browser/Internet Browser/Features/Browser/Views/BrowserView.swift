@@ -915,8 +915,9 @@ struct BrowserContentView: View {
             }
 
             // Content - show internal cherry:// page, settings, homepage, or web view.
-            // While an internal page is active the WKWebView is NOT rendered,
-            // so the background site's connection is released.
+            // While an internal page is active the WKWebView is not rendered,
+            // but the Tab keeps it alive (same as showSettingsPage always did)
+            // so Back re-adopts it with history/scroll/form state intact.
             if let page = tab.internalPage {
                 CherryPageView(page: page, viewModel: viewModel, tab: tab)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)

@@ -184,9 +184,11 @@ final class Tab: NSObject, Identifiable {
         self.url = url
         self.showHomePage = false
         self.showSettingsPage = false
-        // Loading web content always leaves any internal cherry:// page.
+        // Loading web content always leaves any internal cherry:// page; the
+        // new navigation brings its own favicon, so drop the parked one.
         self.internalPage = nil
         self.returnURL = nil
+        self.faviconBeforeInternalPage = nil
         self.isSleeping = false
         self.lastActiveDate = Date()
         webView?.load(URLRequest(url: url))
@@ -194,44 +196,54 @@ final class Tab: NSObject, Identifiable {
 
     // MARK: - Internal cherry:// Pages
 
-    /// Makes `page` this tab's location. Snapshots the current web URL into
-    /// `returnURL` (the one logical Back step) and releases the web view so
-    /// the site's connection is dropped while the internal page is shown —
-    /// the content slot stops rendering the WKWebView because
-    /// `internalPage != nil`, mirroring how the settings page already worked.
+    /// The site's tab-bar favicon, parked while an internal page is shown so
+    /// the internal page's tab doesn't wear the covered site's icon; restored
+    /// by `closeInternalPage`. Not observed — bookkeeping, not UI state.
+    @ObservationIgnored private var faviconBeforeInternalPage: NSImage?
+
+    /// Makes `page` this tab's location. The WKWebView and `url` are
+    /// deliberately KEPT (mirroring how `showSettingsPage` always worked):
+    /// the content slot merely stops rendering the web view while
+    /// `internalPage != nil`, so the site's back/forward list, scroll
+    /// position, and form state all survive, and Back re-inserts the very
+    /// same web view. `returnURL` records the covered site's URL.
     func openInternalPage(_ page: CherryPage) {
         if internalPage == nil {
             returnURL = url
+            faviconBeforeInternalPage = favicon
         }
         internalPage = page
         title = page.displayTitle
         favicon = nil
         showHomePage = false
         showSettingsPage = false
-        url = nil
-        // Release the old page like goHome does, so its audio/JS/timers stop
-        // instead of lingering invisibly behind the internal page.
-        webView?.stopLoading()
-        webView?.loadHTMLString("", baseURL: nil)
-        webView = nil
-        isLoading = false
-        loadingProgress = 0
-        // Back from an internal page is always available: it returns to
-        // `returnURL`, or to the home page when there was no site. Forward
+        // Back from an internal page is always available: it re-shows the
+        // preserved site, or the home page when there was no site. Forward
         // never re-enters internal pages (single logical back-step model).
+        // The WebViewWrapper coordinator's KVO write-backs skip these two
+        // while internalPage != nil so background activity can't clobber them.
         canGoBack = true
         canGoForward = false
         isSleeping = false
         lastActiveDate = Date()
     }
 
-    /// Leaves the internal page and returns the web URL to go back to
+    /// Leaves the internal page, restoring the tab's presentation (title,
+    /// favicon, real back/forward state) from the preserved web view. The
+    /// caller decides what to show next: `url` still holds the covered site
     /// (nil means there was no site — go to the home/new-tab state).
-    func closeInternalPage() -> URL? {
-        let target = returnURL
+    func closeInternalPage() {
         internalPage = nil
         returnURL = nil
-        return target
+        canGoBack = webView?.canGoBack ?? false
+        canGoForward = webView?.canGoForward ?? false
+        if let webTitle = webView?.title, !webTitle.isEmpty {
+            title = webTitle
+        } else if url == nil {
+            title = "New Tab"
+        }
+        favicon = faviconBeforeInternalPage
+        faviconBeforeInternalPage = nil
     }
 
     func reload() {
@@ -253,8 +265,9 @@ final class Tab: NSObject, Identifiable {
     // MARK: - Tab Sleeping
 
     func sleep() {
-        // Internal cherry:// pages have no web view to release and no URL to
-        // restore on wake — sleeping one would only corrupt its state.
+        // Tabs showing an internal cherry:// page keep their covered site's
+        // WKWebView alive so Back can restore it with history intact —
+        // sleeping would destroy exactly that preserved state.
         guard !isSleeping, !showHomePage, internalPage == nil else { return }
         sleepURL = url
         isSleeping = true

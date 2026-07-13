@@ -90,7 +90,9 @@ struct NavigationBarView: View {
             OmniboxView(
                 text: $addressText,
                 isLoading: tab.isLoading,
-                isSecure: tab.url?.scheme == "https",
+                // The covered site's URL is preserved while an internal page
+                // is shown — don't wear its https lock on a cherry:// location.
+                isSecure: tab.internalPage == nil && tab.url?.scheme == "https",
                 isPrivateMode: isPrivateMode,
                 onSubmit: { input in
                     // If a suggestion is selected via keyboard, use that instead
