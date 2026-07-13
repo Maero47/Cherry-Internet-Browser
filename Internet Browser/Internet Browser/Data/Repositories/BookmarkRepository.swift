@@ -20,6 +20,10 @@ final class BookmarkRepository {
     /// the next launch so an unreachable host can't cause a retry storm.
     private var failedFaviconHosts: Set<String> = []
     private var isFetchingMissingFavicons = false
+    /// Set when `fetchMissingFavicons` is called mid-sweep (e.g. an import
+    /// finishes while the launch sweep is in flight); the finishing sweep
+    /// kicks one more so the newly added bookmarks aren't missed.
+    private var needsAnotherFaviconSweep = false
 
     init() {
         fetchBookmarks()
@@ -143,7 +147,10 @@ final class BookmarkRepository {
     /// results are written back on the view context in a single save. A
     /// failed fetch just leaves the placeholder glyph.
     func fetchMissingFavicons() {
-        guard !isFetchingMissingFavicons else { return }
+        guard !isFetchingMissingFavicons else {
+            needsAnotherFaviconSweep = true
+            return
+        }
 
         var hostsToFetch: [String: String] = [:] // host key -> host to query
         for bookmark in bookmarks where bookmark.favicon == nil {
@@ -200,6 +207,12 @@ final class BookmarkRepository {
     private func applyFetchedFavicons(_ icons: [String: Data], requested: Set<String>) {
         isFetchingMissingFavicons = false
         failedFaviconHosts.formUnion(requested.subtracting(icons.keys))
+        defer {
+            if needsAnotherFaviconSweep {
+                needsAnotherFaviconSweep = false
+                fetchMissingFavicons()
+            }
+        }
         guard !icons.isEmpty else { return }
 
         let context = persistence.viewContext
