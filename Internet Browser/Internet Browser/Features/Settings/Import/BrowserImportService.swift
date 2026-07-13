@@ -71,6 +71,12 @@ final class BrowserImportService {
                     })
                     result.historyAdded += outcome.added
                     result.historyMerged += outcome.merged
+                case .passwords(let credentials):
+                    let outcome = PasswordRepository.shared.importCredentials(credentials.map {
+                        (url: $0.url, username: $0.username, password: $0.password)
+                    })
+                    result.passwordsAdded += outcome.added
+                    result.passwordsSkipped += outcome.skipped
                 }
             } catch {
                 let importError = ImportError.wrapping(error)
@@ -84,5 +90,51 @@ final class BrowserImportService {
         statusText = ""
         lastResult = result
         isImporting = false
+    }
+
+    // MARK: - CSV import
+
+    /// Imports passwords from a user-chosen CSV export (any browser). The file
+    /// is read and parsed off-main; the repository write happens on the main
+    /// actor. Progress via `statusText`, outcome via `lastResult`.
+    func importCSV(from fileURL: URL) async {
+        guard !isImporting else { return }
+        isImporting = true
+        lastResult = nil
+        statusText = "Reading \(fileURL.lastPathComponent)…"
+        var result = ImportResult(browserName: fileURL.lastPathComponent)
+
+        do {
+            let credentials = try await Task.detached(priority: .userInitiated) {
+                let text = try Self.readText(fileURL)
+                return PasswordCSV.credentials(from: text)
+            }.value
+
+            statusText = "Importing passwords…"
+            await Task.yield()
+            let outcome = PasswordRepository.shared.importCredentials(credentials.map {
+                (url: $0.url, username: $0.username, password: $0.password)
+            })
+            result.passwordsAdded += outcome.added
+            result.passwordsSkipped += outcome.skipped
+        } catch {
+            let importError = ImportError.wrapping(error)
+            if case .fullDiskAccessRequired = importError { result.needsFullDiskAccess = true }
+            result.errors.append("CSV: \(importError.localizedDescription)")
+        }
+
+        statusText = ""
+        lastResult = result
+        isImporting = false
+    }
+
+    /// Reads a CSV file as text, trying UTF-8 then falling back to encodings a
+    /// browser export might use (UTF-16 with BOM, ISO-Latin-1).
+    private nonisolated static func readText(_ fileURL: URL) throws -> String {
+        let data = try Data(contentsOf: fileURL)
+        for encoding: String.Encoding in [.utf8, .utf16, .isoLatin1] {
+            if let text = String(data: data, encoding: encoding) { return text }
+        }
+        throw ImportError.parseError("the CSV file is not valid text")
     }
 }
