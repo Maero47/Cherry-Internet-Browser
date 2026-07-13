@@ -91,9 +91,29 @@ enum ImportFaviconReader {
     }
 
     /// Both schemas reduce to (page_url, image blob, width) rows; keep the
-    /// widest decodable blob per page URL and per host.
+    /// widest decodable blob per page URL and per host. Validation happens
+    /// BEFORE the widest-wins reduction — a wider blob that doesn't decode
+    /// (Firefox marks SVG icons with width 65535, outranking every real PNG)
+    /// must be passed over for the next-widest decodable one, not shadow it.
     private static func readStore(databaseFile: URL, sql: String) -> ImportedFaviconStore {
         var bestByPage: [String: Candidate] = [:]
+        // Many pages (and rows) share one icon blob; remember each blob's
+        // verdict so it is only decoded once.
+        var decodable: [Data: Bool] = [:]
+        func decodes(_ data: Data) -> Bool {
+            if let known = decodable[data] { return known }
+            // Non-nil isn't enough: NSImage accepts malformed SVG and
+            // yields an empty 0x0 image, which would show as a blank icon.
+            let verdict: Bool
+            if let image = NSImage(data: data) {
+                verdict = image.size.width >= 1 && image.size.height >= 1
+            } else {
+                verdict = false
+            }
+            decodable[data] = verdict
+            return verdict
+        }
+
         do {
             let database = try ImportSQLiteDatabase(copying: databaseFile)
             defer { database.close() }
@@ -103,43 +123,22 @@ enum ImportFaviconReader {
                 let width = row.int64(2)
                 let score = width > 0 ? width : 1
                 if let current = bestByPage[pageURL], current.score >= score { return }
+                guard decodes(data) else { return }
                 bestByPage[pageURL] = Candidate(data: data, score: score)
             }
         } catch {
             return .empty
         }
 
-        var byPageURL: [String: Data] = [:]
         var hostBest: [String: Candidate] = [:]
-        // Many pages share one icon blob; remember each blob's verdict so it
-        // is only decoded once.
-        var decodable: [Data: Bool] = [:]
-
         for (pageURL, candidate) in bestByPage {
-            let decodes: Bool
-            if let known = decodable[candidate.data] {
-                decodes = known
-            } else {
-                // Non-nil isn't enough: NSImage accepts malformed SVG and
-                // yields an empty 0x0 image, which would show as a blank icon.
-                if let image = NSImage(data: candidate.data) {
-                    decodes = image.size.width >= 1 && image.size.height >= 1
-                } else {
-                    decodes = false
-                }
-                decodable[candidate.data] = decodes
-            }
-            guard decodes else { continue }
-
-            byPageURL[pageURL] = candidate.data
-            if let url = URL(string: pageURL), let host = ImportedFaviconStore.normalizedHost(url) {
-                if let current = hostBest[host], current.score >= candidate.score { continue }
-                hostBest[host] = candidate
-            }
+            guard let url = URL(string: pageURL), let host = ImportedFaviconStore.normalizedHost(url) else { continue }
+            if let current = hostBest[host], current.score >= candidate.score { continue }
+            hostBest[host] = candidate
         }
 
         return ImportedFaviconStore(
-            byPageURL: byPageURL,
+            byPageURL: bestByPage.mapValues(\.data),
             byHost: hostBest.mapValues(\.data)
         )
     }
