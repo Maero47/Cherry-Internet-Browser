@@ -6,6 +6,7 @@
 //
 
 import Foundation
+import Security
 
 // MARK: - Importable data types
 
@@ -37,12 +38,9 @@ enum ImportableDataType: String, CaseIterable, Identifiable, Sendable {
     }
 
     /// Whether the current import engine can actually import this type.
-    /// Passwords are a later phase — the case exists so the UI can show a
-    /// disabled "coming soon" row and the engine needs no structural change.
     var isSupported: Bool {
         switch self {
-        case .bookmarks, .history: true
-        case .passwords: false
+        case .bookmarks, .history, .passwords: true
         }
     }
 }
@@ -132,11 +130,22 @@ struct ImportedHistoryRow: Sendable {
     let visitCount: Int
 }
 
+/// A saved credential parsed from a source browser (decrypted Chromium
+/// `Login Data`, or a CSV export), before writing into Cherry.
+struct ImportedCredential: Sendable {
+    /// The origin/login URL string as stored by the source (kept verbatim —
+    /// Cherry's password store keys on the raw string, not a parsed URL).
+    let url: String
+    let username: String
+    let password: String
+}
+
 /// What a reader produced for one data type. New importable types add a
 /// case here (e.g. `passwords([ImportedCredential])`).
 enum ImportedPayload: Sendable {
     case bookmarks([ImportedBookmark])
     case history([ImportedHistoryRow])
+    case passwords([ImportedCredential])
 }
 
 // MARK: - Reader protocol
@@ -152,7 +161,9 @@ extension SourceBrowser {
     /// The reader that understands this browser's on-disk formats.
     var reader: BrowserDataReader {
         switch self {
-        case .chrome, .brave, .edge: ChromiumImportReader()
+        case .chrome: ChromiumImportReader(brand: .chrome)
+        case .brave: ChromiumImportReader(brand: .brave)
+        case .edge: ChromiumImportReader(brand: .edge)
         case .firefox: FirefoxImportReader()
         case .safari: SafariImportReader()
         }
@@ -168,6 +179,9 @@ enum ImportError: LocalizedError {
     case unsupportedDataType(ImportableDataType)
     case databaseError(String)
     case parseError(String)
+    /// The browser's Safe-Storage Keychain secret could not be read (user
+    /// denied/cancelled the prompt, or no such item). Carries the OSStatus.
+    case keychainAccessDenied(browser: String, status: OSStatus)
 
     var errorDescription: String? {
         switch self {
@@ -181,6 +195,15 @@ enum ImportError: LocalizedError {
             "Database error: \(message)"
         case .parseError(let message):
             "Could not parse source data: \(message)"
+        case .keychainAccessDenied(let browser, let status):
+            switch status {
+            case errSecItemNotFound:
+                "No saved-password key was found for \(browser). Open \(browser) and save a password first, or import via CSV."
+            case errSecUserCanceled:
+                "Access to \(browser)'s saved-password key was cancelled. Cherry needs Keychain permission to decrypt \(browser) passwords — try again and click Allow, or import via CSV."
+            default:
+                "macOS denied access to \(browser)'s saved-password key (Keychain status \(status)). Click Allow when prompted, or import via CSV."
+            }
         }
     }
 
@@ -212,6 +235,8 @@ struct ImportResult: Sendable {
     var bookmarksSkipped = 0
     var historyAdded = 0
     var historyMerged = 0
+    var passwordsAdded = 0
+    var passwordsSkipped = 0
     var errors: [String] = []
     var needsFullDiskAccess = false
 
@@ -225,6 +250,11 @@ struct ImportResult: Sendable {
         if historyAdded > 0 || historyMerged > 0 {
             var line = "Imported \(historyAdded.formatted()) history entr\(historyAdded == 1 ? "y" : "ies")"
             if historyMerged > 0 { line += " (\(historyMerged.formatted()) merged with existing)" }
+            lines.append(line)
+        }
+        if passwordsAdded > 0 || passwordsSkipped > 0 {
+            var line = "Imported \(passwordsAdded.formatted()) password\(passwordsAdded == 1 ? "" : "s")"
+            if passwordsSkipped > 0 { line += " (\(passwordsSkipped.formatted()) already existed)" }
             lines.append(line)
         }
         if lines.isEmpty && errors.isEmpty {
