@@ -28,6 +28,7 @@ struct NavigationBarView: View {
     var onPrint: (() -> Void)? = nil
     var onToggleReaderMode: (() -> Void)? = nil
     var showReaderMode: Bool = false
+    var onAskThisPage: (() -> Void)? = nil
     var onPictureInPicture: (() -> Void)? = nil
     var onScreenshot: (() -> Void)? = nil
     var onQRCode: (() -> Void)? = nil
@@ -421,6 +422,14 @@ struct NavigationBarView: View {
                     onDownloads?()
                 } label: {
                     Label("Downloads", systemImage: "arrow.down.circle")
+                }
+
+                Divider()
+
+                Button {
+                    onAskThisPage?()
+                } label: {
+                    Label("Ask This Page", systemImage: "sparkles")
                 }
 
                 Divider()

@@ -93,6 +93,11 @@ final class BrowserViewModel {
     // MARK: - Developer Tools
     var showDevToolsPanel: Bool = false
 
+    // MARK: - Ask This Page
+    var showAskThisPage: Bool = false
+    var askThisPageTitle: String = ""
+    var askThisPageText: String = ""
+
     // Keep strong references to detached windows and their delegates
     static var detachedWindows: [NSWindow] = []
     static var detachedWindowDelegates: [DetachedWindowDelegate] = []
@@ -1058,6 +1063,27 @@ final class BrowserViewModel {
                 self.readerContent = content
                 self.showReaderMode = true
             }
+        }
+    }
+
+    // MARK: - Ask This Page
+
+    func toggleAskThisPage() {
+        if showAskThisPage {
+            showAskThisPage = false
+            return
+        }
+        guard let webView = tabManager.focusedTab?.webView else { return }
+        let fallbackTitle = currentTab?.title ?? "This Page"
+        Task { @MainActor in
+            if let content = await PageAIService.extractPageText(from: webView) {
+                self.askThisPageTitle = content.title.isEmpty ? fallbackTitle : content.title
+                self.askThisPageText = content.text
+            } else {
+                self.askThisPageTitle = fallbackTitle
+                self.askThisPageText = ""
+            }
+            self.showAskThisPage = true
         }
     }
 

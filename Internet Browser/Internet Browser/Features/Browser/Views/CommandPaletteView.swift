@@ -258,6 +258,9 @@ struct CommandPaletteView: View {
             CommandPaletteItem(id: "action-reader", title: "Toggle Reader Mode", subtitle: "Distraction-free reading view", icon: "doc.plaintext", iconColor: .brown) {
                 viewModel.toggleReaderMode()
             },
+            CommandPaletteItem(id: "action-ask-page", title: "Ask This Page", subtitle: "Summarize or ask questions, on-device", icon: "sparkles", iconColor: .pink) {
+                viewModel.toggleAskThisPage()
+            },
             CommandPaletteItem(id: "action-settings", title: "Open Settings", subtitle: "Browser preferences", icon: "gear", iconColor: Color.secondary) {
                 viewModel.showSettings()
             },

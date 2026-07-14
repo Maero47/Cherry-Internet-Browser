@@ -74,6 +74,7 @@ struct BrowserView: View {
             .overlay(alignment: .bottom) { screenshotToastOverlay }
             .overlay { commandPaletteOverlay }
             .overlay(alignment: .trailing) { viewSourceOverlay }
+            .overlay(alignment: .trailing) { askThisPageOverlay }
             .overlay { focusBlockOverlay }
             .animation(.spring(duration: 0.3), value: viewModel.passwordManager.showSavePrompt)
             .animation(.spring(duration: 0.3), value: viewModel.showDownloadToast)
@@ -84,6 +85,7 @@ struct BrowserView: View {
             .animation(.spring(duration: 0.25), value: viewModel.showCommandPalette)
             .animation(.spring(duration: 0.25), value: viewModel.showDevToolsPanel)
             .animation(.spring(duration: 0.3), value: viewModel.showViewSource)
+            .animation(.spring(duration: 0.3), value: viewModel.showAskThisPage)
             .animation(.spring(duration: 0.25), value: viewModel.showFocusBlock)
             .onChange(of: viewModel.showQRCode) { _, newValue in
                 // When the QR popup is dismissed, the WKWebView has lost first responder
@@ -380,7 +382,8 @@ struct BrowserView: View {
             onScreenshot: { onFocusPane?(); viewModel.captureScreenshot() },
             onQRCode: { onFocusPane?(); viewModel.showQRCode = true },
             onSavePDF: { onFocusPane?(); viewModel.savePDF() },
-            onToggleFocusMode: { onFocusPane?(); viewModel.toggleFocusMode() }
+            onToggleFocusMode: { onFocusPane?(); viewModel.toggleFocusMode() },
+            onAskThisPage: { onFocusPane?(); viewModel.toggleAskThisPage() }
         )
     }
 
@@ -553,6 +556,19 @@ struct BrowserView: View {
             )
             .transition(.move(edge: .trailing).combined(with: .opacity))
             .zIndex(995)
+        }
+    }
+
+    @ViewBuilder
+    private var askThisPageOverlay: some View {
+        if viewModel.showAskThisPage {
+            AskThisPagePanel(
+                pageTitle: viewModel.askThisPageTitle,
+                pageText: viewModel.askThisPageText,
+                onDismiss: { viewModel.showAskThisPage = false }
+            )
+            .transition(.move(edge: .trailing).combined(with: .opacity))
+            .zIndex(994)
         }
     }
 
@@ -745,6 +761,8 @@ struct BrowserView: View {
                     viewModel.showCommandPalette = false
                 } else if viewModel.showViewSource {
                     viewModel.showViewSource = false
+                } else if viewModel.showAskThisPage {
+                    viewModel.showAskThisPage = false
                 } else if viewModel.showDevToolsPanel {
                     viewModel.showDevToolsPanel = false
                 } else if viewModel.showFindInPage {
@@ -765,6 +783,10 @@ struct BrowserView: View {
             // Focus Mode (Cmd+Shift+F)
             Button("") { viewModel.toggleFocusMode() }
                 .keyboardShortcut("f", modifiers: [.command, .shift])
+
+            // Ask This Page (Cmd+Shift+K)
+            Button("") { viewModel.toggleAskThisPage() }
+                .keyboardShortcut("k", modifiers: [.command, .shift])
 
             // Screenshot (Cmd+Shift+4)
             Button("") { viewModel.captureScreenshot() }
@@ -817,6 +839,7 @@ struct BrowserContentView: View {
     var onQRCode: (() -> Void)? = nil
     var onSavePDF: (() -> Void)? = nil
     var onToggleFocusMode: (() -> Void)? = nil
+    var onAskThisPage: (() -> Void)? = nil
 
     // Track URL changes to force WebViewWrapper updates
     @State private var urlVersion: Int = 0
@@ -854,6 +877,7 @@ struct BrowserContentView: View {
                     onPrint: onPrint,
                     onToggleReaderMode: onToggleReaderMode,
                     showReaderMode: viewModel.showReaderMode,
+                    onAskThisPage: onAskThisPage,
                     onPictureInPicture: onPictureInPicture,
                     onScreenshot: onScreenshot,
                     onQRCode: onQRCode,
