@@ -107,15 +107,18 @@ enum PageAIService {
         return pageText.count > qaTextCap ? String(pageText.prefix(qaTextCap)) : pageText
     }
 
-    /// Creates a fresh, page-grounded chat engine. Returns `nil` below macOS
-    /// 26 or without Foundation Models — callers treat `nil` as "chat isn't
-    /// available" without needing to know why. The returned value is
-    /// type-erased so this signature (and every other caller of it) stays
-    /// free of Foundation Models types.
-    static func makeChatEngine(pageTitle: String, grounding: String) -> AnyObject? {
+    /// Creates a fresh, page-grounded chat engine. `pageText` is kept
+    /// alongside `grounding` (which only holds a summary or capped prefix)
+    /// so each turn can retrieve the chunks most relevant to that turn's
+    /// question from the full page. Returns `nil` below macOS 26 or without
+    /// Foundation Models — callers treat `nil` as "chat isn't available"
+    /// without needing to know why. The returned value is type-erased so
+    /// this signature (and every other caller of it) stays free of
+    /// Foundation Models types.
+    static func makeChatEngine(pageTitle: String, pageText: String, grounding: String) -> AnyObject? {
         guard #available(macOS 26.0, *) else { return nil }
         #if canImport(FoundationModels)
-        return makeChatEngineOnDevice(pageTitle: pageTitle, grounding: grounding)
+        return makeChatEngineOnDevice(pageTitle: pageTitle, pageText: pageText, grounding: grounding)
         #else
         return nil
         #endif
@@ -271,8 +274,20 @@ private extension PageAIService {
         guard !pageText.isEmpty else {
             return .failure(.generationFailed("There's no readable content on this page to answer from."))
         }
-        let wasTruncated = pageText.count > qaTextCap
-        let workingText = wasTruncated ? String(pageText.prefix(qaTextCap)) : pageText
+
+        let workingText: String
+        let wasTruncated: Bool
+        if await PageRetriever.shared.index(pageText: pageText),
+           let retrieved = await PageRetriever.shared.retrieve(query: question),
+           !retrieved.isEmpty {
+            // Grounded on the most relevant sections rather than a prefix,
+            // so there's nothing "truncated" about this answer.
+            workingText = retrieved.map(\.text).joined(separator: "\n\n---\n\n")
+            wasTruncated = false
+        } else {
+            wasTruncated = pageText.count > qaTextCap
+            workingText = wasTruncated ? String(pageText.prefix(qaTextCap)) : pageText
+        }
 
         do {
             let session = LanguageModelSession(instructions: qaInstructions)
@@ -293,8 +308,9 @@ private extension PageAIService {
 
     static let chatInstructionsPrefix = """
     You are chatting with someone about a single web page, inside a browser side panel. \
-    Answer ONLY using the page content provided below — never invent facts, names, numbers, \
-    or claims that aren't present in it. If the answer isn't in the page, say so plainly \
+    Answer ONLY using the page content provided below and any additional relevant excerpts \
+    supplied alongside a question — never invent facts, names, numbers, or claims that \
+    aren't present in them. If the answer isn't in the provided content, say so plainly \
     instead of guessing. Keep replies conversational and reasonably concise, and use the \
     earlier turns of this conversation as context for follow-up questions.
     """
@@ -310,9 +326,41 @@ private extension PageAIService {
         """
     }
 
-    static func makeChatEngineOnDevice(pageTitle: String, grounding: String) -> AnyObject? {
+    /// `pageText` is the full extracted page text, kept on the engine so
+    /// `streamChatReplyOnDevice` can retrieve turn-relevant chunks from it;
+    /// `grounding` (a summary, or a capped prefix as a last resort) is baked
+    /// into the session's fixed instructions as a light whole-page anchor
+    /// that's always present, even on turns where retrieval finds nothing
+    /// or isn't available.
+    static func makeChatEngineOnDevice(pageTitle: String, pageText: String, grounding: String) -> AnyObject? {
         guard !grounding.isEmpty else { return nil }
-        return PageChatEngine(instructions: chatInstructions(pageTitle: pageTitle, grounding: grounding))
+        return PageChatEngine(
+            instructions: chatInstructions(pageTitle: pageTitle, grounding: grounding),
+            pageText: pageText
+        )
+    }
+
+    /// Builds the per-turn prompt sent to the chat session: retrieves the
+    /// chunks of `pageText` most relevant to `message` and prepends them, so
+    /// each question is grounded on the page sections that actually answer
+    /// it rather than only the fixed instructions-level summary/prefix. If
+    /// retrieval isn't usable (assets not ready, embedding failed, or the
+    /// page is too short to chunk), falls back to sending the bare message —
+    /// identical to today's behavior, relying on the engine's fixed grounding.
+    static func chatTurnPrompt(pageText: String, message: String) async -> String {
+        guard !pageText.isEmpty else { return message }
+        guard await PageRetriever.shared.index(pageText: pageText),
+              let retrieved = await PageRetriever.shared.retrieve(query: message),
+              !retrieved.isEmpty else {
+            return message
+        }
+        let context = retrieved.map(\.text).joined(separator: "\n\n---\n\n")
+        return """
+        Most relevant page excerpts for this question:
+        \(context)
+
+        Question: \(message)
+        """
     }
 
     static func streamChatReplyOnDevice(engine: AnyObject, message: String) -> AsyncThrowingStream<String, Error> {
@@ -322,7 +370,8 @@ private extension PageAIService {
         return AsyncThrowingStream { continuation in
             let task = Task {
                 do {
-                    let stream = chatEngine.session.streamResponse(to: message)
+                    let prompt = await chatTurnPrompt(pageText: chatEngine.pageText, message: message)
+                    let stream = chatEngine.session.streamResponse(to: prompt)
                     for try await partial in stream {
                         continuation.yield(partial.content)
                     }
@@ -345,9 +394,14 @@ private extension PageAIService {
 @available(macOS 26.0, *)
 private final class PageChatEngine {
     let session: LanguageModelSession
+    /// Full extracted page text, kept for per-turn retrieval — distinct from
+    /// the (usually much shorter) grounding baked into `session`'s fixed
+    /// instructions.
+    let pageText: String
 
-    init(instructions: String) {
+    init(instructions: String, pageText: String) {
         session = LanguageModelSession(instructions: instructions)
+        self.pageText = pageText
     }
 }
 

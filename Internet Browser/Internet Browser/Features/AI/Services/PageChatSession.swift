@@ -65,7 +65,7 @@ final class PageChatSession: ObservableObject {
         isResponding = false
         isBlockedByContextLimit = false
         let grounding = PageAIService.chatGroundingText(pageText: pageText, summary: groundingSummary)
-        engine = PageAIService.makeChatEngine(pageTitle: pageTitle, grounding: grounding)
+        engine = PageAIService.makeChatEngine(pageTitle: pageTitle, pageText: pageText, grounding: grounding)
     }
 
     func send(_ text: String) {
