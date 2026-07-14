@@ -92,6 +92,49 @@ enum PageAIService {
         return .failure(.notAvailable("Foundation Models isn't available in this build."))
         #endif
     }
+
+    /// Text used to ground a chat session in the page, once, at session start.
+    /// Prefers an already-generated summary (much cheaper on the token budget
+    /// than raw page text) and falls back to a capped excerpt of the page.
+    static func chatGroundingText(pageText: String, summary: PageSummaryResult?) -> String {
+        if let summary, !summary.summary.isEmpty {
+            var text = "Page summary: \(summary.summary)"
+            if !summary.keyPoints.isEmpty {
+                text += "\n\nKey points:\n" + summary.keyPoints.map { "- \($0)" }.joined(separator: "\n")
+            }
+            return text
+        }
+        return pageText.count > qaTextCap ? String(pageText.prefix(qaTextCap)) : pageText
+    }
+
+    /// Creates a fresh, page-grounded chat engine. Returns `nil` below macOS
+    /// 26 or without Foundation Models — callers treat `nil` as "chat isn't
+    /// available" without needing to know why. The returned value is
+    /// type-erased so this signature (and every other caller of it) stays
+    /// free of Foundation Models types.
+    static func makeChatEngine(pageTitle: String, grounding: String) -> AnyObject? {
+        guard #available(macOS 26.0, *) else { return nil }
+        #if canImport(FoundationModels)
+        return makeChatEngineOnDevice(pageTitle: pageTitle, grounding: grounding)
+        #else
+        return nil
+        #endif
+    }
+
+    /// Sends one user turn to an engine produced by `makeChatEngine` and
+    /// streams back the assistant's reply. Each element is the cumulative
+    /// text so far (Foundation Models streams snapshots, not deltas) so
+    /// callers can assign it straight to their bubble's text.
+    static func streamChatReply(engine: AnyObject, message: String) -> AsyncThrowingStream<String, Error> {
+        guard #available(macOS 26.0, *) else {
+            return AsyncThrowingStream { $0.finish(throwing: PageAIError.notAvailable("Ask This Page requires macOS 26 or later.")) }
+        }
+        #if canImport(FoundationModels)
+        return streamChatReplyOnDevice(engine: engine, message: message)
+        #else
+        return AsyncThrowingStream { $0.finish(throwing: PageAIError.notAvailable("Foundation Models isn't available in this build.")) }
+        #endif
+    }
 }
 
 #if canImport(FoundationModels)
@@ -246,6 +289,65 @@ private extension PageAIService {
         } catch {
             return .failure(mapGenerationError(error))
         }
+    }
+
+    static let chatInstructionsPrefix = """
+    You are chatting with someone about a single web page, inside a browser side panel. \
+    Answer ONLY using the page content provided below — never invent facts, names, numbers, \
+    or claims that aren't present in it. If the answer isn't in the page, say so plainly \
+    instead of guessing. Keep replies conversational and reasonably concise, and use the \
+    earlier turns of this conversation as context for follow-up questions.
+    """
+
+    static func chatInstructions(pageTitle: String, grounding: String) -> String {
+        """
+        \(chatInstructionsPrefix)
+
+        Page title: \(pageTitle)
+
+        Page content:
+        \(grounding)
+        """
+    }
+
+    static func makeChatEngineOnDevice(pageTitle: String, grounding: String) -> AnyObject? {
+        guard !grounding.isEmpty else { return nil }
+        return PageChatEngine(instructions: chatInstructions(pageTitle: pageTitle, grounding: grounding))
+    }
+
+    static func streamChatReplyOnDevice(engine: AnyObject, message: String) -> AsyncThrowingStream<String, Error> {
+        guard let chatEngine = engine as? PageChatEngine else {
+            return AsyncThrowingStream { $0.finish(throwing: PageAIError.generationFailed("This chat session is unavailable.")) }
+        }
+        return AsyncThrowingStream { continuation in
+            let task = Task {
+                do {
+                    let stream = chatEngine.session.streamResponse(to: message)
+                    for try await partial in stream {
+                        continuation.yield(partial.content)
+                    }
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: mapGenerationError(error))
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+}
+
+/// Wraps the one Foundation Models type a chat conversation actually needs
+/// to keep alive: a single `LanguageModelSession` whose transcript IS the
+/// multi-turn memory. Deliberately the opposite of the map-reduce summarizer
+/// above, which uses a fresh session per chunk — here reusing one session
+/// across turns is the whole point, since that's what gives the model
+/// memory of earlier turns in the conversation.
+@available(macOS 26.0, *)
+private final class PageChatEngine {
+    let session: LanguageModelSession
+
+    init(instructions: String) {
+        session = LanguageModelSession(instructions: instructions)
     }
 }
 
