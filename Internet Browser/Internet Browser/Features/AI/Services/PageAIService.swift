@@ -186,9 +186,16 @@ private extension PageAIService {
             if chunks.count == 1 {
                 condensed = chunks[0]
             } else {
-                let mapSession = LanguageModelSession(instructions: chunkSummaryInstructions)
                 var notes: [String] = []
                 for chunk in chunks {
+                    // A fresh session per chunk is deliberate: LanguageModelSession
+                    // accumulates a transcript, so reusing one session across chunks
+                    // would layer each chunk's prompt+response on top of the last,
+                    // growing cumulative context roughly linearly with chunk count
+                    // and blowing past the 4096-token window well before the
+                    // maxChunksForSummary cap — exactly the long-page case chunking
+                    // exists to handle. Each chunk must be summarized in isolation.
+                    let mapSession = LanguageModelSession(instructions: chunkSummaryInstructions)
                     let prompt = "Page title: \(pageTitle)\n\nExcerpt:\n\(chunk)"
                     let response = try await mapSession.respond(to: prompt)
                     notes.append(response.content)
