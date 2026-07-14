@@ -43,6 +43,10 @@ final class PageChatSession: ObservableObject {
         !isResponding && !isBlockedByContextLimit
     }
 
+    deinit {
+        streamTask?.cancel()
+    }
+
     /// (Re)grounds the session in a page. A no-op if the page hasn't
     /// actually changed, so callers can invoke this freely (e.g. from a
     /// SwiftUI `.task(id:)`) without resetting an in-progress conversation.
@@ -86,12 +90,18 @@ final class PageChatSession: ObservableObject {
                 for try await partial in stream {
                     self.updateTurn(id: assistantID) { $0.text = partial }
                 }
+                guard !Task.isCancelled else { return }
                 self.updateTurn(id: assistantID) { $0.isStreaming = false }
             } catch let error as PageAIError {
+                guard !Task.isCancelled else { return }
                 self.handleFailure(error, assistantID: assistantID)
             } catch {
+                guard !Task.isCancelled else { return }
                 self.handleFailure(.generationFailed(error.localizedDescription), assistantID: assistantID)
             }
+            // A cancelled task is stale — e.g. superseded by startNewChat() mid-stream.
+            // It must not clobber a newer send()'s isResponding = true.
+            guard !Task.isCancelled else { return }
             self.isResponding = false
         }
     }

@@ -244,6 +244,7 @@ struct AskThisPagePanel: View {
             }
             .buttonStyle(.plain)
             .foregroundStyle(.secondary)
+            .disabled(!chatSession.canSend)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
