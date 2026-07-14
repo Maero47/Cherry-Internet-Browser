@@ -1,0 +1,245 @@
+//
+//  PageAIService.swift
+//  Cherry Browser
+//
+//  On-device "Ask This Page" inference via Apple's Foundation Models
+//  framework. Every Foundation Models symbol is macOS-26-only, so all use of
+//  them is behind `@available(macOS 26.0, *)` / `if #available`. Callers on
+//  older OSes (or with Apple Intelligence unavailable) get a plain `.failure`
+//  with a human-readable reason instead of a crash.
+//
+
+import Foundation
+import WebKit
+#if canImport(FoundationModels)
+import FoundationModels
+#endif
+
+enum PageAIAvailability: Equatable {
+    case available
+    case unsupportedOS
+    case unavailable(reason: String)
+
+    var isAvailable: Bool { self == .available }
+}
+
+enum PageAIError: LocalizedError {
+    case notAvailable(String)
+    case contextWindowExceeded
+    case generationFailed(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .notAvailable(let reason):
+            return reason
+        case .contextWindowExceeded:
+            return "This page is too long for the on-device model to process, even in chunks."
+        case .generationFailed(let message):
+            return message
+        }
+    }
+}
+
+struct PageSummaryResult {
+    let summary: String
+    let keyPoints: [String]
+    let wasTruncated: Bool
+}
+
+struct PageAnswerResult {
+    let answer: String
+    let wasTruncated: Bool
+}
+
+/// Foundation Models entry point for the "Ask This Page" panel. Public API is
+/// plain (no FoundationModels types leak out) so callers — including the
+/// SwiftUI panel — don't need their own `@available` gating; every method
+/// checks availability at runtime and fails gracefully below macOS 26.
+@MainActor
+enum PageAIService {
+
+    static var availability: PageAIAvailability {
+        guard #available(macOS 26.0, *) else { return .unsupportedOS }
+        #if canImport(FoundationModels)
+        return currentAvailability()
+        #else
+        return .unsupportedOS
+        #endif
+    }
+
+    static func extractPageText(from webView: WKWebView) async -> ExtractedPageContent? {
+        await PageAIExtractor.extract(from: webView)
+    }
+
+    static func summarize(pageText: String, pageTitle: String) async -> Result<PageSummaryResult, PageAIError> {
+        guard #available(macOS 26.0, *) else {
+            return .failure(.notAvailable("Ask This Page requires macOS 26 or later."))
+        }
+        #if canImport(FoundationModels)
+        return await summarizeOnDevice(pageText: pageText, pageTitle: pageTitle)
+        #else
+        return .failure(.notAvailable("Foundation Models isn't available in this build."))
+        #endif
+    }
+
+    static func answer(question: String, pageText: String, pageTitle: String) async -> Result<PageAnswerResult, PageAIError> {
+        guard #available(macOS 26.0, *) else {
+            return .failure(.notAvailable("Ask This Page requires macOS 26 or later."))
+        }
+        #if canImport(FoundationModels)
+        return await answerOnDevice(question: question, pageText: pageText, pageTitle: pageTitle)
+        #else
+        return .failure(.notAvailable("Foundation Models isn't available in this build."))
+        #endif
+    }
+}
+
+#if canImport(FoundationModels)
+
+@available(macOS 26.0, *)
+@Generable
+struct GeneratedPageSummary {
+    @Guide(description: "A concise, neutral 2 to 4 sentence summary of the page's main content, in the same language as the page.")
+    let summary: String
+    @Guide(description: "3 to 6 short, concrete key points from the page — specific facts, claims, or takeaways, not generic filler.")
+    let keyPoints: [String]
+}
+
+@available(macOS 26.0, *)
+private extension PageAIService {
+
+    /// Per-chunk budget for map-reduce summarization. Comfortably under the
+    /// 4096-token window once instructions + prompt scaffolding are added
+    /// (roughly 4 chars/token for English, so ~2800 chars ≈ 700 tokens).
+    static let chunkMaxChars = 2800
+    /// At most this many chunks feed the map step for one summary. Longer
+    /// pages are deliberately truncated before chunking rather than left
+    /// unbounded, since the reduce step also has to fit in one context window.
+    static let maxChunksForSummary = 12
+    /// Q&A answers directly over raw page text (no map-reduce per the v1
+    /// scope), so it gets a smaller, deliberate truncation cap of its own.
+    static let qaTextCap = 6000
+
+    static func currentAvailability() -> PageAIAvailability {
+        switch SystemLanguageModel.default.availability {
+        case .available:
+            return .available
+        case .unavailable(.deviceNotEligible):
+            return .unavailable(reason: "This Mac doesn't support Apple Intelligence.")
+        case .unavailable(.appleIntelligenceNotEnabled):
+            return .unavailable(reason: "Turn on Apple Intelligence in System Settings to use Ask This Page.")
+        case .unavailable(.modelNotReady):
+            return .unavailable(reason: "The on-device model is still downloading. Try again in a bit.")
+        case .unavailable:
+            return .unavailable(reason: "The on-device model isn't available right now.")
+        @unknown default:
+            return .unavailable(reason: "The on-device model isn't available right now.")
+        }
+    }
+
+    static let chunkSummaryInstructions = """
+    You are condensing one excerpt from a single web page into short factual notes, as part \
+    of summarizing the whole page. Only use information present in the excerpt — never invent \
+    facts, and do not add outside knowledge. Reply with 2 to 4 sentences capturing the concrete \
+    facts, names, numbers, and claims in the excerpt. If the excerpt is boilerplate/navigation \
+    with no real content, reply exactly: "No substantive content in this excerpt."
+    """
+
+    static let finalSummaryInstructions = """
+    You write concise, neutral summaries of web pages for a browser side panel. Base the summary \
+    and key points ONLY on the supplied content — never invent facts, names, numbers, or claims \
+    that aren't present in it. If the supplied content has little real information, say so \
+    plainly in the summary instead of padding it out.
+    """
+
+    static let qaInstructions = """
+    You answer questions about a single web page's content, for a browser side panel. Answer \
+    ONLY using the page content provided in the prompt. If the answer is not present in that \
+    content, say plainly that the page doesn't contain that information — never guess or use \
+    outside knowledge. Keep answers concise and address the question directly.
+    """
+
+    static func mapGenerationError(_ error: Error) -> PageAIError {
+        if let generationError = error as? LanguageModelSession.GenerationError {
+            switch generationError {
+            case .exceededContextWindowSize:
+                return .contextWindowExceeded
+            default:
+                return .generationFailed(generationError.localizedDescription)
+            }
+        }
+        return .generationFailed(error.localizedDescription)
+    }
+
+    static func summarizeOnDevice(pageText: String, pageTitle: String) async -> Result<PageSummaryResult, PageAIError> {
+        let cap = chunkMaxChars * maxChunksForSummary
+        let wasTruncated = pageText.count > cap
+        let workingText = wasTruncated ? String(pageText.prefix(cap)) : pageText
+        let chunks = TextChunker.chunk(workingText, maxChars: chunkMaxChars)
+
+        guard !chunks.isEmpty else {
+            return .failure(.generationFailed("There's no readable content on this page to summarize."))
+        }
+
+        do {
+            let condensed: String
+            if chunks.count == 1 {
+                condensed = chunks[0]
+            } else {
+                let mapSession = LanguageModelSession(instructions: chunkSummaryInstructions)
+                var notes: [String] = []
+                for chunk in chunks {
+                    let prompt = "Page title: \(pageTitle)\n\nExcerpt:\n\(chunk)"
+                    let response = try await mapSession.respond(to: prompt)
+                    notes.append(response.content)
+                }
+                condensed = notes.enumerated()
+                    .map { "Excerpt \($0.offset + 1) notes: \($0.element)" }
+                    .joined(separator: "\n\n")
+            }
+
+            let reduceSession = LanguageModelSession(instructions: finalSummaryInstructions)
+            let reducePrompt = """
+            Page title: \(pageTitle)
+
+            Content to summarize (raw page text, or condensed notes from a longer page):
+
+            \(condensed)
+            """
+            let result = try await reduceSession.respond(to: reducePrompt, generating: GeneratedPageSummary.self)
+            return .success(PageSummaryResult(
+                summary: result.content.summary,
+                keyPoints: result.content.keyPoints,
+                wasTruncated: wasTruncated
+            ))
+        } catch {
+            return .failure(mapGenerationError(error))
+        }
+    }
+
+    static func answerOnDevice(question: String, pageText: String, pageTitle: String) async -> Result<PageAnswerResult, PageAIError> {
+        guard !pageText.isEmpty else {
+            return .failure(.generationFailed("There's no readable content on this page to answer from."))
+        }
+        let wasTruncated = pageText.count > qaTextCap
+        let workingText = wasTruncated ? String(pageText.prefix(qaTextCap)) : pageText
+
+        do {
+            let session = LanguageModelSession(instructions: qaInstructions)
+            let prompt = """
+            Page title: \(pageTitle)
+
+            Page content:
+            \(workingText)
+
+            Question: \(question)
+            """
+            let response = try await session.respond(to: prompt)
+            return .success(PageAnswerResult(answer: response.content, wasTruncated: wasTruncated))
+        } catch {
+            return .failure(mapGenerationError(error))
+        }
+    }
+}
+
+#endif
