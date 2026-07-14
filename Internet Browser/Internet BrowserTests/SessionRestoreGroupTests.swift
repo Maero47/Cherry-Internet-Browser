@@ -4,7 +4,7 @@
 //
 
 import XCTest
-@testable import Internet_Browser
+@testable import Cherry
 
 final class SessionRestoreGroupTests: XCTestCase {
 
