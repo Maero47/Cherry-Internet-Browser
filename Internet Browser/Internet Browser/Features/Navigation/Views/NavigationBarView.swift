@@ -317,6 +317,19 @@ struct NavigationBarView: View {
     @ViewBuilder
     private var actionButtons: some View {
         HStack(spacing: 2) {
+            // Ask This Page (on-device AI) — quick access, first action icon right
+            // by the search bar, immediately left of Home. Only on a real web page.
+            if let onAskThisPage,
+               tab.url != nil, tab.internalPage == nil, !tab.showHomePage {
+                Button(action: onAskThisPage) {
+                    Image(systemName: "sparkles")
+                        .font(.system(size: AppConstants.UI.toolbarIconSize, weight: .medium))
+                        .foregroundStyle(SettingsManager.shared.accentColor)
+                }
+                .buttonStyle(ToolbarButtonStyle())
+                .help("Ask This Page (Cmd+Shift+K)")
+            }
+
             // Home button
             Button(action: onHome) {
                 Image(systemName: "house")
