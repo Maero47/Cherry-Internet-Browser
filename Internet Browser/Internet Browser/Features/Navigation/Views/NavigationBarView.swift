@@ -325,6 +325,18 @@ struct NavigationBarView: View {
             .buttonStyle(ToolbarButtonStyle())
             .help("Go Home")
 
+            // Ask This Page (on-device AI) — quick access, only on a real web page
+            if let onAskThisPage,
+               tab.url != nil, tab.internalPage == nil, !tab.showHomePage {
+                Button(action: onAskThisPage) {
+                    Image(systemName: "sparkles")
+                        .font(.system(size: AppConstants.UI.toolbarIconSize, weight: .medium))
+                        .foregroundStyle(SettingsManager.shared.accentColor)
+                }
+                .buttonStyle(ToolbarButtonStyle())
+                .help("Ask This Page (Cmd+Shift+K)")
+            }
+
             // Bookmark button
             if let onBookmark = onBookmark {
                 Button(action: onBookmark) {

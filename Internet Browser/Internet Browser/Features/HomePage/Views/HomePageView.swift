@@ -104,12 +104,6 @@ struct HomePageView: View {
     private var timeHeader: some View {
         TimelineView(.periodic(from: .now, by: 60)) { context in
             VStack(spacing: 10) {
-                Image(SettingsManager.shared.homepageLogoImageName)
-                    .resizable()
-                    .scaledToFit()
-                    .frame(width: 154, height: 44)
-                    .accessibilityHidden(true)
-
                 Text(context.date, format: .dateTime.hour().minute())
                     .font(.system(size: 68, weight: .light, design: .rounded))
                     .tracking(-2)
