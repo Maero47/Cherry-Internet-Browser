@@ -52,8 +52,29 @@ final class TabsResearchSession: ObservableObject {
     /// "Refresh tabs" action): re-gathering is cheap when nothing changed,
     /// since `TabsResearchService.buildIndex` skips re-embedding an unchanged
     /// snapshot.
+    /// Coalesces concurrent gathers onto a single in-flight task. The panel's
+    /// automatic re-gather (on tab open/close) and a manual "New Chat"/"Try Again"
+    /// tap can race; without this the manual caller's `await` would return
+    /// immediately (old `guard !isPreparing` no-op) and then act on stale
+    /// pre-refresh state. Now every caller awaits the SAME gather and sees its
+    /// result before proceeding.
+    private var prepareTask: Task<Void, Never>?
+
     func prepare(tabManager: TabManager) async {
-        guard !isPreparing else { return }
+        if let task = prepareTask {
+            await task.value
+            return
+        }
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.performPrepare(tabManager: tabManager)
+        }
+        prepareTask = task
+        await task.value
+        prepareTask = nil
+    }
+
+    private func performPrepare(tabManager: TabManager) async {
         isPreparing = true
         defer {
             isPreparing = false

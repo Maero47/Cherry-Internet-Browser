@@ -74,7 +74,9 @@ struct AskThisPagePanel: View {
     /// current open-tab ID set, so opening/closing a tab retriggers the gather.
     private var allTabsGatherKey: String {
         guard mode == .allTabs else { return "" }
-        return tabManager.tabs.map { $0.id.uuidString }.joined(separator: ",")
+        // Sorted so it's a stable set key: reordering tabs (same set) must not
+        // retrigger a re-gather, only opening/closing a tab should.
+        return tabManager.tabs.map { $0.id.uuidString }.sorted().joined(separator: ",")
     }
 
     private var modePicker: some View {
@@ -406,9 +408,13 @@ struct AskThisPagePanel: View {
 
     private var researchContent: some View {
         VStack(spacing: 0) {
-            if !researchSession.hasPrepared || researchSession.isPreparing {
+            // Full-screen "reading tabs" only on the FIRST gather (no conversation
+            // yet). A background re-gather triggered by opening/closing a tab must
+            // NOT hide an existing conversation/streaming answer — the toolbar shows
+            // a subtle "refreshing" hint instead (see researchToolbar).
+            if researchSession.turns.isEmpty && (!researchSession.hasPrepared || researchSession.isPreparing) {
                 researchPreparingView
-            } else if !researchSession.canSend && researchSession.turns.isEmpty {
+            } else if !researchSession.canSend && researchSession.turns.isEmpty && !researchSession.isPreparing {
                 researchUnavailableView
             } else {
                 if !researchSession.turns.isEmpty {
@@ -481,6 +487,13 @@ struct AskThisPagePanel: View {
             Text(researchStatusLine)
                 .font(.system(size: 10.5))
                 .foregroundStyle(.secondary)
+            if researchSession.isPreparing {
+                // Background re-gather (a tab opened/closed) while a conversation
+                // is on screen — subtle hint instead of hiding the conversation.
+                ProgressView()
+                    .controlSize(.small)
+                    .scaleEffect(0.7)
+            }
             Spacer()
             Button {
                 Task {
