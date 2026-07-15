@@ -104,7 +104,7 @@ enum PageAIService {
             }
             return text
         }
-        return pageText.count > qaTextCap ? String(pageText.prefix(qaTextCap)) : pageText
+        return pageText.count > chatGroundingCap ? String(pageText.prefix(chatGroundingCap)) : pageText
     }
 
     /// Creates a fresh, page-grounded chat engine. `pageText` is kept
@@ -168,6 +168,15 @@ private extension PageAIService {
     /// Q&A answers directly over raw page text (no map-reduce per the v1
     /// scope), so it gets a smaller, deliberate truncation cap of its own.
     static let qaTextCap = 6000
+
+    /// The chat session's page grounding is baked ONCE into the persistent
+    /// session instructions, so it must stay small: per-turn RAG retrieval
+    /// (`chatRetrievalTopK` chunks) already supplies the relevant page content
+    /// for each question, and a large baked-in prefix would permanently eat the
+    /// 4096-token window — big/dense pages (e.g. GitHub) could then overflow on
+    /// even a one-word message, which conversation trimming can't recover. This
+    /// small cap is just a broad-question fallback; retrieval does the rest.
+    static let chatGroundingCap = 1500
 
     static func currentAvailability() -> PageAIAvailability {
         switch SystemLanguageModel.default.availability {
