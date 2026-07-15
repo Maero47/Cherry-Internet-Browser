@@ -58,10 +58,23 @@ struct AskThisPagePanel: View {
             guard availability.isAvailable, !pageText.isEmpty else { return }
             chatSession.configure(pageTitle: pageTitle, pageText: pageText, summary: nil)
         }
-        .task(id: mode) {
-            guard mode == .allTabs, availability.isAvailable, !researchSession.hasPrepared else { return }
+        // Re-gather whenever All Tabs mode is active AND the set of open tabs
+        // changes (a tab opened/closed), so the research index and the tab-count
+        // status stay live instead of frozen on the first snapshot. Keyed on the
+        // tab-ID set: switching INTO All Tabs, or opening/closing a tab while in
+        // it, both change the key and re-run prepare (a no-op when the content
+        // snapshot is unchanged, since buildIndex caches by content equality).
+        .task(id: allTabsGatherKey) {
+            guard mode == .allTabs, availability.isAvailable else { return }
             await researchSession.prepare(tabManager: tabManager)
         }
+    }
+
+    /// Empty outside All Tabs mode (so the gather task stays idle); otherwise the
+    /// current open-tab ID set, so opening/closing a tab retriggers the gather.
+    private var allTabsGatherKey: String {
+        guard mode == .allTabs else { return "" }
+        return tabManager.tabs.map { $0.id.uuidString }.joined(separator: ",")
     }
 
     private var modePicker: some View {
