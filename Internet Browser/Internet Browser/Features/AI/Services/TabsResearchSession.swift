@@ -26,6 +26,14 @@ final class TabsResearchSession: ObservableObject {
     @Published private(set) var includedTabCount = 0
     @Published private(set) var skippedTabCount = 0
 
+    /// Owned exclusively by this session — NOT `TabsResearchService.shared`
+    /// (there is no such singleton). Each window has its own
+    /// `TabsResearchSession`/`TabManager`, so each gets its own retriever
+    /// instance: sharing one process-wide actor across windows would let a
+    /// concurrent `buildIndex` from another window's session overwrite this
+    /// session's cached chunks/embeddings mid-flight, answering this
+    /// window's question with another window's tabs.
+    private let retriever = TabsResearchService()
     private var engine: AnyObject?
     private var isIndexed = false
     private var streamTask: Task<Void, Never>?
@@ -82,7 +90,7 @@ final class TabsResearchSession: ObservableObject {
             return
         }
 
-        guard await TabsResearchService.shared.buildIndex(tabs: inputs) else {
+        guard await retriever.buildIndex(tabs: inputs) else {
             includedTabCount = 0
             isIndexed = false
             return
@@ -134,7 +142,7 @@ final class TabsResearchSession: ObservableObject {
             return
         }
 
-        guard let retrieved = await TabsResearchService.shared.retrieve(query: message), !retrieved.isEmpty else {
+        guard let retrieved = await retriever.retrieve(query: message), !retrieved.isEmpty else {
             removeTurn(id: assistantID)
             turns.append(PageChatTurn(role: .error, text: "Couldn't find anything relevant to that question in the open tabs."))
             return

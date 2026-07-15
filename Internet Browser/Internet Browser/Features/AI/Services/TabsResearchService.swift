@@ -50,11 +50,17 @@ struct ResearchChunk: Equatable {
 /// (chunks + embeddings, tagged per source) is cached by exact tab-snapshot
 /// match so follow-up questions in the same session don't re-embed.
 ///
+/// Deliberately NOT a shared singleton: the app is multi-window, and each
+/// window has its own `TabManager`/`TabsResearchSession` with its own set of
+/// open tabs. A single process-wide instance would let one window's
+/// `buildIndex` overwrite another window's cached chunks/embeddings mid-flight
+/// (this actor is reentrant across the `await embedAll` suspension in
+/// `buildIndex`/`retrieve`), so `TabsResearchSession` owns its own instance
+/// instead — no two windows ever share state, so the race can't happen.
+///
 /// A plain (non-`MainActor`) actor, same rationale as `PageRetriever`: the
 /// embedding work is real CPU inference and must never block the main thread.
 actor TabsResearchService {
-    static let shared = TabsResearchService()
-
     /// Same per-chunk budget as `PageRetriever`, since the same embedder
     /// (`NLContextualEmbedding`, 256-token-per-request limit) does the work
     /// regardless of how many sources feed the index.
@@ -68,8 +74,6 @@ actor TabsResearchService {
     private var indexedTabs: [ResearchTabInput] = []
     private var chunks: [ResearchChunk] = []
     private var chunkEmbeddings: [[Float]] = []
-
-    private init() {}
 
     /// (Re)builds the multi-tab index from `tabs` if this snapshot differs
     /// from the currently cached one. Returns `false` — leaving any
