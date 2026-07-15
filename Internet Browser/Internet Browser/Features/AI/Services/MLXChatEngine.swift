@@ -57,8 +57,10 @@ actor MLXModelLoader {
 /// Turns a stream of token DELTAS (what MLX's `ChatSession` yields) into the
 /// cumulative snapshots every `LLMChatEngine` must produce. Pulled out as its
 /// own tiny value type so the accumulation logic is unit-testable without a
-/// model.
-struct MLXStreamAccumulator {
+/// model. `nonisolated` because it's driven entirely inside the engine's
+/// non-`MainActor` streaming `Task` — the module's default-MainActor isolation
+/// would otherwise pin it to the main actor and warn on every `append`.
+nonisolated struct MLXStreamAccumulator {
     private(set) var text: String = ""
 
     mutating func append(_ delta: String) -> String {

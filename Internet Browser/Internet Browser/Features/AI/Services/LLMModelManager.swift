@@ -18,17 +18,25 @@ import Hub
 /// WKDownload-based `DownloadManager`. Download only ever starts when the
 /// user explicitly requests it from Settings; a multi-gigabyte model is
 /// never fetched silently.
+///
+/// `@MainActor`-isolated: every mutable property here (`isDownloading`,
+/// `downloadFraction`, `totalBytes`, …) is read by SwiftUI on the main actor
+/// while `download()`'s background work reports progress, so all state must be
+/// mutated on the main actor to avoid a data race. The download's actual
+/// network/disk work happens inside `Hub` (off the main actor); only the
+/// `@Observable` state updates hop back here.
+@MainActor
 @Observable
 final class LLMModelManager {
     static let shared = LLMModelManager()
 
-    static let modelID = "mlx-community/Qwen3-8B-4bit"
+    nonisolated static let modelID = "mlx-community/Qwen3-8B-4bit"
 
     /// Whether the MLX package is linked into this build at all — independent
     /// of whether the model weights have been downloaded yet. `PageAIService`
     /// uses this to distinguish "Qwen isn't available in this build" from
     /// "Qwen is available but the model hasn't been downloaded yet".
-    static var isMLXImportable: Bool {
+    nonisolated static var isMLXImportable: Bool {
         #if canImport(MLXLLM)
         true
         #else
@@ -47,7 +55,7 @@ final class LLMModelManager {
 
     private var downloadTask: Task<Void, Never>?
 
-    static var modelsDirectory: URL {
+    nonisolated static var modelsDirectory: URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
             .appendingPathComponent("CherryModels", isDirectory: true)
     }
@@ -69,7 +77,7 @@ final class LLMModelManager {
     /// Pure logic (no I/O): does this set of filenames look like a complete,
     /// loadable model snapshot? Split out so it's unit-testable without
     /// touching the filesystem or network.
-    static func directoryLooksComplete(filenames: [String]) -> Bool {
+    nonisolated static func directoryLooksComplete(filenames: [String]) -> Bool {
         filenames.contains(where: { $0.hasSuffix(".safetensors") })
             && filenames.contains("config.json")
     }
@@ -162,14 +170,14 @@ final class LLMModelManager {
 
     /// Pure formatting logic, static + parameterized so it's unit-testable
     /// without a live `LLMModelManager` instance.
-    static func formatSpeed(bytesPerSecond: Int64?) -> String? {
+    nonisolated static func formatSpeed(bytesPerSecond: Int64?) -> String? {
         guard let bps = bytesPerSecond, bps > 0 else { return nil }
         let formatter = ByteCountFormatter()
         formatter.countStyle = .file
         return "\(formatter.string(fromByteCount: bps))/s"
     }
 
-    static func formatETA(seconds: TimeInterval?) -> String? {
+    nonisolated static func formatETA(seconds: TimeInterval?) -> String? {
         guard let eta = seconds, eta.isFinite, eta > 0 else { return nil }
         let totalSeconds = Int(eta)
         if totalSeconds < 60 {
@@ -186,9 +194,9 @@ final class LLMModelManager {
     }
 
     #if canImport(MLXLLM)
-    static let hubApi: HubApi = HubApi(downloadBase: modelsDirectory)
+    nonisolated static let hubApi: HubApi = HubApi(downloadBase: modelsDirectory)
 
-    static func weightsExistOnDisk() -> Bool {
+    nonisolated static func weightsExistOnDisk() -> Bool {
         let repo = Hub.Repo(id: modelID)
         let dir = hubApi.localRepoLocation(repo)
         guard let contents = try? FileManager.default.contentsOfDirectory(atPath: dir.path) else {

@@ -153,23 +153,23 @@ enum PageAIService {
     /// text so far (Foundation Models streams snapshots, not deltas) so
     /// callers can assign it straight to their bubble's text.
     static func streamChatReply(engine: AnyObject, message: String) -> AsyncThrowingStream<String, Error> {
-        switch SettingsManager.shared.aiEngine {
-        case .apple:
-            guard #available(macOS 26.0, *) else {
-                return AsyncThrowingStream { $0.finish(throwing: PageAIError.notAvailable("Ask This Page requires macOS 26 or later.")) }
-            }
-            #if canImport(FoundationModels)
+        // Route by the engine's CONCRETE type, not the current setting: an open
+        // chat must keep streaming on the engine it was built with even if the
+        // user flips the AI-engine setting mid-conversation. The switch takes
+        // effect on the next new chat (a fresh `makeChatEngine` call reads the
+        // new setting); routing on the live setting here would leave the cached
+        // engine failing every cast and dead-ending the conversation.
+        #if canImport(FoundationModels)
+        if #available(macOS 26.0, *), engine is PageChatEngine {
             return streamChatReplyOnDevice(engine: engine, message: message)
-            #else
-            return AsyncThrowingStream { $0.finish(throwing: PageAIError.notAvailable("Foundation Models isn't available in this build.")) }
-            #endif
-        case .qwen:
-            #if canImport(MLXLLM)
-            return streamChatReplyMLX(engine: engine, message: message)
-            #else
-            return AsyncThrowingStream { $0.finish(throwing: PageAIError.notAvailable("The local Qwen engine isn't available in this build.")) }
-            #endif
         }
+        #endif
+        #if canImport(MLXLLM)
+        if engine is MLXChatEngine {
+            return streamChatReplyMLX(engine: engine, message: message)
+        }
+        #endif
+        return AsyncThrowingStream { $0.finish(throwing: PageAIError.generationFailed("This chat session is unavailable.")) }
     }
 
     /// Creates a fresh engine for the "All Tabs" research chat — a session
@@ -205,23 +205,20 @@ enum PageAIService {
     /// assistant's cumulative reply. Mirrors `streamChatReply`'s streaming
     /// shape exactly.
     static func streamResearchReply(engine: AnyObject, question: String, chunks: [ResearchChunk]) -> AsyncThrowingStream<String, Error> {
-        switch SettingsManager.shared.aiEngine {
-        case .apple:
-            guard #available(macOS 26.0, *) else {
-                return AsyncThrowingStream { $0.finish(throwing: PageAIError.notAvailable("Ask This Page requires macOS 26 or later.")) }
-            }
-            #if canImport(FoundationModels)
+        // Route by concrete engine type, not the live setting — same rationale
+        // as `streamChatReply`: an open research chat keeps its engine even if
+        // the setting is switched mid-conversation.
+        #if canImport(FoundationModels)
+        if #available(macOS 26.0, *), engine is ResearchChatEngine {
             return streamResearchReplyOnDevice(engine: engine, question: question, chunks: chunks)
-            #else
-            return AsyncThrowingStream { $0.finish(throwing: PageAIError.notAvailable("Foundation Models isn't available in this build.")) }
-            #endif
-        case .qwen:
-            #if canImport(MLXLLM)
-            return streamResearchReplyMLX(engine: engine, question: question, chunks: chunks)
-            #else
-            return AsyncThrowingStream { $0.finish(throwing: PageAIError.notAvailable("The local Qwen engine isn't available in this build.")) }
-            #endif
         }
+        #endif
+        #if canImport(MLXLLM)
+        if engine is MLXChatEngine {
+            return streamResearchReplyMLX(engine: engine, question: question, chunks: chunks)
+        }
+        #endif
+        return AsyncThrowingStream { $0.finish(throwing: PageAIError.generationFailed("This research session is unavailable.")) }
     }
 }
 
