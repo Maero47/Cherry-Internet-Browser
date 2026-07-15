@@ -10,12 +10,26 @@ import SwiftUI
 /// tabs, and (when the tab selection is empty) a general ungrounded chat
 /// with the current engine. Mirrors `ViewSourcePanel`'s shape (fixed-width
 /// trailing panel with a header bar + dismiss button) since it's the closest
-/// existing precedent for a panel driven by pre-fetched page content.
+/// existing precedent for a panel driven by pre-fetched page content — but
+/// unlike that panel, the page snapshot here is LIVE: while open, single-page
+/// mode follows navigations and tab switches, and research mode re-gathers a
+/// selected tab whose content changed (see the follow/refresh tasks in body).
 struct AskThisPagePanel: View {
-    let pageTitle: String
-    let pageText: String
     let tabManager: TabManager
     let onDismiss: () -> Void
+
+    /// LIVE snapshot of the page the single-page chat is grounded on. Seeded
+    /// from the extraction done when the panel opened, then re-extracted while
+    /// the panel is open so the chat follows the live page: when the active
+    /// tab finishes a navigation and when the user switches browser tabs (see
+    /// the `pageFollowKey` task). Only refreshed while the selection is
+    /// single-page-shaped — research and general chat don't ground on it.
+    @State private var pageTitle: String
+    @State private var pageText: String
+    /// The tab `pageTitle`/`pageText` were extracted from. Compared against
+    /// `activeTabID` so the configure task can hold off grounding the chat on
+    /// a stale snapshot while a tab switch's re-extraction is still in flight.
+    @State private var snapshotTabID: UUID?
 
     @StateObject private var chatSession = PageChatSession()
     @StateObject private var researchSession = TabsResearchSession()
@@ -33,18 +47,22 @@ struct AskThisPagePanel: View {
     /// over exactly this set. EMPTY is a valid state: it means general chat —
     /// a direct, ungrounded conversation with the current engine.
     @State private var selectedTabIDs: Set<UUID>
-    /// The tab whose `pageTitle`/`pageText` snapshot was passed in when the
-    /// panel opened. `@State` (captured once) rather than recomputed: the
-    /// snapshot doesn't follow later tab switches, so neither should this.
+    /// The focused browser tab. Kept in sync with `tabManager.selectedTabID`
+    /// while the panel is open (see the `onChange` in `body`), so the header
+    /// title, the active chip, and single-page routing follow tab switches.
     @State private var activeTabID: UUID?
+    /// Bumped when a selected research tab finishes navigating — its indexed
+    /// content is stale; the task keyed on this triggers a re-gather.
+    @State private var researchRefreshCount = 0
 
     init(pageTitle: String, pageText: String, tabManager: TabManager, onDismiss: @escaping () -> Void) {
-        self.pageTitle = pageTitle
-        self.pageText = pageText
+        _pageTitle = State(initialValue: pageTitle)
+        _pageText = State(initialValue: pageText)
         self.tabManager = tabManager
         self.onDismiss = onDismiss
         let active = tabManager.selectedTabID
         _activeTabID = State(initialValue: active)
+        _snapshotTabID = State(initialValue: active)
         // An active tab with no readable content (blank/new tab, home page)
         // can't ground a chat — start with an EMPTY selection, i.e. general
         // chat, instead of a dead "no readable content" state.
@@ -102,7 +120,11 @@ struct AskThisPagePanel: View {
                 TabSelectorBar(
                     tabManager: tabManager,
                     activeTabID: activeTabID,
-                    activePageTitle: pageTitle,
+                    // A snapshot from a different tab (possible in research
+                    // mode, where switches move activeTabID but nothing
+                    // re-extracts) must not label the new active tab's chip —
+                    // empty falls back to the tab's own live title.
+                    activePageTitle: isSnapshotCurrent ? pageTitle : "",
                     selectedTabIDs: $selectedTabIDs
                 )
                 Divider()
@@ -133,11 +155,60 @@ struct AskThisPagePanel: View {
         // general → research → general keeps the general chat).
         .task(id: chatConfigureKey) {
             guard availability.isAvailable else { return }
+            // A single-page-shaped selection whose snapshot is still being
+            // re-extracted (the tab just switched) must not configure on the
+            // OLD tab's text — the follow task below is refreshing it, and
+            // `snapshotTabID` landing re-fires this key with the right text.
+            guard !isSinglePageSelection || isSnapshotCurrent else { return }
             if isGeneralChat {
                 chatSession.configureGeneral()
             } else if isSinglePageSelection {
                 chatSession.configure(pageTitle: pageTitle, pageText: pageText, summary: nil)
             }
+        }
+        // Follow the live page in single-page mode: re-fires when the active
+        // tab or its loading state changes — i.e. on browser tab switches and
+        // when a navigation finishes (`isLoading` true→false, set by
+        // `didFinish`/`didFail`). An in-flight load is waited out (the key
+        // re-fires once it settles); an unchanged page extracts to identical
+        // text, so the configure task above no-ops and a live conversation
+        // (or in-progress stream) is never reset without a real page change.
+        // Nil — task idle — in research and general mode, so a curated
+        // selection or an ungrounded chat is never touched by navigations.
+        .task(id: pageFollowKey) {
+            guard let key = pageFollowKey, !key.isLoading else { return }
+            await refreshSnapshot(for: key.tabID)
+        }
+        // Keep `activeTabID` tracking the focused browser tab. When the
+        // selection is just the active tab (single-page mode — the default),
+        // the selection FOLLOWS the switch, which re-keys the follow task
+        // above into re-extracting. A curated research selection or an empty
+        // (general-chat) selection is never hijacked — only the notion of
+        // which tab is "active" moves with the user.
+        .onChange(of: tabManager.selectedTabID) { _, newID in
+            let wasFollowing = isSinglePageSelection
+            activeTabID = newID
+            if wasFollowing {
+                if let newID {
+                    selectedTabIDs = [newID]
+                } else {
+                    selectedTabIDs = []
+                }
+            }
+        }
+        // Research mode: a SELECTED tab finishing a navigation means its
+        // indexed content is stale — trigger a re-gather. `buildIndex` caches
+        // by content equality, so selected tabs that didn't actually change
+        // re-index for free.
+        .onChange(of: selectedTabsLoadingFingerprint) { old, new in
+            guard isResearchSelection,
+                  new.contains(where: { id, isLoading in !isLoading && old[id] == true })
+            else { return }
+            researchRefreshCount += 1
+        }
+        .task(id: researchRefreshCount) {
+            guard researchRefreshCount > 0, isResearchSelection, availability.isAvailable else { return }
+            await researchSession.prepare(tabManager: tabManager, includeTabIDs: selectedTabIDs)
         }
         // Re-gather whenever a research-shaped selection is active and the
         // selected set changes, so the index always covers exactly the chosen
@@ -169,14 +240,76 @@ struct AskThisPagePanel: View {
         let isAvailable: Bool
         let mode: Mode
         let pageText: String
+        /// Whether the snapshot belongs to the current active tab. In the key
+        /// so a re-extraction landing with `snapshotTabID` finally matching
+        /// re-fires the configure task even if the mode token didn't move.
+        let isSnapshotCurrent: Bool
     }
 
     private var chatConfigureKey: ChatConfigureKey {
         ChatConfigureKey(
             isAvailable: availability.isAvailable,
             mode: isGeneralChat ? .general : (isSinglePageSelection ? .page : .research),
-            pageText: pageText
+            pageText: pageText,
+            isSnapshotCurrent: isSnapshotCurrent
         )
+    }
+
+    /// Whether `pageTitle`/`pageText` were extracted from the tab that is
+    /// active right now. False only in the window between a tab switch and
+    /// the follow task's re-extraction landing (or indefinitely in research/
+    /// general mode, where the snapshot deliberately isn't maintained).
+    private var isSnapshotCurrent: Bool {
+        snapshotTabID == activeTabID
+    }
+
+    /// Identity for the single-page follow task: non-nil only while the
+    /// selection is exactly the active tab, carrying that tab's identity and
+    /// live loading state so tab switches and navigation-finish events each
+    /// re-key the task. Discrete events only — nothing here changes
+    /// per-frame, so this can't spin a re-extract loop.
+    private struct PageFollowKey: Equatable {
+        let tabID: UUID
+        let isLoading: Bool
+    }
+
+    private var pageFollowKey: PageFollowKey? {
+        guard isSinglePageSelection, let id = activeTabID,
+              let tab = tabManager.tabs.first(where: { $0.id == id }) else { return nil }
+        return PageFollowKey(tabID: id, isLoading: tab.isLoading)
+    }
+
+    /// `isLoading` per SELECTED tab — the research-mode staleness signal.
+    /// Reading each tab's observable loading state here (during body
+    /// evaluation) is what lets the `onChange` above see navigation-finish
+    /// flips for tabs in the curated selection.
+    private var selectedTabsLoadingFingerprint: [UUID: Bool] {
+        tabManager.tabs.reduce(into: [:]) { states, tab in
+            if selectedTabIDs.contains(tab.id) { states[tab.id] = tab.isLoading }
+        }
+    }
+
+    /// Re-extracts the live snapshot from `tabID`, mirroring the open-time
+    /// extraction in `BrowserViewModel.toggleAskThisPage`. A tab with nothing
+    /// extractable (home page, internal cherry:// page — whose webView holds
+    /// the COVERED site, not what's on screen — sleeping, or extraction
+    /// failing) produces an empty snapshot, which routes to general chat
+    /// exactly like opening the panel there would.
+    private func refreshSnapshot(for tabID: UUID) async {
+        guard let tab = tabManager.tabs.first(where: { $0.id == tabID }) else { return }
+        var title = tab.displayTitle
+        var text = ""
+        if tab.internalPage == nil, !tab.showHomePage, let webView = tab.webView,
+           let content = await PageAIService.extractPageText(from: webView) {
+            if !content.title.isEmpty { title = content.title }
+            text = content.text
+        }
+        // The follow task was re-keyed (another switch or navigation) while
+        // this extraction was in flight — the newer run owns the snapshot.
+        guard !Task.isCancelled else { return }
+        pageTitle = title
+        pageText = text
+        snapshotTabID = tabID
     }
 
     /// Empty for the single-page and general-chat selections (so the gather
@@ -989,9 +1122,10 @@ struct AskThisPagePanel: View {
 private struct TabSelectorBar: View {
     let tabManager: TabManager
     let activeTabID: UUID?
-    /// Title of the page snapshot the panel opened with — used for the active
-    /// tab's chip so it reads as "the current page" even if the tab's live
-    /// title has since changed.
+    /// Title of the panel's page snapshot, when it belongs to the active tab
+    /// — used for that tab's chip so it reads as "the current page" the chat
+    /// is grounded on. Empty when the snapshot is from another tab (the chip
+    /// then falls back to the tab's own live title).
     let activePageTitle: String
     @Binding var selectedTabIDs: Set<UUID>
 
