@@ -22,47 +22,63 @@ struct PageAIExtractor {
         var ogTitle = document.querySelector('meta[property="og:title"]');
         title = ogTitle ? ogTitle.content : document.title;
 
-        var candidates = document.querySelectorAll('article, [role="main"], .post-content, .article-body, .entry-content, .story-body, main');
-        var best = candidates.length > 0 ? candidates[0] : null;
+        var MIN = 200;
+        function normalize(t) {
+            return (t || '').replace(/[ \\t]+/g, ' ').replace(/\\n[ \\t]*\\n+/g, '\\n\\n').trim();
+        }
 
-        if (!best) {
-            var elements = document.querySelectorAll('div, section');
-            var bestScore = 0;
-            for (var i = 0; i < elements.length; i++) {
-                var el = elements[i];
-                var paragraphs = el.querySelectorAll('p');
-                var score = paragraphs.length;
-
+        // Pick the semantic container with the MOST live rendered text (not just
+        // the first match) — sites often have several main/role=main shells.
+        var candidates = Array.prototype.slice.call(document.querySelectorAll(
+            'article, [role="main"], main, .post-content, .article-body, .entry-content, .story-body'
+        ));
+        if (candidates.length === 0) {
+            var scored = document.querySelectorAll('div, section');
+            var bestScore = 0, scoredBest = null;
+            for (var i = 0; i < scored.length; i++) {
+                var el = scored[i];
+                var score = el.querySelectorAll('p').length;
                 var id = (el.id + ' ' + el.className).toLowerCase();
                 if (/article|content|post|entry|story|text|body/.test(id)) score += 5;
                 if (/comment|sidebar|nav|footer|header|menu|ad|widget/.test(id)) score -= 10;
-
-                if (score > bestScore) {
-                    bestScore = score;
-                    best = el;
-                }
+                if (score > bestScore) { bestScore = score; scoredBest = el; }
             }
+            if (scoredBest) candidates.push(scoredBest);
         }
 
-        if (!best) best = document.body;
-        if (!best) return null;
+        var best = null, bestLen = -1;
+        candidates.forEach(function(el) {
+            var len = (el.innerText || '').length;
+            if (len > bestLen) { bestLen = len; best = el; }
+        });
 
-        var clone = best.cloneNode(true);
-        var removeSelectors = 'script, style, nav, footer, header, .ad, .ads, .sidebar, .comments, .social, .share, [role="navigation"], iframe, form, noscript';
-        clone.querySelectorAll(removeSelectors).forEach(function(el) { el.remove(); });
+        // Preferred path: a cloned, stripped copy staged off-screen so nav/ads
+        // are removed and innerText has real line breaks. But cloneNode() drops
+        // shadow-DOM / custom-element content, so on Web-Component SPAs
+        // (YouTube, etc.) this yields near-nothing.
+        var text = '';
+        if (best) {
+            var clone = best.cloneNode(true);
+            clone.querySelectorAll('script, style, nav, footer, header, .ad, .ads, .sidebar, .comments, .social, .share, [role="navigation"], iframe, form, noscript').forEach(function(el) { el.remove(); });
+            var stage = document.createElement('div');
+            stage.style.cssText = 'position:absolute; left:-99999px; top:0; visibility:hidden;';
+            stage.appendChild(clone);
+            document.body.appendChild(stage);
+            text = normalize(clone.innerText || clone.textContent || '');
+            document.body.removeChild(stage);
+        }
 
-        // innerText needs layout, which a detached clone doesn't have, so
-        // stage it off-screen long enough to read innerText, then discard it.
-        // This gives real paragraph/line breaks instead of the run-on text
-        // that clone.textContent alone would produce.
-        var stage = document.createElement('div');
-        stage.style.cssText = 'position:absolute; left:-99999px; top:0; visibility:hidden;';
-        stage.appendChild(clone);
-        document.body.appendChild(stage);
-        var text = clone.innerText || clone.textContent || '';
-        document.body.removeChild(stage);
-
-        text = text.replace(/[ \\t]+/g, ' ').replace(/\\n[ \\t]*\\n+/g, '\\n\\n').trim();
+        // Fallback for SPAs where the clone lost the content: read LIVE innerText
+        // (reflects rendered text, including shadow DOM), first from the chosen
+        // container, then from the whole page — whichever gives more.
+        if (text.length < MIN) {
+            var liveBest = best ? normalize(best.innerText) : '';
+            if (liveBest.length > text.length) text = liveBest;
+        }
+        if (text.length < MIN && document.body) {
+            var liveBody = normalize(document.body.innerText);
+            if (liveBody.length > text.length) text = liveBody;
+        }
 
         if (text.length < 40) return null;
 
