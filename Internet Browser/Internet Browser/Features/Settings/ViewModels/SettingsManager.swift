@@ -53,20 +53,6 @@ enum HomepageTheme: String, CaseIterable, Identifiable {
 
     var id: String { rawValue }
 
-    /// Asset catalog image name for the themed homepage logo
-    var logoImageName: String {
-        switch self {
-        case .cherry:   return "CherryLogoRed"
-        case .ocean:    return "CherryLogoBlue"
-        case .forest:   return "CherryLogoGreen"
-        case .sunset:   return "CherryLogoOrange"
-        case .purple:   return "CherryLogoPurple"
-        case .midnight: return "CherryLogoBlue"
-        case .rose:     return "CherryLogoPink"
-        case .slate:    return "CherryLogoBlack"
-        }
-    }
-
     /// Returns 9 MeshGradient colors (3x3 grid) for the homepage background
     var gradientColors: [Color] {
         switch self {
@@ -236,12 +222,6 @@ final class SettingsManager {
         return homepageMatchesAccent
             ? AccentDerivedPalette.gradientColors(fromHex: accentColorHex)
             : homepageTheme.gradientColors
-    }
-
-    var homepageLogoImageName: String {
-        homepageMatchesAccent
-            ? AccentDerivedPalette.logoImageName(fromHex: accentColorHex)
-            : homepageTheme.logoImageName
     }
 
     var resolvedColorScheme: ColorScheme? {

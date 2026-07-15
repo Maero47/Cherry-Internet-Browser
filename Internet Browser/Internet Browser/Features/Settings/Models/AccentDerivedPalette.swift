@@ -5,13 +5,13 @@
 
 import SwiftUI
 
-/// Derives the homepage appearance (MeshGradient colors, picker preview, logo)
+/// Derives the homepage appearance (MeshGradient colors, picker preview)
 /// from an accent color hex, powering the "Match Accent" homepage mode.
 ///
 /// Kept separate from `HomepageTheme` on purpose: it is one *source* of
 /// homepage colors among others (curated themes today, possibly imported
 /// browser themes later), all funneled through `SettingsManager`'s
-/// `homepageGradientColors` / `homepageLogoImageName`.
+/// `homepageGradientColors`.
 enum AccentDerivedPalette {
 
     // MARK: - Gradient derivation
@@ -44,24 +44,6 @@ enum AccentDerivedPalette {
             cell(-0.020, 1.00, 0.62), cell(+0.010, 0.95, 1.00), cell(+0.035, 1.05, 0.78),
             cell(-0.015, 1.10, 0.24), cell( 0.000, 1.10, 0.30), cell(+0.020, 1.15, 0.17),
         ]
-    }
-
-    // MARK: - Logo selection
-
-    /// Picks the closest-hue Cherry logo asset for the accent, falling back to
-    /// the neutral black logo for desaturated (graphite-like) accents.
-    static func logoImageName(fromHex hex: String) -> String {
-        let accent = hsb(fromHex: hex)
-        guard accent.saturation >= 0.25 else { return "CherryLogoBlack" }
-
-        switch accent.hue * 360 {
-        case 345..., ..<20: return "CherryLogoRed"
-        case ..<50:         return "CherryLogoOrange"
-        case ..<195:        return "CherryLogoGreen"
-        case ..<255:        return "CherryLogoBlue"
-        case ..<300:        return "CherryLogoPurple"
-        default:            return "CherryLogoPink"
-        }
     }
 
     // MARK: - Color math
