@@ -167,7 +167,11 @@ actor PageRetriever {
     /// string). Returns `nil` — rather than a partial result — if the model
     /// is unavailable or any single embedding fails, since a partial index
     /// would silently rank chunks against missing vectors.
-    private static func embedAll(_ texts: [String]) async -> [[Float]]? {
+    ///
+    /// Not `private`: `TabsResearchService` reuses this same embedding
+    /// approach for its multi-tab index, so both retrievers share one
+    /// `NLContextualEmbedding` code path instead of duplicating it.
+    static func embedAll(_ texts: [String]) async -> [[Float]]? {
         #if canImport(NaturalLanguage)
         guard #available(macOS 14.0, *) else { return nil }
         guard let embedder = latinEmbedder, await ensureAssetsLoaded(embedder) else { return nil }
