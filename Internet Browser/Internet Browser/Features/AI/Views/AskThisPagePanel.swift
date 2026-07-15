@@ -60,7 +60,14 @@ struct AskThisPagePanel: View {
             headerBar
             Divider()
 
-            if !availability.isAvailable {
+            // The unavailable state only replaces the content when there is
+            // genuinely nothing usable to show. A conversation already on
+            // screen keeps running on the engine it was BUILT with (streams
+            // route by concrete engine type), so switching to an unavailable
+            // engine mid-conversation must not hide or kill it — the
+            // "Applies to your next chat." hint covers that case, and the
+            // next New Chat surfaces the unavailable view naturally.
+            if !availability.isAvailable && !activePathHasTurns {
                 unavailableView
             } else {
                 if showsEngineSwitchHint {
@@ -86,7 +93,14 @@ struct AskThisPagePanel: View {
         .overlay(alignment: .leading) {
             Rectangle().fill(Color.primary.opacity(0.1)).frame(width: 0.5)
         }
-        .task(id: pageText) {
+        // Keyed on availability AS WELL as the page: if the panel opened
+        // while the chosen engine was unavailable, the first run failed its
+        // guard and `pageText` never changes for the panel's life — switching
+        // to a working engine from the header menu must re-run configure so
+        // the chat works without closing/reopening the panel. (`configure`
+        // no-ops when the page is unchanged AND already configured, so a
+        // later availability flip never resets a live conversation.)
+        .task(id: ChatConfigureKey(isAvailable: availability.isAvailable, pageText: pageText)) {
             guard availability.isAvailable, !pageText.isEmpty else { return }
             chatSession.configure(pageTitle: pageTitle, pageText: pageText, summary: nil)
         }
@@ -108,12 +122,30 @@ struct AskThisPagePanel: View {
         }
     }
 
+    /// Identity for the single-page configure task: re-fires when the page
+    /// snapshot changes OR when availability flips (e.g. the user switches
+    /// from an unavailable engine to a working one in the header menu).
+    private struct ChatConfigureKey: Equatable {
+        let isAvailable: Bool
+        let pageText: String
+    }
+
     /// Empty for the single-page selection (so the gather task stays idle);
     /// otherwise a stable key for the selected tab set — sorted, so only real
-    /// membership changes retrigger a re-gather.
+    /// membership changes retrigger a re-gather. Prefixed with an
+    /// availability token for the same reason as `ChatConfigureKey`: a gather
+    /// skipped while the engine was unavailable must re-run once a working
+    /// engine is chosen.
     private var researchGatherKey: String {
         guard !isSinglePageSelection else { return "" }
-        return selectedTabIDs.map(\.uuidString).sorted().joined(separator: ",")
+        let ids = selectedTabIDs.map(\.uuidString).sorted().joined(separator: ",")
+        return "\(availability.isAvailable)|\(ids)"
+    }
+
+    /// Whether the currently routed path already has a conversation on
+    /// screen — if so, the unavailable view must never replace it.
+    private var activePathHasTurns: Bool {
+        isSinglePageSelection ? !chatSession.turns.isEmpty : !researchSession.turns.isEmpty
     }
 
     private var openTabIDs: Set<UUID> {
@@ -495,6 +527,7 @@ struct AskThisPagePanel: View {
         var result = AttributedString()
         var previousBlockKey: [Int]? = nil
         var previousTopIdentity: Int? = nil
+        var previousListItemIdentity: Int? = nil
 
         // `runs[\.presentationIntent]` coalesces consecutive runs sharing an
         // intent, so each iteration is one block (inline styles inside it are
@@ -515,7 +548,19 @@ struct AskThisPagePanel: View {
                     let sameContainer = topIdentity != nil && topIdentity == previousTopIdentity
                     result += AttributedString(sameContainer ? "\n" : "\n\n")
                 }
-                result += AttributedString(listMarkerPrefix(for: components))
+                // The bullet/number is printed once per list ITEM: an item
+                // with several blocks (a second paragraph, a code block)
+                // changes blockKey while keeping the same listItem identity —
+                // its continuation blocks get matching indentation only.
+                let list = listContext(for: components)
+                if let itemIdentity = list.itemIdentity {
+                    if itemIdentity != previousListItemIdentity {
+                        result += AttributedString(list.indent + list.marker)
+                    } else {
+                        result += AttributedString(list.indent + String(repeating: " ", count: list.marker.count))
+                    }
+                }
+                previousListItemIdentity = list.itemIdentity
             }
 
             // Components are ordered innermost-first; the LAST style found
@@ -539,18 +584,26 @@ struct AskThisPagePanel: View {
         return result
     }
 
-    /// `• ` / `N. ` marker (indented two spaces per nesting level) for a
-    /// list-item block, or "" for any other block. Components are ordered
-    /// innermost-first, so the list container FOLLOWING a `listItem` is the
-    /// one that owns it and decides bullet vs number.
-    private static func listMarkerPrefix(for components: [PresentationIntent.IntentType]) -> String {
+    /// For a list-item block: the identity of the (innermost) `listItem` the
+    /// block belongs to — distinct per item, shared by all of one item's
+    /// blocks — plus its `• ` / `N. ` marker and a two-spaces-per-nesting-
+    /// level indent. `itemIdentity == nil` for any non-list block. Components
+    /// are ordered innermost-first, so the list container FOLLOWING a
+    /// `listItem` is the one that owns it and decides bullet vs number.
+    private static func listContext(
+        for components: [PresentationIntent.IntentType]
+    ) -> (itemIdentity: Int?, marker: String, indent: String) {
+        var itemIdentity: Int? = nil
         var marker = ""
         var pendingOrdinal: Int? = nil
         var listDepth = 0
         for component in components {
             switch component.kind {
             case .listItem(let ordinal):
-                pendingOrdinal = ordinal
+                if itemIdentity == nil {
+                    itemIdentity = component.identity
+                    pendingOrdinal = ordinal
+                }
             case .unorderedList:
                 listDepth += 1
                 if pendingOrdinal != nil, marker.isEmpty {
@@ -567,8 +620,8 @@ struct AskThisPagePanel: View {
                 break
             }
         }
-        guard !marker.isEmpty else { return "" }
-        return String(repeating: "  ", count: max(0, listDepth - 1)) + marker
+        let indent = String(repeating: "  ", count: max(0, listDepth - 1))
+        return (itemIdentity, marker, indent)
     }
 
     private let examplePrompts = [

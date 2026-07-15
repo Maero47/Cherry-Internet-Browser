@@ -130,8 +130,14 @@ enum PageAIService {
     /// callers treat `nil` as "chat isn't available" without needing to know
     /// why. The returned value is type-erased so this signature (and every
     /// other caller of it) stays free of Foundation Models types.
-    static func makeChatEngine(pageTitle: String, pageText: String, grounding: String, recentConversation: String? = nil) -> AnyObject? {
-        switch SettingsManager.shared.aiEngine {
+    ///
+    /// `engine` defaults to the live setting (a NEW chat always uses what the
+    /// user last picked); the sliding-window rebuild passes the engine the
+    /// conversation was BUILT under instead, so a context-overflow recovery —
+    /// a continuation of the same conversation — never silently migrates it
+    /// to an engine switched mid-chat.
+    static func makeChatEngine(pageTitle: String, pageText: String, grounding: String, recentConversation: String? = nil, engine: AIEngine = SettingsManager.shared.aiEngine) -> AnyObject? {
+        switch engine {
         case .apple:
             guard #available(macOS 26.0, *) else { return nil }
             #if canImport(FoundationModels)

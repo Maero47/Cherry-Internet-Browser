@@ -232,13 +232,19 @@ final class PageChatSession: ObservableObject {
     private func rebuildEngineForSlidingWindow(history: [PageChatTurn]) {
         let grounding = PageAIService.chatGroundingText(pageText: pageText, summary: groundingSummary)
         let replay = Self.recentConversationReplay(from: history)
+        // An overflow rebuild CONTINUES the same conversation, so it must stay
+        // on the engine the conversation was built under — not the live
+        // setting, which the user may have switched mid-chat (that switch
+        // only applies to the next new chat).
+        let rebuildEngine = conversationEngine ?? SettingsManager.shared.aiEngine
         engine = PageAIService.makeChatEngine(
             pageTitle: pageTitle,
             pageText: pageText,
             grounding: grounding,
-            recentConversation: replay
+            recentConversation: replay,
+            engine: rebuildEngine
         )
-        conversationEngine = engine == nil ? nil : SettingsManager.shared.aiEngine
+        conversationEngine = engine == nil ? nil : rebuildEngine
     }
 
     /// Formats the last `slidingWindowReplayTurnCount` non-error, non-streaming
