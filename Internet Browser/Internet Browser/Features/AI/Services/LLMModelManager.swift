@@ -24,6 +24,18 @@ final class LLMModelManager {
 
     static let modelID = "mlx-community/Qwen3-8B-4bit"
 
+    /// Whether the MLX package is linked into this build at all — independent
+    /// of whether the model weights have been downloaded yet. `PageAIService`
+    /// uses this to distinguish "Qwen isn't available in this build" from
+    /// "Qwen is available but the model hasn't been downloaded yet".
+    static var isMLXImportable: Bool {
+        #if canImport(MLXLLM)
+        true
+        #else
+        false
+        #endif
+    }
+
     private(set) var isDownloaded: Bool = false
     private(set) var isDownloading: Bool = false
     private(set) var downloadFraction: Double = 0

@@ -23,6 +23,13 @@ enum AppearanceMode: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+enum AIEngine: String, CaseIterable, Identifiable {
+    case apple = "Apple"
+    case qwen = "Qwen (Local)"
+
+    var id: String { rawValue }
+}
+
 struct AccentColorOption: Identifiable {
     let name: String
     let hex: String
@@ -168,6 +175,13 @@ final class SettingsManager {
 
     var homepage: String {
         didSet { UserDefaults.standard.set(homepage, forKey: Keys.homepage) }
+    }
+
+    /// Which on-device AI backend powers "Ask This Page" and "All Tabs"
+    /// research: Apple's Foundation Models (system model) or the local Qwen
+    /// engine (MLX). See `PageAIService` for the routing.
+    var aiEngine: AIEngine {
+        didSet { UserDefaults.standard.set(aiEngine.rawValue, forKey: Keys.aiEngine) }
     }
 
     var showBookmarkBar: Bool {
@@ -335,6 +349,13 @@ final class SettingsManager {
         }
 
         self.homepage = defaults.string(forKey: Keys.homepage) ?? AppConstants.defaultHomePage
+
+        if let engineRaw = defaults.string(forKey: Keys.aiEngine),
+           let engine = AIEngine(rawValue: engineRaw) {
+            self.aiEngine = engine
+        } else {
+            self.aiEngine = .apple
+        }
         self.showBookmarkBar = defaults.object(forKey: Keys.showBookmarkBar) as? Bool ?? true
         self.useVerticalTabs = defaults.bool(forKey: Keys.useVerticalTabs)
         self.verticalTabBarCollapsed = defaults.bool(forKey: Keys.verticalTabBarCollapsed)
@@ -440,6 +461,7 @@ final class SettingsManager {
     private enum Keys {
         static let searchEngine = "searchEngine"
         static let homepage = "homepage"
+        static let aiEngine = "aiEngine"
         static let showBookmarkBar = "showBookmarkBar"
         static let useVerticalTabs = "useVerticalTabs"
         static let verticalTabBarCollapsed = "verticalTabBarCollapsed"

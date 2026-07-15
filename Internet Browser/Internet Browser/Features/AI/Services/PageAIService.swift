@@ -59,12 +59,17 @@ struct PageAnswerResult {
 enum PageAIService {
 
     static var availability: PageAIAvailability {
-        guard #available(macOS 26.0, *) else { return .unsupportedOS }
-        #if canImport(FoundationModels)
-        return currentAvailability()
-        #else
-        return .unsupportedOS
-        #endif
+        switch SettingsManager.shared.aiEngine {
+        case .apple:
+            guard #available(macOS 26.0, *) else { return .unsupportedOS }
+            #if canImport(FoundationModels)
+            return currentAvailability()
+            #else
+            return .unsupportedOS
+            #endif
+        case .qwen:
+            return qwenAvailability()
+        }
     }
 
     static func extractPageText(from webView: WKWebView) async -> ExtractedPageContent? {
@@ -72,14 +77,23 @@ enum PageAIService {
     }
 
     static func answer(question: String, pageText: String, pageTitle: String) async -> Result<PageAnswerResult, PageAIError> {
-        guard #available(macOS 26.0, *) else {
-            return .failure(.notAvailable("Ask This Page requires macOS 26 or later."))
+        switch SettingsManager.shared.aiEngine {
+        case .apple:
+            guard #available(macOS 26.0, *) else {
+                return .failure(.notAvailable("Ask This Page requires macOS 26 or later."))
+            }
+            #if canImport(FoundationModels)
+            return await answerOnDevice(question: question, pageText: pageText, pageTitle: pageTitle)
+            #else
+            return .failure(.notAvailable("Foundation Models isn't available in this build."))
+            #endif
+        case .qwen:
+            #if canImport(MLXLLM)
+            return await answerWithQwen(question: question, pageText: pageText, pageTitle: pageTitle)
+            #else
+            return .failure(.notAvailable("The local Qwen engine isn't available in this build."))
+            #endif
         }
-        #if canImport(FoundationModels)
-        return await answerOnDevice(question: question, pageText: pageText, pageTitle: pageTitle)
-        #else
-        return .failure(.notAvailable("Foundation Models isn't available in this build."))
-        #endif
     }
 
     /// Text used to ground a chat session in the page, once, at session start.
@@ -117,12 +131,21 @@ enum PageAIService {
     /// why. The returned value is type-erased so this signature (and every
     /// other caller of it) stays free of Foundation Models types.
     static func makeChatEngine(pageTitle: String, pageText: String, grounding: String, recentConversation: String? = nil) -> AnyObject? {
-        guard #available(macOS 26.0, *) else { return nil }
-        #if canImport(FoundationModels)
-        return makeChatEngineOnDevice(pageTitle: pageTitle, pageText: pageText, grounding: grounding, recentConversation: recentConversation)
-        #else
-        return nil
-        #endif
+        switch SettingsManager.shared.aiEngine {
+        case .apple:
+            guard #available(macOS 26.0, *) else { return nil }
+            #if canImport(FoundationModels)
+            return makeChatEngineOnDevice(pageTitle: pageTitle, pageText: pageText, grounding: grounding, recentConversation: recentConversation)
+            #else
+            return nil
+            #endif
+        case .qwen:
+            #if canImport(MLXLLM)
+            return makeChatEngineMLX(pageTitle: pageTitle, pageText: pageText, grounding: grounding, recentConversation: recentConversation)
+            #else
+            return nil
+            #endif
+        }
     }
 
     /// Sends one user turn to an engine produced by `makeChatEngine` and
@@ -130,14 +153,23 @@ enum PageAIService {
     /// text so far (Foundation Models streams snapshots, not deltas) so
     /// callers can assign it straight to their bubble's text.
     static func streamChatReply(engine: AnyObject, message: String) -> AsyncThrowingStream<String, Error> {
-        guard #available(macOS 26.0, *) else {
-            return AsyncThrowingStream { $0.finish(throwing: PageAIError.notAvailable("Ask This Page requires macOS 26 or later.")) }
+        switch SettingsManager.shared.aiEngine {
+        case .apple:
+            guard #available(macOS 26.0, *) else {
+                return AsyncThrowingStream { $0.finish(throwing: PageAIError.notAvailable("Ask This Page requires macOS 26 or later.")) }
+            }
+            #if canImport(FoundationModels)
+            return streamChatReplyOnDevice(engine: engine, message: message)
+            #else
+            return AsyncThrowingStream { $0.finish(throwing: PageAIError.notAvailable("Foundation Models isn't available in this build.")) }
+            #endif
+        case .qwen:
+            #if canImport(MLXLLM)
+            return streamChatReplyMLX(engine: engine, message: message)
+            #else
+            return AsyncThrowingStream { $0.finish(throwing: PageAIError.notAvailable("The local Qwen engine isn't available in this build.")) }
+            #endif
         }
-        #if canImport(FoundationModels)
-        return streamChatReplyOnDevice(engine: engine, message: message)
-        #else
-        return AsyncThrowingStream { $0.finish(throwing: PageAIError.notAvailable("Foundation Models isn't available in this build.")) }
-        #endif
     }
 
     /// Creates a fresh engine for the "All Tabs" research chat — a session
@@ -149,12 +181,22 @@ enum PageAIService {
     /// `TabsResearchService`. Returns `nil` below macOS 26 or without
     /// Foundation Models, same as `makeChatEngine`.
     static func makeResearchEngine() -> AnyObject? {
-        guard #available(macOS 26.0, *) else { return nil }
-        #if canImport(FoundationModels)
-        return ResearchChatEngine(instructions: researchInstructions)
-        #else
-        return nil
-        #endif
+        switch SettingsManager.shared.aiEngine {
+        case .apple:
+            guard #available(macOS 26.0, *) else { return nil }
+            #if canImport(FoundationModels)
+            return ResearchChatEngine(instructions: researchInstructions)
+            #else
+            return nil
+            #endif
+        case .qwen:
+            #if canImport(MLXLLM)
+            guard LLMModelManager.shared.isDownloaded else { return nil }
+            return MLXChatEngine(instructions: researchInstructions)
+            #else
+            return nil
+            #endif
+        }
     }
 
     /// Sends one research question to an engine produced by
@@ -163,14 +205,23 @@ enum PageAIService {
     /// assistant's cumulative reply. Mirrors `streamChatReply`'s streaming
     /// shape exactly.
     static func streamResearchReply(engine: AnyObject, question: String, chunks: [ResearchChunk]) -> AsyncThrowingStream<String, Error> {
-        guard #available(macOS 26.0, *) else {
-            return AsyncThrowingStream { $0.finish(throwing: PageAIError.notAvailable("Ask This Page requires macOS 26 or later.")) }
+        switch SettingsManager.shared.aiEngine {
+        case .apple:
+            guard #available(macOS 26.0, *) else {
+                return AsyncThrowingStream { $0.finish(throwing: PageAIError.notAvailable("Ask This Page requires macOS 26 or later.")) }
+            }
+            #if canImport(FoundationModels)
+            return streamResearchReplyOnDevice(engine: engine, question: question, chunks: chunks)
+            #else
+            return AsyncThrowingStream { $0.finish(throwing: PageAIError.notAvailable("Foundation Models isn't available in this build.")) }
+            #endif
+        case .qwen:
+            #if canImport(MLXLLM)
+            return streamResearchReplyMLX(engine: engine, question: question, chunks: chunks)
+            #else
+            return AsyncThrowingStream { $0.finish(throwing: PageAIError.notAvailable("The local Qwen engine isn't available in this build.")) }
+            #endif
         }
-        #if canImport(FoundationModels)
-        return streamResearchReplyOnDevice(engine: engine, question: question, chunks: chunks)
-        #else
-        return AsyncThrowingStream { $0.finish(throwing: PageAIError.notAvailable("Foundation Models isn't available in this build.")) }
-        #endif
     }
 }
 
@@ -274,16 +325,39 @@ private extension PageAIService {
     yourself by any name and do not describe yourself as an AI assistant; just answer the \
     question directly.
     """
+
+    /// Q&A answers directly over raw page text (no map-reduce per the v1
+    /// scope), so it gets a smaller, deliberate truncation cap of its own.
+    /// Shared by both engines' single-shot `answer(question:pageText:pageTitle:)`.
+    static let qaTextCap = 6000
+
+    static let qaInstructions = """
+    You answer questions about a single web page's content, for a browser side panel. Answer \
+    ONLY using the page content provided in the prompt. If the answer is not present in that \
+    content, say plainly that the page doesn't contain that information — never guess or use \
+    outside knowledge. Keep answers concise and address the question directly. Do not refer to \
+    yourself by any name and do not describe yourself as an AI assistant; just answer the \
+    question directly.
+    """
+
+    /// Qwen's availability doesn't depend on macOS version or Apple
+    /// Intelligence at all — only on whether MLX is linked into this build
+    /// and whether the model weights have been downloaded yet.
+    static func qwenAvailability() -> PageAIAvailability {
+        guard LLMModelManager.isMLXImportable else {
+            return .unavailable(reason: "The local Qwen engine isn't available in this build.")
+        }
+        guard LLMModelManager.shared.isDownloaded else {
+            return .unavailable(reason: "The Qwen model hasn't been downloaded yet. Open Settings to download it.")
+        }
+        return .available
+    }
 }
 
 #if canImport(FoundationModels)
 
 @available(macOS 26.0, *)
 private extension PageAIService {
-
-    /// Q&A answers directly over raw page text (no map-reduce per the v1
-    /// scope), so it gets a smaller, deliberate truncation cap of its own.
-    static let qaTextCap = 6000
 
     static func currentAvailability() -> PageAIAvailability {
         switch SystemLanguageModel.default.availability {
@@ -301,15 +375,6 @@ private extension PageAIService {
             return .unavailable(reason: "The on-device model isn't available right now.")
         }
     }
-
-    static let qaInstructions = """
-    You answer questions about a single web page's content, for a browser side panel. Answer \
-    ONLY using the page content provided in the prompt. If the answer is not present in that \
-    content, say plainly that the page doesn't contain that information — never guess or use \
-    outside knowledge. Keep answers concise and address the question directly. Do not refer to \
-    yourself by any name and do not describe yourself as an AI assistant; just answer the \
-    question directly.
-    """
 
     fileprivate nonisolated static func mapGenerationError(_ error: Error) -> PageAIError {
         if let generationError = error as? LanguageModelSession.GenerationError {
@@ -484,6 +549,104 @@ extension ResearchChatEngine: LLMChatEngine {
                     continuation.finish()
                 } catch {
                     continuation.finish(throwing: PageAIService.mapGenerationError(error))
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+}
+
+#endif
+
+#if canImport(MLXLLM)
+
+private extension PageAIService {
+
+    static func answerWithQwen(question: String, pageText: String, pageTitle: String) async -> Result<PageAnswerResult, PageAIError> {
+        guard !pageText.isEmpty else {
+            return .failure(.generationFailed("There's no readable content on this page to answer from."))
+        }
+        guard LLMModelManager.shared.isDownloaded else {
+            return .failure(.notAvailable("The Qwen model hasn't been downloaded yet. Open Settings to download it."))
+        }
+
+        let workingText: String
+        let wasTruncated: Bool
+        if let retrieved = await PageRetriever.shared.retrieve(pageText: pageText, query: question),
+           !retrieved.isEmpty {
+            workingText = retrieved.map(\.text).joined(separator: "\n\n---\n\n")
+            wasTruncated = false
+        } else {
+            wasTruncated = pageText.count > qaTextCap
+            workingText = wasTruncated ? String(pageText.prefix(qaTextCap)) : pageText
+        }
+
+        let prompt = """
+        Page title: \(pageTitle)
+
+        Page content:
+        \(workingText)
+
+        Question: \(question)
+        """
+
+        let engine = MLXChatEngine(instructions: qaInstructions)
+        do {
+            var finalText = ""
+            for try await partial in engine.stream(prompt: prompt) {
+                finalText = partial
+            }
+            return .success(PageAnswerResult(answer: finalText, wasTruncated: wasTruncated))
+        } catch {
+            return .failure(.generationFailed(error.localizedDescription))
+        }
+    }
+
+    /// `pageText` is kept on the engine (see `MLXChatEngine.pageText`) so
+    /// `streamChatReplyMLX` can retrieve turn-relevant chunks from it,
+    /// mirroring `makeChatEngineOnDevice`.
+    static func makeChatEngineMLX(pageTitle: String, pageText: String, grounding: String, recentConversation: String? = nil) -> AnyObject? {
+        guard LLMModelManager.shared.isDownloaded, !grounding.isEmpty else { return nil }
+        return MLXChatEngine(
+            instructions: chatInstructions(pageTitle: pageTitle, grounding: grounding, recentConversation: recentConversation),
+            pageText: pageText
+        )
+    }
+
+    static func streamChatReplyMLX(engine: AnyObject, message: String) -> AsyncThrowingStream<String, Error> {
+        guard let chatEngine = engine as? MLXChatEngine else {
+            return AsyncThrowingStream { $0.finish(throwing: PageAIError.generationFailed("This chat session is unavailable.")) }
+        }
+        return AsyncThrowingStream { continuation in
+            let task = Task {
+                do {
+                    let prompt = await chatTurnPrompt(pageText: chatEngine.pageText ?? "", message: message)
+                    for try await partial in chatEngine.stream(prompt: prompt) {
+                        continuation.yield(partial)
+                    }
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    static func streamResearchReplyMLX(engine: AnyObject, question: String, chunks: [ResearchChunk]) -> AsyncThrowingStream<String, Error> {
+        guard let researchEngine = engine as? MLXChatEngine else {
+            return AsyncThrowingStream { $0.finish(throwing: PageAIError.generationFailed("This research session is unavailable.")) }
+        }
+        return AsyncThrowingStream { continuation in
+            let task = Task {
+                do {
+                    let prompt = researchPrompt(question: question, chunks: chunks)
+                    for try await partial in researchEngine.stream(prompt: prompt) {
+                        continuation.yield(partial)
+                    }
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
                 }
             }
             continuation.onTermination = { _ in task.cancel() }

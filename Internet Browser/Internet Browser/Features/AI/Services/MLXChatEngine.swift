@@ -88,11 +88,18 @@ struct MLXStreamAccumulator {
 /// grounding forward exactly like every other earlier turn.
 actor MLXChatEngine {
     private let instructions: String?
+    /// Full extracted page text for the "This Page" chat, kept so
+    /// `PageAIService` can retrieve turn-relevant chunks from it — `nil` for
+    /// the "All Tabs" research engine, whose grounding comes entirely from
+    /// chunks passed in per question instead (mirrors `PageChatEngine` vs
+    /// `ResearchChatEngine`'s asymmetry).
+    let pageText: String?
     private var session: ChatSession?
     private var isFirstTurn = true
 
-    init(instructions: String?) {
+    init(instructions: String?, pageText: String? = nil) {
         self.instructions = instructions
+        self.pageText = pageText
     }
 
     /// Pure logic, split out for testability: whether/how to fold
