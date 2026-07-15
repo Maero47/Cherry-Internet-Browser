@@ -96,6 +96,15 @@ enum PageAIService {
         return pageText.count > chatGroundingCap ? String(pageText.prefix(chatGroundingCap)) : pageText
     }
 
+    /// The chat session's page grounding is baked ONCE into the persistent
+    /// session instructions, so it must stay small: per-turn RAG retrieval
+    /// (`chatRetrievalTopK` chunks) already supplies the relevant page content
+    /// for each question, and a large baked-in prefix would permanently eat the
+    /// 4096-token window — big/dense pages (e.g. GitHub) could then overflow on
+    /// even a one-word message, which conversation trimming can't recover. This
+    /// small cap is just a broad-question fallback; retrieval does the rest.
+    static let chatGroundingCap = 1500
+
     /// Creates a fresh, page-grounded chat engine. `pageText` is kept
     /// alongside `grounding` (which only holds a summary or capped prefix)
     /// so each turn can retrieve the chunks most relevant to that turn's
@@ -165,6 +174,108 @@ enum PageAIService {
     }
 }
 
+/// RAG retrieval and prompt-building shared by both engines: they only
+/// produce plain prompt STRINGS from model-agnostic pieces (`PageRetriever`,
+/// chunk formatting), so both the Foundation Models path and the MLX path
+/// call the exact same functions here rather than each rebuilding their own.
+private extension PageAIService {
+
+    /// Chat's per-turn retrieval topK, smaller than Q&A's
+    /// `PageRetriever.defaultTopK`. A persistent chat session (Foundation
+    /// Models' transcript, or MLX's KV-cache) effectively keeps every past
+    /// turn's prompt around forever, so retrieved excerpts injected each turn
+    /// accumulate across the conversation — unlike single-shot Q&A, which
+    /// never re-sends anything. A smaller per-turn footprint keeps a
+    /// multi-turn chat from overflowing its context window much sooner than
+    /// the old blind-prefix behavior did.
+    static let chatRetrievalTopK = 3
+
+    /// Builds the per-turn prompt sent to the chat engine: retrieves the
+    /// chunks of `pageText` most relevant to `message` and prepends them, so
+    /// each question is grounded on the page sections that actually answer
+    /// it rather than only the fixed instructions-level summary/prefix. If
+    /// retrieval isn't usable (assets not ready, embedding failed, or the
+    /// page is too short to chunk), falls back to sending the bare message —
+    /// relying on the engine's fixed grounding instead.
+    static func chatTurnPrompt(pageText: String, message: String) async -> String {
+        guard !pageText.isEmpty else { return message }
+        guard let retrieved = await PageRetriever.shared.retrieve(
+            pageText: pageText,
+            query: message,
+            topK: chatRetrievalTopK
+        ), !retrieved.isEmpty else {
+            return message
+        }
+        let context = retrieved.map(\.text).joined(separator: "\n\n---\n\n")
+        return """
+        Most relevant page excerpts for this question:
+        \(context)
+
+        Question: \(message)
+        """
+    }
+
+    /// Builds the per-question prompt for the research chat: every retrieved
+    /// chunk is presented labeled with its source tab so the model can (and
+    /// is instructed to) cite it inline as `[N]`.
+    static func researchPrompt(question: String, chunks: [ResearchChunk]) -> String {
+        let context = chunks
+            .map { "[Source \($0.source.index) — \"\($0.source.title)\"]\n\($0.text)" }
+            .joined(separator: "\n\n---\n\n")
+        return """
+        Relevant excerpts from open tabs:
+        \(context)
+
+        Question: \(question)
+        """
+    }
+
+    static let chatInstructionsPrefix = """
+    You are chatting with someone about a single web page, inside a browser side panel. \
+    Answer ONLY using the page content provided below and any additional relevant excerpts \
+    supplied alongside a question — never invent facts, names, numbers, or claims that \
+    aren't present in them. If the answer isn't in the provided content, say so plainly \
+    instead of guessing. Keep replies conversational and reasonably concise, and use the \
+    earlier turns of this conversation as context for follow-up questions. Do not refer to \
+    yourself by any name and do not describe yourself as an AI assistant; just answer the \
+    question directly.
+    """
+
+    static func chatInstructions(pageTitle: String, grounding: String, recentConversation: String? = nil) -> String {
+        var text = """
+        \(chatInstructionsPrefix)
+
+        Page title: \(pageTitle)
+
+        Page content:
+        \(grounding)
+        """
+        if let recentConversation, !recentConversation.isEmpty {
+            text += """
+
+
+            Recent conversation so far (older turns were trimmed to fit; use this for context on follow-up questions):
+            \(recentConversation)
+            """
+        }
+        return text
+    }
+
+    static let researchInstructions = """
+    You answer questions by synthesizing information gathered from several currently open \
+    browser tabs, for a browser side panel. Each excerpt you're given is labeled with the tab \
+    it came from, like `[Source 2 — "Page Title"]`. Answer ONLY using the information present \
+    in the supplied excerpts — never invent facts, names, numbers, or claims that aren't in \
+    them, and never use outside knowledge. Cite the source of every concrete fact inline using \
+    its bracketed number, for example: "The XPS 13 weighs 1.2 kg [2]." When sources disagree, \
+    point out the disagreement and cite each side. If the excerpts don't contain the answer, say \
+    so plainly instead of guessing. Keep replies conversational and reasonably concise, and use \
+    earlier turns of this conversation as context for follow-up questions. Do not refer to \
+    yourself by any name and do not describe yourself as an AI assistant; just answer the \
+    question directly.
+    """
+}
+
 #if canImport(FoundationModels)
 
 @available(macOS 26.0, *)
@@ -173,15 +284,6 @@ private extension PageAIService {
     /// Q&A answers directly over raw page text (no map-reduce per the v1
     /// scope), so it gets a smaller, deliberate truncation cap of its own.
     static let qaTextCap = 6000
-
-    /// The chat session's page grounding is baked ONCE into the persistent
-    /// session instructions, so it must stay small: per-turn RAG retrieval
-    /// (`chatRetrievalTopK` chunks) already supplies the relevant page content
-    /// for each question, and a large baked-in prefix would permanently eat the
-    /// 4096-token window — big/dense pages (e.g. GitHub) could then overflow on
-    /// even a one-word message, which conversation trimming can't recover. This
-    /// small cap is just a broad-question fallback; retrieval does the rest.
-    static let chatGroundingCap = 1500
 
     static func currentAvailability() -> PageAIAvailability {
         switch SystemLanguageModel.default.availability {
@@ -209,7 +311,7 @@ private extension PageAIService {
     question directly.
     """
 
-    static func mapGenerationError(_ error: Error) -> PageAIError {
+    fileprivate nonisolated static func mapGenerationError(_ error: Error) -> PageAIError {
         if let generationError = error as? LanguageModelSession.GenerationError {
             switch generationError {
             case .exceededContextWindowSize:
@@ -256,37 +358,6 @@ private extension PageAIService {
         }
     }
 
-    static let chatInstructionsPrefix = """
-    You are chatting with someone about a single web page, inside a browser side panel. \
-    Answer ONLY using the page content provided below and any additional relevant excerpts \
-    supplied alongside a question — never invent facts, names, numbers, or claims that \
-    aren't present in them. If the answer isn't in the provided content, say so plainly \
-    instead of guessing. Keep replies conversational and reasonably concise, and use the \
-    earlier turns of this conversation as context for follow-up questions. Do not refer to \
-    yourself by any name and do not describe yourself as an AI assistant; just answer the \
-    question directly.
-    """
-
-    static func chatInstructions(pageTitle: String, grounding: String, recentConversation: String? = nil) -> String {
-        var text = """
-        \(chatInstructionsPrefix)
-
-        Page title: \(pageTitle)
-
-        Page content:
-        \(grounding)
-        """
-        if let recentConversation, !recentConversation.isEmpty {
-            text += """
-
-
-            Recent conversation so far (older turns were trimmed to fit; use this for context on follow-up questions):
-            \(recentConversation)
-            """
-        }
-        return text
-    }
-
     /// `pageText` is the full extracted page text, kept on the engine so
     /// `streamChatReplyOnDevice` can retrieve turn-relevant chunks from it;
     /// `grounding` (a summary, or a capped prefix as a last resort) is baked
@@ -303,41 +374,6 @@ private extension PageAIService {
         )
     }
 
-    /// Chat's per-turn retrieval topK, smaller than Q&A's
-    /// `PageRetriever.defaultTopK`. Chat's persistent `LanguageModelSession`
-    /// keeps every past turn's prompt in its transcript forever, so retrieved
-    /// excerpts injected each turn accumulate across the conversation —
-    /// unlike single-shot Q&A, which never re-sends anything. A smaller
-    /// per-turn footprint keeps a multi-turn chat from hitting
-    /// `.exceededContextWindowSize` much sooner than the old blind-prefix
-    /// behavior did.
-    static let chatRetrievalTopK = 3
-
-    /// Builds the per-turn prompt sent to the chat session: retrieves the
-    /// chunks of `pageText` most relevant to `message` and prepends them, so
-    /// each question is grounded on the page sections that actually answer
-    /// it rather than only the fixed instructions-level summary/prefix. If
-    /// retrieval isn't usable (assets not ready, embedding failed, or the
-    /// page is too short to chunk), falls back to sending the bare message —
-    /// identical to today's behavior, relying on the engine's fixed grounding.
-    static func chatTurnPrompt(pageText: String, message: String) async -> String {
-        guard !pageText.isEmpty else { return message }
-        guard let retrieved = await PageRetriever.shared.retrieve(
-            pageText: pageText,
-            query: message,
-            topK: chatRetrievalTopK
-        ), !retrieved.isEmpty else {
-            return message
-        }
-        let context = retrieved.map(\.text).joined(separator: "\n\n---\n\n")
-        return """
-        Most relevant page excerpts for this question:
-        \(context)
-
-        Question: \(message)
-        """
-    }
-
     static func streamChatReplyOnDevice(engine: AnyObject, message: String) -> AsyncThrowingStream<String, Error> {
         guard let chatEngine = engine as? PageChatEngine else {
             return AsyncThrowingStream { $0.finish(throwing: PageAIError.generationFailed("This chat session is unavailable.")) }
@@ -346,46 +382,16 @@ private extension PageAIService {
             let task = Task {
                 do {
                     let prompt = await chatTurnPrompt(pageText: chatEngine.pageText, message: message)
-                    let stream = chatEngine.session.streamResponse(to: prompt)
-                    for try await partial in stream {
-                        continuation.yield(partial.content)
+                    for try await partial in chatEngine.stream(prompt: prompt) {
+                        continuation.yield(partial)
                     }
                     continuation.finish()
                 } catch {
-                    continuation.finish(throwing: mapGenerationError(error))
+                    continuation.finish(throwing: error)
                 }
             }
             continuation.onTermination = { _ in task.cancel() }
         }
-    }
-
-    static let researchInstructions = """
-    You answer questions by synthesizing information gathered from several currently open \
-    browser tabs, for a browser side panel. Each excerpt you're given is labeled with the tab \
-    it came from, like `[Source 2 — "Page Title"]`. Answer ONLY using the information present \
-    in the supplied excerpts — never invent facts, names, numbers, or claims that aren't in \
-    them, and never use outside knowledge. Cite the source of every concrete fact inline using \
-    its bracketed number, for example: "The XPS 13 weighs 1.2 kg [2]." When sources disagree, \
-    point out the disagreement and cite each side. If the excerpts don't contain the answer, say \
-    so plainly instead of guessing. Keep replies conversational and reasonably concise, and use \
-    earlier turns of this conversation as context for follow-up questions. Do not refer to \
-    yourself by any name and do not describe yourself as an AI assistant; just answer the \
-    question directly.
-    """
-
-    /// Builds the per-question prompt for the research chat: every retrieved
-    /// chunk is presented labeled with its source tab so the model can (and
-    /// is instructed to) cite it inline as `[N]`.
-    static func researchPrompt(question: String, chunks: [ResearchChunk]) -> String {
-        let context = chunks
-            .map { "[Source \($0.source.index) — \"\($0.source.title)\"]\n\($0.text)" }
-            .joined(separator: "\n\n---\n\n")
-        return """
-        Relevant excerpts from open tabs:
-        \(context)
-
-        Question: \(question)
-        """
     }
 
     static func streamResearchReplyOnDevice(engine: AnyObject, question: String, chunks: [ResearchChunk]) -> AsyncThrowingStream<String, Error> {
@@ -396,13 +402,12 @@ private extension PageAIService {
             let task = Task {
                 do {
                     let prompt = researchPrompt(question: question, chunks: chunks)
-                    let stream = researchEngine.session.streamResponse(to: prompt)
-                    for try await partial in stream {
-                        continuation.yield(partial.content)
+                    for try await partial in researchEngine.stream(prompt: prompt) {
+                        continuation.yield(partial)
                     }
                     continuation.finish()
                 } catch {
-                    continuation.finish(throwing: mapGenerationError(error))
+                    continuation.finish(throwing: error)
                 }
             }
             continuation.onTermination = { _ in task.cancel() }
@@ -440,6 +445,49 @@ private final class ResearchChatEngine {
 
     init(instructions: String) {
         session = LanguageModelSession(instructions: instructions)
+    }
+}
+
+/// Thin conformance so `PageAIService` can eventually route by the
+/// model-agnostic `LLMChatEngine` protocol instead of by concrete type.
+/// Foundation Models streams cumulative snapshots already (`partial.content`
+/// is the full reply so far), so there's no accumulation to do here — unlike
+/// the MLX engine, which streams deltas.
+@available(macOS 26.0, *)
+extension PageChatEngine: LLMChatEngine {
+    func stream(prompt: String) -> AsyncThrowingStream<String, Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task {
+                do {
+                    for try await partial in session.streamResponse(to: prompt) {
+                        continuation.yield(partial.content)
+                    }
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: PageAIService.mapGenerationError(error))
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+}
+
+@available(macOS 26.0, *)
+extension ResearchChatEngine: LLMChatEngine {
+    func stream(prompt: String) -> AsyncThrowingStream<String, Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task {
+                do {
+                    for try await partial in session.streamResponse(to: prompt) {
+                        continuation.yield(partial.content)
+                    }
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: PageAIService.mapGenerationError(error))
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
     }
 }
 
