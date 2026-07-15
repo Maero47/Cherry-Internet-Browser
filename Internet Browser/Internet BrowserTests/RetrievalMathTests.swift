@@ -47,6 +47,15 @@ final class RetrievalMathTests: XCTestCase {
         XCTAssertEqual(RetrievalMath.meanPool([]), [])
     }
 
+    /// A mismatched-width vector must be excluded from BOTH the sum and the
+    /// denominator — dividing by the total input count (including the
+    /// skipped vector) would silently understate the mean.
+    func testMeanPoolExcludesMismatchedWidthVectorsFromDenominator() {
+        let vectors: [[Double]] = [[1, 2, 3], [10, 20], [3, 4, 5]]
+        let pooled = RetrievalMath.meanPool(vectors)
+        XCTAssertEqual(pooled, [2, 3, 4], "should average only the two width-3 vectors, not divide by 3")
+    }
+
     /// The core promise of retrieval: given a page's chunk embeddings and a
     /// query embedding, the chunk that's actually closest to the query
     /// (in this synthetic space, the one sharing its dominant direction)
