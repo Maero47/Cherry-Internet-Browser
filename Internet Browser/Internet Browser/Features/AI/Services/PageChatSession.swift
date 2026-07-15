@@ -82,6 +82,23 @@ final class PageChatSession: ObservableObject {
         conversationEngine = engine == nil ? nil : SettingsManager.shared.aiEngine
     }
 
+    /// Cancels the in-flight generation, keeping whatever partial answer has
+    /// already streamed in (marked no-longer-streaming). A turn with no
+    /// answer text yet is dropped entirely rather than left as an empty
+    /// bubble. Safe to call when nothing is streaming.
+    func stop() {
+        guard isResponding else { return }
+        streamTask?.cancel()
+        streamTask = nil
+        isResponding = false
+        guard let index = turns.lastIndex(where: { $0.isStreaming }) else { return }
+        if turns[index].text.isEmpty {
+            turns.remove(at: index)
+        } else {
+            turns[index].isStreaming = false
+        }
+    }
+
     func send(_ text: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, canSend else { return }

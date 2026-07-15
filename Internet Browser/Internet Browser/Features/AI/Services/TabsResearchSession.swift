@@ -162,6 +162,21 @@ final class TabsResearchSession: ObservableObject {
         conversationEngine = engine == nil ? nil : SettingsManager.shared.aiEngine
     }
 
+    /// Cancels the in-flight generation, keeping whatever partial answer has
+    /// already streamed in — mirrors `PageChatSession.stop()`.
+    func stop() {
+        guard isResponding else { return }
+        streamTask?.cancel()
+        streamTask = nil
+        isResponding = false
+        guard let index = turns.lastIndex(where: { $0.isStreaming }) else { return }
+        if turns[index].text.isEmpty {
+            turns.remove(at: index)
+        } else {
+            turns[index].isStreaming = false
+        }
+    }
+
     func send(_ text: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, canSend else { return }

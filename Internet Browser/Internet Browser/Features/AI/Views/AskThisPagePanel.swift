@@ -23,6 +23,10 @@ struct AskThisPagePanel: View {
     /// the panel (not inside the row builder) because rows live in a ForEach —
     /// a `@State` in the row would reset on every turns-array mutation.
     @State private var expandedReasoning: Set<UUID> = []
+    /// The assistant turn currently hovered, whose copy affordance is shown.
+    @State private var hoveredTurnID: UUID?
+    /// Briefly holds the turn just copied so its icon flips to a checkmark.
+    @State private var copiedTurnID: UUID?
     /// The tabs the conversation answers from. Defaults to just the active
     /// tab (this-page parity); adding more switches to the research session
     /// over exactly this set. Never allowed to become empty.
@@ -348,7 +352,7 @@ struct AskThisPagePanel: View {
                 if let reasoning = turn.reasoning, !reasoning.isEmpty {
                     reasoningDisclosure(reasoning: reasoning, for: turn)
                 }
-                HStack(spacing: 0) {
+                HStack(alignment: .bottom, spacing: 4) {
                     Group {
                         if turn.isStreaming && turn.text.isEmpty {
                             TypingDotsView()
@@ -362,7 +366,18 @@ struct AskThisPagePanel: View {
                     .padding(.horizontal, 12)
                     .padding(.vertical, 8)
                     .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-                    Spacer(minLength: 40)
+                    if !turn.isStreaming && !turn.text.isEmpty {
+                        copyButton(for: turn)
+                            .opacity(hoveredTurnID == turn.id || copiedTurnID == turn.id ? 1 : 0)
+                    }
+                    Spacer(minLength: 36)
+                }
+                .onHover { hovering in
+                    if hovering {
+                        hoveredTurnID = turn.id
+                    } else if hoveredTurnID == turn.id {
+                        hoveredTurnID = nil
+                    }
                 }
                 if !turn.sources.isEmpty {
                     sourcesFooter(turn.sources)
@@ -383,6 +398,30 @@ struct AskThisPagePanel: View {
             .background(Color.red.opacity(0.08), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+
+    /// Copies the turn's ANSWER (never its reasoning) to the pasteboard,
+    /// flipping to a checkmark briefly as feedback. Hidden until the bubble
+    /// row is hovered, to stay unobtrusive.
+    private func copyButton(for turn: PageChatTurn) -> some View {
+        Button {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(turn.text, forType: .string)
+            let copiedID = turn.id
+            copiedTurnID = copiedID
+            Task { @MainActor in
+                try? await Task.sleep(for: .seconds(1.5))
+                if copiedTurnID == copiedID { copiedTurnID = nil }
+            }
+        } label: {
+            Image(systemName: copiedTurnID == turn.id ? "checkmark" : "doc.on.doc")
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+                .frame(width: 18, height: 18)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("Copy answer")
     }
 
     /// Collapsible chain-of-thought control shown above a reasoning model's
@@ -435,13 +474,101 @@ struct AskThisPagePanel: View {
         .padding(.leading, 2)
     }
 
-    /// Renders assistant text as markdown (so `**bold**`, headings, lists,
-    /// etc. show as formatting instead of literal asterisks) while
-    /// preserving newlines/whitespace as typed. Falls back to plain text if
-    /// parsing throws, since the model's output isn't guaranteed valid markdown.
+    /// Renders assistant text as FULL markdown (headings, lists, code blocks,
+    /// plus the inline styles) instead of inline-only. SwiftUI's `Text`
+    /// ignores block-level `PresentationIntent`, so after parsing, the block
+    /// structure is rebuilt as literal characters + inline attributes:
+    /// paragraph breaks, `• ` / `N. ` list markers, semibold headings, and a
+    /// monospaced font for code blocks. Falls back to plain text if parsing
+    /// throws, since the model's output isn't guaranteed valid markdown.
     private static func assistantMarkdown(_ text: String) -> AttributedString {
-        (try? AttributedString(markdown: text, options: AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)))
-            ?? AttributedString(text)
+        guard let parsed = try? AttributedString(
+            markdown: text,
+            options: AttributedString.MarkdownParsingOptions(
+                interpretedSyntax: .full,
+                failurePolicy: .returnPartiallyParsedIfPossible
+            )
+        ) else {
+            return AttributedString(text)
+        }
+
+        var result = AttributedString()
+        var previousBlockKey: [Int]? = nil
+        var previousTopIdentity: Int? = nil
+
+        // `runs[\.presentationIntent]` coalesces consecutive runs sharing an
+        // intent, so each iteration is one block (inline styles inside it are
+        // preserved by slicing the parsed string).
+        for (intent, range) in parsed.runs[\.presentationIntent] {
+            var segment = AttributedString(parsed[range])
+            segment.presentationIntent = nil
+
+            let components = intent?.components ?? []
+            let blockKey = components.map(\.identity)
+            let topIdentity = blockKey.last
+
+            if blockKey != previousBlockKey {
+                if !result.characters.isEmpty {
+                    // Blocks sharing their outermost container (items of the
+                    // same list) sit one line apart; unrelated blocks get a
+                    // blank line between them.
+                    let sameContainer = topIdentity != nil && topIdentity == previousTopIdentity
+                    result += AttributedString(sameContainer ? "\n" : "\n\n")
+                }
+                result += AttributedString(listMarkerPrefix(for: components))
+            }
+
+            // Components are ordered innermost-first; the LAST style found
+            // (outermost) must not override an inner one, so first match wins.
+            for component in components {
+                switch component.kind {
+                case .header(let level):
+                    segment.font = .system(size: level <= 1 ? 15 : level == 2 ? 14 : 13.5, weight: .semibold)
+                case .codeBlock:
+                    segment.font = .system(size: 12, design: .monospaced)
+                default:
+                    continue
+                }
+                break
+            }
+
+            result += segment
+            previousBlockKey = blockKey
+            previousTopIdentity = topIdentity
+        }
+        return result
+    }
+
+    /// `• ` / `N. ` marker (indented two spaces per nesting level) for a
+    /// list-item block, or "" for any other block. Components are ordered
+    /// innermost-first, so the list container FOLLOWING a `listItem` is the
+    /// one that owns it and decides bullet vs number.
+    private static func listMarkerPrefix(for components: [PresentationIntent.IntentType]) -> String {
+        var marker = ""
+        var pendingOrdinal: Int? = nil
+        var listDepth = 0
+        for component in components {
+            switch component.kind {
+            case .listItem(let ordinal):
+                pendingOrdinal = ordinal
+            case .unorderedList:
+                listDepth += 1
+                if pendingOrdinal != nil, marker.isEmpty {
+                    marker = "• "
+                    pendingOrdinal = nil
+                }
+            case .orderedList:
+                listDepth += 1
+                if let ordinal = pendingOrdinal, marker.isEmpty {
+                    marker = "\(ordinal). "
+                    pendingOrdinal = nil
+                }
+            default:
+                break
+            }
+        }
+        guard !marker.isEmpty else { return "" }
+        return String(repeating: "  ", count: max(0, listDepth - 1)) + marker
     }
 
     private let examplePrompts = [
@@ -488,13 +615,27 @@ struct AskThisPagePanel: View {
     }
 
     private var chatInputRow: some View {
-        inputRow(placeholder: "Ask about this page…", canSend: chatSession.canSend, onSend: sendDraft)
+        inputRow(
+            placeholder: "Ask about this page…",
+            canSend: chatSession.canSend,
+            isResponding: chatSession.isResponding,
+            onSend: sendDraft,
+            onStop: { chatSession.stop() }
+        )
     }
 
-    /// Shared input row for both modes: same visuals as before, parameterized
-    /// by which session is currently active so This Page and All Tabs modes
-    /// don't need two near-identical copies of the text field + send button.
-    private func inputRow(placeholder: String, canSend: Bool, onSend: @escaping () -> Void) -> some View {
+    /// Shared input row for both paths: same visuals as before, parameterized
+    /// by which session is currently active so the single-page and research
+    /// paths don't need two near-identical copies of the text field + send
+    /// button. While a reply is streaming, the send button becomes a Stop
+    /// control that cancels the generation, keeping the partial answer.
+    private func inputRow(
+        placeholder: String,
+        canSend: Bool,
+        isResponding: Bool,
+        onSend: @escaping () -> Void,
+        onStop: @escaping () -> Void
+    ) -> some View {
         HStack(spacing: 8) {
             TextField(placeholder, text: $draft)
                 .textFieldStyle(.plain)
@@ -504,17 +645,27 @@ struct AskThisPagePanel: View {
                 .onSubmit(onSend)
                 .disabled(!canSend)
 
-            Button(action: onSend) {
-                Image(systemName: "arrow.up.circle.fill")
-                    .font(.system(size: 20))
-                    .foregroundStyle(
-                        draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !canSend
-                            ? AnyShapeStyle(.secondary)
-                            : AnyShapeStyle(SettingsManager.shared.accentColor)
-                    )
+            if isResponding {
+                Button(action: onStop) {
+                    Image(systemName: "stop.circle.fill")
+                        .font(.system(size: 20))
+                        .foregroundStyle(AnyShapeStyle(SettingsManager.shared.accentColor))
+                }
+                .buttonStyle(.plain)
+                .help("Stop generating")
+            } else {
+                Button(action: onSend) {
+                    Image(systemName: "arrow.up.circle.fill")
+                        .font(.system(size: 20))
+                        .foregroundStyle(
+                            draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !canSend
+                                ? AnyShapeStyle(.secondary)
+                                : AnyShapeStyle(SettingsManager.shared.accentColor)
+                        )
+                }
+                .buttonStyle(.plain)
+                .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !canSend)
             }
-            .buttonStyle(.plain)
-            .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !canSend)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
@@ -580,7 +731,13 @@ struct AskThisPagePanel: View {
                     researchScrollView
                 }
                 Divider()
-                inputRow(placeholder: "Ask across these tabs…", canSend: researchSession.canSend, onSend: sendResearchDraft)
+                inputRow(
+                    placeholder: "Ask across these tabs…",
+                    canSend: researchSession.canSend,
+                    isResponding: researchSession.isResponding,
+                    onSend: sendResearchDraft,
+                    onStop: { researchSession.stop() }
+                )
             }
         }
         .frame(maxHeight: .infinity)
