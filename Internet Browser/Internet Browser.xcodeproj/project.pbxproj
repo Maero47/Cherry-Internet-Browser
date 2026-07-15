@@ -6,6 +6,11 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		46466D7D9BBC4CDE68C37DA2 /* MLXLLM in Frameworks */ = {isa = PBXBuildFile; productRef = CE771E5DF0A12D59802CA69D /* MLXLLM */; };
+		E48F739AEE7029D344C80E74 /* MLXLMCommon in Frameworks */ = {isa = PBXBuildFile; productRef = 31480F65863402CBE97363D8 /* MLXLMCommon */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXContainerItemProxy section */
 		CCA01A072F37D86B00CFA7B6 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -32,16 +37,22 @@
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		CCA019FB2F37D86900CFA7B6 /* Internet Browser */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+			);
 			path = "Internet Browser";
 			sourceTree = "<group>";
 		};
 		CCA01A092F37D86B00CFA7B6 /* Internet BrowserTests */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+			);
 			path = "Internet BrowserTests";
 			sourceTree = "<group>";
 		};
 		CCA01A132F37D86B00CFA7B6 /* Internet BrowserUITests */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+			);
 			path = "Internet BrowserUITests";
 			sourceTree = "<group>";
 		};
@@ -52,6 +63,8 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				46466D7D9BBC4CDE68C37DA2 /* MLXLLM in Frameworks */,
+				E48F739AEE7029D344C80E74 /* MLXLMCommon in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -112,6 +125,8 @@
 			);
 			name = "Internet Browser";
 			packageProductDependencies = (
+				CE771E5DF0A12D59802CA69D /* MLXLLM */,
+				31480F65863402CBE97363D8 /* MLXLMCommon */,
 			);
 			productName = "Internet Browser";
 			productReference = CCA019F92F37D86900CFA7B6 /* Internet Browser.app */;
@@ -134,8 +149,6 @@
 				CCA01A092F37D86B00CFA7B6 /* Internet BrowserTests */,
 			);
 			name = "Internet BrowserTests";
-			packageProductDependencies = (
-			);
 			productName = "Internet BrowserTests";
 			productReference = CCA01A062F37D86B00CFA7B6 /* Internet BrowserTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
@@ -157,8 +170,6 @@
 				CCA01A132F37D86B00CFA7B6 /* Internet BrowserUITests */,
 			);
 			name = "Internet BrowserUITests";
-			packageProductDependencies = (
-			);
 			productName = "Internet BrowserUITests";
 			productReference = CCA01A102F37D86B00CFA7B6 /* Internet BrowserUITests.xctest */;
 			productType = "com.apple.product-type.bundle.ui-testing";
@@ -195,6 +206,9 @@
 			);
 			mainGroup = CCA019F02F37D86900CFA7B6;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				6DD48B5D3A66AD502FEF986A /* XCRemoteSwiftPackageReference "mlx-swift-examples" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = CCA019FA2F37D86900CFA7B6 /* Products */;
 			projectDirPath = "";
@@ -571,6 +585,30 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		6DD48B5D3A66AD502FEF986A /* XCRemoteSwiftPackageReference "mlx-swift-examples" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/ml-explore/mlx-swift-examples";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.29.1;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		31480F65863402CBE97363D8 /* MLXLMCommon */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 6DD48B5D3A66AD502FEF986A /* XCRemoteSwiftPackageReference "mlx-swift-examples" */;
+			productName = MLXLMCommon;
+		};
+		CE771E5DF0A12D59802CA69D /* MLXLLM */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 6DD48B5D3A66AD502FEF986A /* XCRemoteSwiftPackageReference "mlx-swift-examples" */;
+			productName = MLXLLM;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = CCA019F12F37D86900CFA7B6 /* Project object */;
 }
