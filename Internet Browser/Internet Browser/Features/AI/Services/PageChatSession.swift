@@ -43,6 +43,12 @@ final class PageChatSession: ObservableObject {
     /// mid-conversation engine switch only applies to the next new chat.
     @Published private(set) var conversationEngine: AIEngine?
 
+    /// Whether the session is a GENERAL chat — no page grounding at all, the
+    /// model answering from its own knowledge. Decides which engine
+    /// `startNewChat` / `rebuildEngineForSlidingWindow` build, so New Chat
+    /// and a context-overflow rebuild stay in the mode the conversation is in.
+    private(set) var isGeneral = false
+
     private var pageTitle = ""
     private var pageText = ""
     private var groundingSummary: PageSummaryResult?
@@ -62,13 +68,30 @@ final class PageChatSession: ObservableObject {
     }
 
     /// (Re)grounds the session in a page. A no-op if the page hasn't
-    /// actually changed, so callers can invoke this freely (e.g. from a
-    /// SwiftUI `.task(id:)`) without resetting an in-progress conversation.
+    /// actually changed (and the session isn't leaving general mode), so
+    /// callers can invoke this freely (e.g. from a SwiftUI `.task(id:)`)
+    /// without resetting an in-progress conversation. Coming FROM general
+    /// mode always reconfigures — the grounding fundamentally changed, so a
+    /// fresh chat is expected, same as switching pages.
     func configure(pageTitle: String, pageText: String, summary: PageSummaryResult?) {
-        guard pageTitle != self.pageTitle || pageText != self.pageText else { return }
+        guard isGeneral || pageTitle != self.pageTitle || pageText != self.pageText else { return }
+        isGeneral = false
         self.pageTitle = pageTitle
         self.pageText = pageText
         self.groundingSummary = summary
+        startNewChat()
+    }
+
+    /// Switches the session to GENERAL mode — no page grounding; the model
+    /// answers from its own knowledge. A no-op if already general, so a live
+    /// general conversation is never reset by re-fired configure tasks.
+    /// Coming FROM a page always starts fresh, mirroring `configure`.
+    func configureGeneral() {
+        guard !isGeneral else { return }
+        isGeneral = true
+        pageTitle = ""
+        pageText = ""
+        groundingSummary = nil
         startNewChat()
     }
 
@@ -77,8 +100,12 @@ final class PageChatSession: ObservableObject {
         streamTask = nil
         turns = []
         isResponding = false
-        let grounding = PageAIService.chatGroundingText(pageText: pageText, summary: groundingSummary)
-        engine = PageAIService.makeChatEngine(pageTitle: pageTitle, pageText: pageText, grounding: grounding)
+        if isGeneral {
+            engine = PageAIService.makeGeneralChatEngine()
+        } else {
+            let grounding = PageAIService.chatGroundingText(pageText: pageText, summary: groundingSummary)
+            engine = PageAIService.makeChatEngine(pageTitle: pageTitle, pageText: pageText, grounding: grounding)
+        }
         conversationEngine = engine == nil ? nil : SettingsManager.shared.aiEngine
     }
 
@@ -226,24 +253,30 @@ final class PageChatSession: ObservableObject {
     /// Rebuilds `engine` from scratch (same recreation pattern as
     /// `startNewChat()`) seeded with a compact replay of the most recent
     /// exchanges from `history`, so follow-up context survives even though
-    /// the old engine's full transcript is discarded. The page grounding is
-    /// always re-supplied in the fresh instructions, so even a fully trimmed
-    /// window still has the page.
+    /// the old engine's full transcript is discarded. In page mode the page
+    /// grounding is always re-supplied in the fresh instructions, so even a
+    /// fully trimmed window still has the page; a general chat rebuilds with
+    /// the general instructions and stays ungrounded.
     private func rebuildEngineForSlidingWindow(history: [PageChatTurn]) {
-        let grounding = PageAIService.chatGroundingText(pageText: pageText, summary: groundingSummary)
         let replay = Self.recentConversationReplay(from: history)
         // An overflow rebuild CONTINUES the same conversation, so it must stay
         // on the engine the conversation was built under — not the live
         // setting, which the user may have switched mid-chat (that switch
-        // only applies to the next new chat).
+        // only applies to the next new chat). Likewise it stays in the mode
+        // the conversation is in: a general chat rebuilds as general.
         let rebuildEngine = conversationEngine ?? SettingsManager.shared.aiEngine
-        engine = PageAIService.makeChatEngine(
-            pageTitle: pageTitle,
-            pageText: pageText,
-            grounding: grounding,
-            recentConversation: replay,
-            engine: rebuildEngine
-        )
+        if isGeneral {
+            engine = PageAIService.makeGeneralChatEngine(recentConversation: replay, engine: rebuildEngine)
+        } else {
+            let grounding = PageAIService.chatGroundingText(pageText: pageText, summary: groundingSummary)
+            engine = PageAIService.makeChatEngine(
+                pageTitle: pageTitle,
+                pageText: pageText,
+                grounding: grounding,
+                recentConversation: replay,
+                engine: rebuildEngine
+            )
+        }
         conversationEngine = engine == nil ? nil : rebuildEngine
     }
 

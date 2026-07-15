@@ -154,6 +154,43 @@ enum PageAIService {
         }
     }
 
+    /// Creates a fresh GENERAL chat engine — a plain conversation with the
+    /// local model, grounded on nothing, answering from the model's own
+    /// knowledge. Used when the panel's tab selection is empty (or the active
+    /// tab has no readable content). No page text is held on the engine, so
+    /// per-turn retrieval never runs and each message is sent bare.
+    /// `recentConversation` and `engine` behave exactly as on
+    /// `makeChatEngine`: the replay seeds a sliding-window rebuild after a
+    /// context overflow, and the explicit engine keeps that rebuild on the
+    /// engine the conversation was built under.
+    static func makeGeneralChatEngine(recentConversation: String? = nil, engine: AIEngine = SettingsManager.shared.aiEngine) -> AnyObject? {
+        var instructions = generalChatInstructions
+        if let recentConversation, !recentConversation.isEmpty {
+            instructions += """
+
+
+            Recent conversation so far (older turns were trimmed to fit; use this for context on follow-up questions):
+            \(recentConversation)
+            """
+        }
+        switch engine {
+        case .apple:
+            guard #available(macOS 26.0, *) else { return nil }
+            #if canImport(FoundationModels)
+            return PageChatEngine(instructions: instructions, pageText: "")
+            #else
+            return nil
+            #endif
+        case .qwen:
+            #if canImport(MLXLLM)
+            guard LLMModelManager.shared.isDownloaded else { return nil }
+            return MLXChatEngine(instructions: instructions)
+            #else
+            return nil
+            #endif
+        }
+    }
+
     /// Sends one user turn to an engine produced by `makeChatEngine` and
     /// streams back the assistant's reply. Each element is the cumulative
     /// text so far (Foundation Models streams snapshots, not deltas) so
@@ -314,6 +351,15 @@ private extension PageAIService {
         }
         return text
     }
+
+    static let generalChatInstructions = """
+    You are a helpful assistant built into the Cherry web browser, running entirely on-device. \
+    Answer the user's questions directly, helpfully, and concisely, and use the earlier turns \
+    of this conversation as context for follow-up questions. You are not grounded in any web \
+    page right now; if the user asks about "this page", tell them to select a tab in the panel \
+    first. Do not refer to yourself by any name and do not describe yourself as an AI \
+    assistant; just answer.
+    """
 
     static let researchInstructions = """
     You answer questions by synthesizing information gathered from several currently open \
