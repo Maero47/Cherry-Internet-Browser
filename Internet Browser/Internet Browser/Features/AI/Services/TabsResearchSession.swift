@@ -63,8 +63,16 @@ final class TabsResearchSession: ObservableObject {
     /// tab set changed again mid-flight) so the owner re-gathers once more with
     /// the latest tabs rather than committing a snapshot that's already stale.
     private var regatherRequested = false
+    /// The most recently requested tab subset (`nil` = all eligible tabs).
+    /// Read fresh on each owner-loop iteration so a trailing re-gather always
+    /// indexes the LATEST requested selection, not the one that started the chain.
+    private var requestedIncludeTabIDs: Set<UUID>?
 
-    func prepare(tabManager: TabManager) async {
+    /// When `includeTabIDs` is non-nil, only those tabs are gathered and
+    /// indexed (the panel's tab picker drives this); `nil` keeps the original
+    /// "every eligible open tab" behavior.
+    func prepare(tabManager: TabManager, includeTabIDs: Set<UUID>? = nil) async {
+        requestedIncludeTabIDs = includeTabIDs
         // A gather is already running: request a trailing re-gather (so the final
         // index reflects the latest tab set) and await the whole chain to settle.
         if prepareTask != nil {
@@ -75,9 +83,10 @@ final class TabsResearchSession: ObservableObject {
         // Owner: run gathers back-to-back as long as changes keep arriving.
         repeat {
             regatherRequested = false
+            let include = requestedIncludeTabIDs
             let task = Task { @MainActor [weak self] in
                 guard let self else { return }
-                await self.performPrepare(tabManager: tabManager)
+                await self.performPrepare(tabManager: tabManager, includeTabIDs: include)
             }
             prepareTask = task
             await task.value
@@ -85,7 +94,7 @@ final class TabsResearchSession: ObservableObject {
         } while regatherRequested
     }
 
-    private func performPrepare(tabManager: TabManager) async {
+    private func performPrepare(tabManager: TabManager, includeTabIDs: Set<UUID>?) async {
         isPreparing = true
         defer {
             isPreparing = false
@@ -93,7 +102,10 @@ final class TabsResearchSession: ObservableObject {
         }
 
         let allTabs = tabManager.tabs
-        let eligibleTabs = allTabs.filter { tab in
+        // With a requested subset, "skipped" counts against the tabs the user
+        // actually picked — not every other open tab they deliberately left out.
+        let candidateTabs = includeTabIDs.map { ids in allTabs.filter { ids.contains($0.id) } } ?? allTabs
+        let eligibleTabs = candidateTabs.filter { tab in
             !tab.isPrivate && tab.internalPage == nil && !tab.showHomePage && tab.webView != nil
         }
 
@@ -114,7 +126,7 @@ final class TabsResearchSession: ObservableObject {
             ))
         }
 
-        skippedTabCount = (allTabs.count - eligibleTabs.count) + extractionFailures
+        skippedTabCount = (candidateTabs.count - eligibleTabs.count) + extractionFailures
 
         guard !inputs.isEmpty else {
             includedTabCount = 0

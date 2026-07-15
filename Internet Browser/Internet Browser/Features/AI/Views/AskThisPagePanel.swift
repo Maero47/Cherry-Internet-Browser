@@ -5,19 +5,11 @@
 
 import SwiftUI
 
-/// Which set of tabs "Ask This Page" answers from.
-enum AskThisPageMode: String, CaseIterable, Identifiable {
-    case thisPage = "This Page"
-    case allTabs = "All Tabs"
-
-    var id: String { rawValue }
-}
-
-/// Trailing side panel for on-device page Q&A, and (in All Tabs mode) cited
-/// research over every eligible open tab. Mirrors `ViewSourcePanel`'s shape
-/// (fixed-width trailing panel with a header bar + dismiss button) since
-/// it's the closest existing precedent for a panel driven by pre-fetched
-/// page content.
+/// Trailing side panel for on-device page Q&A, and (when more than the
+/// current page is selected in the tab picker) cited research over the
+/// chosen open tabs. Mirrors `ViewSourcePanel`'s shape (fixed-width trailing
+/// panel with a header bar + dismiss button) since it's the closest existing
+/// precedent for a panel driven by pre-fetched page content.
 struct AskThisPagePanel: View {
     let pageTitle: String
     let pageText: String
@@ -26,14 +18,38 @@ struct AskThisPagePanel: View {
 
     @StateObject private var chatSession = PageChatSession()
     @StateObject private var researchSession = TabsResearchSession()
-    @State private var mode: AskThisPageMode = .thisPage
     @State private var draft: String = ""
     /// Turn IDs whose reasoning ("Thoughts") disclosure is expanded. Kept on
     /// the panel (not inside the row builder) because rows live in a ForEach —
     /// a `@State` in the row would reset on every turns-array mutation.
     @State private var expandedReasoning: Set<UUID> = []
+    /// The tabs the conversation answers from. Defaults to just the active
+    /// tab (this-page parity); adding more switches to the research session
+    /// over exactly this set. Never allowed to become empty.
+    @State private var selectedTabIDs: Set<UUID>
+    /// The tab whose `pageTitle`/`pageText` snapshot was passed in when the
+    /// panel opened. `@State` (captured once) rather than recomputed: the
+    /// snapshot doesn't follow later tab switches, so neither should this.
+    @State private var activeTabID: UUID?
 
-    private let availability = PageAIService.availability
+    init(pageTitle: String, pageText: String, tabManager: TabManager, onDismiss: @escaping () -> Void) {
+        self.pageTitle = pageTitle
+        self.pageText = pageText
+        self.tabManager = tabManager
+        self.onDismiss = onDismiss
+        let active = tabManager.selectedTabID
+        _activeTabID = State(initialValue: active)
+        _selectedTabIDs = State(initialValue: active.map { [$0] } ?? [])
+    }
+
+    private var availability: PageAIAvailability { PageAIService.availability }
+
+    /// Exactly the active tab selected → the fast single-page chat path
+    /// (identical to the old "This Page" mode). Anything else answers via the
+    /// research session over the selected set.
+    private var isSinglePageSelection: Bool {
+        selectedTabIDs.count == 1 && selectedTabIDs.first == activeTabID
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -43,12 +59,16 @@ struct AskThisPagePanel: View {
             if !availability.isAvailable {
                 unavailableView
             } else {
-                modePicker
+                TabSelectorBar(
+                    tabManager: tabManager,
+                    activeTabID: activeTabID,
+                    activePageTitle: pageTitle,
+                    selectedTabIDs: $selectedTabIDs
+                )
                 Divider()
-                switch mode {
-                case .thisPage:
+                if isSinglePageSelection {
                     if pageText.isEmpty { noContentView } else { chatContent }
-                case .allTabs:
+                } else {
                     researchContent
                 }
             }
@@ -62,37 +82,47 @@ struct AskThisPagePanel: View {
             guard availability.isAvailable, !pageText.isEmpty else { return }
             chatSession.configure(pageTitle: pageTitle, pageText: pageText, summary: nil)
         }
-        // Re-gather whenever All Tabs mode is active AND the set of open tabs
-        // changes (a tab opened/closed), so the research index and the tab-count
-        // status stay live instead of frozen on the first snapshot. Keyed on the
-        // tab-ID set: switching INTO All Tabs, or opening/closing a tab while in
-        // it, both change the key and re-run prepare (a no-op when the content
-        // snapshot is unchanged, since buildIndex caches by content equality).
-        .task(id: allTabsGatherKey) {
-            guard mode == .allTabs, availability.isAvailable else { return }
-            await researchSession.prepare(tabManager: tabManager)
+        // Re-gather whenever a research-shaped selection is active and the
+        // selected set changes, so the index always covers exactly the chosen
+        // tabs. Re-running with an unchanged content snapshot stays cheap,
+        // since buildIndex caches by content equality.
+        .task(id: researchGatherKey) {
+            guard !isSinglePageSelection, availability.isAvailable else { return }
+            await researchSession.prepare(tabManager: tabManager, includeTabIDs: selectedTabIDs)
+        }
+        // A selected tab can be CLOSED while the panel is open: prune it from
+        // the selection (which also retriggers the gather via the key above)
+        // instead of silently keeping its stale content in the index.
+        .onChange(of: openTabIDs) { _, openIDs in
+            let pruned = selectedTabIDs.intersection(openIDs)
+            guard pruned != selectedTabIDs else { return }
+            selectedTabIDs = ensureNonEmptySelection(pruned)
         }
     }
 
-    /// Empty outside All Tabs mode (so the gather task stays idle); otherwise the
-    /// current open-tab ID set, so opening/closing a tab retriggers the gather.
-    private var allTabsGatherKey: String {
-        guard mode == .allTabs else { return "" }
-        // Sorted so it's a stable set key: reordering tabs (same set) must not
-        // retrigger a re-gather, only opening/closing a tab should.
-        return tabManager.tabs.map { $0.id.uuidString }.sorted().joined(separator: ",")
+    /// Empty for the single-page selection (so the gather task stays idle);
+    /// otherwise a stable key for the selected tab set — sorted, so only real
+    /// membership changes retrigger a re-gather.
+    private var researchGatherKey: String {
+        guard !isSinglePageSelection else { return "" }
+        return selectedTabIDs.map(\.uuidString).sorted().joined(separator: ",")
     }
 
-    private var modePicker: some View {
-        Picker("Mode", selection: $mode) {
-            ForEach(AskThisPageMode.allCases) { mode in
-                Text(mode.rawValue).tag(mode)
-            }
+    private var openTabIDs: Set<UUID> {
+        Set(tabManager.tabs.map(\.id))
+    }
+
+    /// The selection must never be empty: fall back to the active tab, or —
+    /// if the active tab itself was closed — the currently selected tab.
+    private func ensureNonEmptySelection(_ selection: Set<UUID>) -> Set<UUID> {
+        guard selection.isEmpty else { return selection }
+        if let active = activeTabID, tabManager.tabs.contains(where: { $0.id == active }) {
+            return [active]
         }
-        .pickerStyle(.segmented)
-        .labelsHidden()
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
+        if let current = tabManager.selectedTabID {
+            return [current]
+        }
+        return selection
     }
 
     // MARK: - Header
@@ -484,7 +514,7 @@ struct AskThisPagePanel: View {
                     researchScrollView
                 }
                 Divider()
-                inputRow(placeholder: "Ask across open tabs…", canSend: researchSession.canSend, onSend: sendResearchDraft)
+                inputRow(placeholder: "Ask across these tabs…", canSend: researchSession.canSend, onSend: sendResearchDraft)
             }
         }
         .frame(maxHeight: .infinity)
@@ -529,7 +559,7 @@ struct AskThisPagePanel: View {
                     .padding(.horizontal, 24)
             }
             Button("Try Again") {
-                Task { await researchSession.prepare(tabManager: tabManager) }
+                Task { await researchSession.prepare(tabManager: tabManager, includeTabIDs: selectedTabIDs) }
             }
             .buttonStyle(.plain)
             .font(.system(size: 11.5, weight: .medium))
@@ -554,7 +584,7 @@ struct AskThisPagePanel: View {
             Spacer()
             Button {
                 Task {
-                    await researchSession.prepare(tabManager: tabManager)
+                    await researchSession.prepare(tabManager: tabManager, includeTabIDs: selectedTabIDs)
                     researchSession.startNewChat()
                 }
             } label: {
@@ -581,7 +611,7 @@ struct AskThisPagePanel: View {
             Image(systemName: "square.stack.3d.up")
                 .font(.system(size: 26))
                 .foregroundStyle(.secondary)
-            Text("Ask across your open tabs")
+            Text("Ask across the selected tabs")
                 .font(.system(size: 13, weight: .semibold))
             Text(researchStatusLine)
                 .font(.system(size: 10.5))
@@ -645,6 +675,129 @@ struct AskThisPagePanel: View {
         guard researchSession.canSend, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         draft = ""
         researchSession.send(text)
+    }
+}
+
+/// The row of selected-tab chips plus a `＋` menu of every eligible open tab,
+/// replacing the old This Page / All Tabs segmented picker. The selected set
+/// drives which session answers (see `isSinglePageSelection`); the active
+/// tab is just a normal, default-selected member of the set.
+private struct TabSelectorBar: View {
+    let tabManager: TabManager
+    let activeTabID: UUID?
+    /// Title of the page snapshot the panel opened with — used for the active
+    /// tab's chip so it reads as "the current page" even if the tab's live
+    /// title has since changed.
+    let activePageTitle: String
+    @Binding var selectedTabIDs: Set<UUID>
+
+    var body: some View {
+        HStack(spacing: 6) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    ForEach(selectedTabs) { tab in
+                        chip(for: tab)
+                    }
+                }
+            }
+            addTabMenu
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+    }
+
+    /// Selected tabs in tab-strip order, active tab first so the chip that
+    /// reads as "this page" stays anchored at the leading edge.
+    private var selectedTabs: [Tab] {
+        tabManager.tabs
+            .filter { selectedTabIDs.contains($0.id) }
+            .sorted { a, _ in a.id == activeTabID }
+    }
+
+    /// Same eligibility as `TabsResearchSession.performPrepare`: private,
+    /// internal, home-page, and sleeping (no webView) tabs can't be indexed.
+    private var eligibleTabs: [Tab] {
+        tabManager.tabs.filter { tab in
+            !tab.isPrivate && tab.internalPage == nil && !tab.showHomePage && tab.webView != nil
+        }
+    }
+
+    private func chipTitle(for tab: Tab) -> String {
+        if tab.id == activeTabID, !activePageTitle.isEmpty {
+            return activePageTitle
+        }
+        return tab.title.isEmpty ? (tab.url?.host() ?? "Untitled") : tab.title
+    }
+
+    private func chip(for tab: Tab) -> some View {
+        HStack(spacing: 4) {
+            Circle()
+                .fill(SettingsManager.shared.accentColor)
+                .frame(width: 5, height: 5)
+            Text(chipTitle(for: tab))
+                .font(.system(size: 10.5))
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(maxWidth: 110, alignment: .leading)
+            Button {
+                remove(tab.id)
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 7, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(Color.primary.opacity(0.06), in: Capsule())
+    }
+
+    private var addTabMenu: some View {
+        Menu {
+            ForEach(eligibleTabs) { tab in
+                Toggle(isOn: membershipBinding(for: tab.id)) {
+                    Text(chipTitle(for: tab))
+                        .lineLimit(1)
+                }
+            }
+        } label: {
+            Image(systemName: "plus")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 20, height: 20)
+                .background(Color.primary.opacity(0.06), in: Circle())
+                .contentShape(Circle())
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+    }
+
+    private func membershipBinding(for tabID: UUID) -> Binding<Bool> {
+        Binding(
+            get: { selectedTabIDs.contains(tabID) },
+            set: { isSelected in
+                if isSelected {
+                    selectedTabIDs.insert(tabID)
+                } else {
+                    remove(tabID)
+                }
+            }
+        )
+    }
+
+    /// Removing the last chip falls back to re-selecting the active tab —
+    /// the selection is never allowed to be empty.
+    private func remove(_ tabID: UUID) {
+        var updated = selectedTabIDs
+        updated.remove(tabID)
+        if updated.isEmpty {
+            guard let fallback = activeTabID ?? tabManager.selectedTabID else { return }
+            updated = [fallback]
+        }
+        selectedTabIDs = updated
     }
 }
 
