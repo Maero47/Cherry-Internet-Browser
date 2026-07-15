@@ -38,6 +38,10 @@ struct PageChatTurn: Identifiable, Equatable {
 final class PageChatSession: ObservableObject {
     @Published private(set) var turns: [PageChatTurn] = []
     @Published private(set) var isResponding = false
+    /// Which AI engine setting the current conversation's engine was built
+    /// with. The panel compares this against the live setting to hint that a
+    /// mid-conversation engine switch only applies to the next new chat.
+    @Published private(set) var conversationEngine: AIEngine?
 
     private var pageTitle = ""
     private var pageText = ""
@@ -75,6 +79,7 @@ final class PageChatSession: ObservableObject {
         isResponding = false
         let grounding = PageAIService.chatGroundingText(pageText: pageText, summary: groundingSummary)
         engine = PageAIService.makeChatEngine(pageTitle: pageTitle, pageText: pageText, grounding: grounding)
+        conversationEngine = engine == nil ? nil : SettingsManager.shared.aiEngine
     }
 
     func send(_ text: String) {
@@ -216,6 +221,7 @@ final class PageChatSession: ObservableObject {
             grounding: grounding,
             recentConversation: replay
         )
+        conversationEngine = engine == nil ? nil : SettingsManager.shared.aiEngine
     }
 
     /// Formats the last `slidingWindowReplayTurnCount` non-error, non-streaming

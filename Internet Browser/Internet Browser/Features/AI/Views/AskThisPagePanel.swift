@@ -59,6 +59,10 @@ struct AskThisPagePanel: View {
             if !availability.isAvailable {
                 unavailableView
             } else {
+                if showsEngineSwitchHint {
+                    engineSwitchHint
+                    Divider()
+                }
                 TabSelectorBar(
                     tabManager: tabManager,
                     activeTabID: activeTabID,
@@ -145,6 +149,8 @@ struct AskThisPagePanel: View {
 
             Spacer()
 
+            engineMenu
+
             Button(action: onDismiss) {
                 Image(systemName: "xmark")
                     .font(.system(size: 10, weight: .medium))
@@ -157,6 +163,66 @@ struct AskThisPagePanel: View {
         .padding(.horizontal, 12)
         .frame(height: 50)
         .background(Color(nsColor: .windowBackgroundColor))
+    }
+
+    /// Compact engine switcher in the header. Reflects and sets the app-wide
+    /// `aiEngine` setting; the switch takes effect on the NEXT new chat (the
+    /// open conversation keeps the engine it was built with — see
+    /// `showsEngineSwitchHint`). Selecting Qwen while its model isn't
+    /// downloaded is allowed: the panel then shows the normal
+    /// "not downloaded" availability fallback, pointing at Settings.
+    private var engineMenu: some View {
+        Menu {
+            ForEach(AIEngine.allCases) { engine in
+                Button {
+                    SettingsManager.shared.aiEngine = engine
+                } label: {
+                    if engine == SettingsManager.shared.aiEngine {
+                        Label(engine.rawValue, systemImage: "checkmark")
+                    } else {
+                        Text(engine.rawValue)
+                    }
+                }
+            }
+            if !LLMModelManager.shared.isDownloaded {
+                Divider()
+                Text("Qwen model not downloaded — download it in Settings")
+            }
+        } label: {
+            HStack(spacing: 3) {
+                Text(SettingsManager.shared.aiEngine.rawValue)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 7, weight: .semibold))
+            }
+            .font(.system(size: 10))
+            .foregroundStyle(.secondary)
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+    }
+
+    /// True when the live engine setting differs from the engine the visible
+    /// conversation was built with — i.e. the moment to tell the user the
+    /// switch only applies to their next chat.
+    private var showsEngineSwitchHint: Bool {
+        let current = SettingsManager.shared.aiEngine
+        if isSinglePageSelection {
+            guard let built = chatSession.conversationEngine, !chatSession.turns.isEmpty else { return false }
+            return built != current
+        }
+        guard let built = researchSession.conversationEngine, !researchSession.turns.isEmpty else { return false }
+        return built != current
+    }
+
+    private var engineSwitchHint: some View {
+        Text("Applies to your next chat.")
+            .font(.system(size: 10))
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 4)
+            .frame(maxWidth: .infinity, alignment: .trailing)
+            .background(Color(nsColor: .windowBackgroundColor))
     }
 
     // MARK: - Fallback states

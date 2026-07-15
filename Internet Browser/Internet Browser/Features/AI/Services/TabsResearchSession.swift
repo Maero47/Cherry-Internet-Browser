@@ -25,6 +25,9 @@ final class TabsResearchSession: ObservableObject {
     @Published private(set) var hasPrepared = false
     @Published private(set) var includedTabCount = 0
     @Published private(set) var skippedTabCount = 0
+    /// Which AI engine setting the current conversation's engine was built
+    /// with — same role as `PageChatSession.conversationEngine`.
+    @Published private(set) var conversationEngine: AIEngine?
 
     /// Owned exclusively by this session — NOT `TabsResearchService.shared`
     /// (there is no such singleton). Each window has its own
@@ -144,6 +147,7 @@ final class TabsResearchSession: ObservableObject {
         isIndexed = true
         if engine == nil {
             engine = PageAIService.makeResearchEngine()
+            conversationEngine = engine == nil ? nil : SettingsManager.shared.aiEngine
         }
     }
 
@@ -155,6 +159,7 @@ final class TabsResearchSession: ObservableObject {
         turns = []
         isResponding = false
         engine = isIndexed ? PageAIService.makeResearchEngine() : nil
+        conversationEngine = engine == nil ? nil : SettingsManager.shared.aiEngine
     }
 
     func send(_ text: String) {
