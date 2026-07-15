@@ -31,7 +31,6 @@ struct PageChatTurn: Identifiable, Equatable {
 final class PageChatSession: ObservableObject {
     @Published private(set) var turns: [PageChatTurn] = []
     @Published private(set) var isResponding = false
-    @Published private(set) var isBlockedByContextLimit = false
 
     private var pageTitle = ""
     private var pageText = ""
@@ -39,8 +38,12 @@ final class PageChatSession: ObservableObject {
     private var engine: AnyObject?
     private var streamTask: Task<Void, Never>?
 
+    /// Number of most-recent turns (user + assistant, ~3 exchanges) replayed
+    /// into a rebuilt engine after a context-window overflow. See `send(_:)`.
+    private static let slidingWindowReplayTurnCount = 6
+
     var canSend: Bool {
-        !isResponding && !isBlockedByContextLimit
+        !isResponding
     }
 
     deinit {
@@ -63,7 +66,6 @@ final class PageChatSession: ObservableObject {
         streamTask = nil
         turns = []
         isResponding = false
-        isBlockedByContextLimit = false
         let grounding = PageAIService.chatGroundingText(pageText: pageText, summary: groundingSummary)
         engine = PageAIService.makeChatEngine(pageTitle: pageTitle, pageText: pageText, grounding: grounding)
     }
@@ -72,33 +74,29 @@ final class PageChatSession: ObservableObject {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, canSend else { return }
 
-        guard let engine else {
+        guard engine != nil else {
             turns.append(PageChatTurn(role: .error, text: "Ask This Page requires macOS 26 or later."))
             return
         }
 
+        // Snapshot of every turn before this one, used only if this message
+        // trips a context-window overflow and the engine needs rebuilding
+        // with a replay of recent history — see `rebuildEngineForSlidingWindow`.
+        let historyBeforeSend = turns
+
         turns.append(PageChatTurn(role: .user, text: trimmed))
         let assistantTurn = PageChatTurn(role: .assistant, text: "", isStreaming: true)
-        let assistantID = assistantTurn.id
         turns.append(assistantTurn)
         isResponding = true
 
         streamTask = Task { @MainActor [weak self] in
             guard let self else { return }
-            do {
-                let stream = PageAIService.streamChatReply(engine: engine, message: trimmed)
-                for try await partial in stream {
-                    self.updateTurn(id: assistantID) { $0.text = partial }
-                }
-                guard !Task.isCancelled else { return }
-                self.updateTurn(id: assistantID) { $0.isStreaming = false }
-            } catch let error as PageAIError {
-                guard !Task.isCancelled else { return }
-                self.handleFailure(error, assistantID: assistantID)
-            } catch {
-                guard !Task.isCancelled else { return }
-                self.handleFailure(.generationFailed(error.localizedDescription), assistantID: assistantID)
-            }
+            await self.performSend(
+                message: trimmed,
+                assistantID: assistantTurn.id,
+                history: historyBeforeSend,
+                allowContextOverflowRetry: true
+            )
             // A cancelled task is stale — e.g. superseded by startNewChat() mid-stream.
             // It must not clobber a newer send()'s isResponding = true.
             guard !Task.isCancelled else { return }
@@ -106,18 +104,115 @@ final class PageChatSession: ObservableObject {
         }
     }
 
-    private func handleFailure(_ error: PageAIError, assistantID: UUID) {
+    /// Streams one reply into the turn at `assistantID`. On
+    /// `.contextWindowExceeded`, and only while `allowContextOverflowRetry` is
+    /// true, this rebuilds the engine with a trimmed sliding window of recent
+    /// history and retries `message` exactly once (passing
+    /// `allowContextOverflowRetry: false` into that retry) — so the chat
+    /// never hard dead-ends, and the recursion is bounded to a single retry
+    /// regardless of the message or page.
+    private func performSend(
+        message: String,
+        assistantID: UUID,
+        history: [PageChatTurn],
+        allowContextOverflowRetry: Bool
+    ) async {
+        guard let engine else {
+            removeTurn(id: assistantID)
+            turns.append(PageChatTurn(role: .error, text: "Ask This Page requires macOS 26 or later."))
+            return
+        }
+
+        do {
+            let stream = PageAIService.streamChatReply(engine: engine, message: message)
+            for try await partial in stream {
+                guard !Task.isCancelled else { return }
+                updateTurn(id: assistantID) { $0.text = partial }
+            }
+            guard !Task.isCancelled else { return }
+            updateTurn(id: assistantID) { $0.isStreaming = false }
+        } catch let error as PageAIError {
+            guard !Task.isCancelled else { return }
+            await handleFailure(
+                error,
+                message: message,
+                assistantID: assistantID,
+                history: history,
+                allowContextOverflowRetry: allowContextOverflowRetry
+            )
+        } catch {
+            guard !Task.isCancelled else { return }
+            await handleFailure(
+                .generationFailed(error.localizedDescription),
+                message: message,
+                assistantID: assistantID,
+                history: history,
+                allowContextOverflowRetry: allowContextOverflowRetry
+            )
+        }
+    }
+
+    private func handleFailure(
+        _ error: PageAIError,
+        message: String,
+        assistantID: UUID,
+        history: [PageChatTurn],
+        allowContextOverflowRetry: Bool
+    ) async {
         removeTurn(id: assistantID)
         switch error {
+        case .contextWindowExceeded where allowContextOverflowRetry:
+            rebuildEngineForSlidingWindow(history: history)
+            guard engine != nil else {
+                turns.append(PageChatTurn(role: .error, text: "Ask This Page requires macOS 26 or later."))
+                return
+            }
+            let retryTurn = PageChatTurn(role: .assistant, text: "", isStreaming: true)
+            turns.append(retryTurn)
+            await performSend(
+                message: message,
+                assistantID: retryTurn.id,
+                history: history,
+                allowContextOverflowRetry: false
+            )
         case .contextWindowExceeded:
+            // Even a freshly rebuilt, minimally-windowed engine couldn't fit this
+            // message — a soft inline notice, never a hard block; the chat stays usable.
             turns.append(PageChatTurn(
                 role: .error,
-                text: "This chat got too long for the on-device model to keep in memory. Start a new chat to keep asking questions."
+                text: "That reply didn't fit in the on-device model's memory even after trimming earlier context. Try a shorter question, or start a new chat."
             ))
-            isBlockedByContextLimit = true
         case .notAvailable, .generationFailed:
             turns.append(PageChatTurn(role: .error, text: error.errorDescription ?? "Something went wrong."))
         }
+    }
+
+    /// Rebuilds `engine` from scratch (same recreation pattern as
+    /// `startNewChat()`) seeded with a compact replay of the most recent
+    /// exchanges from `history`, so follow-up context survives even though
+    /// the old engine's full transcript is discarded. The page grounding is
+    /// always re-supplied in the fresh instructions, so even a fully trimmed
+    /// window still has the page.
+    private func rebuildEngineForSlidingWindow(history: [PageChatTurn]) {
+        let grounding = PageAIService.chatGroundingText(pageText: pageText, summary: groundingSummary)
+        let replay = Self.recentConversationReplay(from: history)
+        engine = PageAIService.makeChatEngine(
+            pageTitle: pageTitle,
+            pageText: pageText,
+            grounding: grounding,
+            recentConversation: replay
+        )
+    }
+
+    /// Formats the last `slidingWindowReplayTurnCount` non-error, non-streaming
+    /// turns as a compact "Speaker: text" transcript for seeding a rebuilt
+    /// engine's instructions.
+    private static func recentConversationReplay(from history: [PageChatTurn]) -> String? {
+        let replayable = history.filter { $0.role != .error && !$0.isStreaming }
+        guard !replayable.isEmpty else { return nil }
+        return replayable.suffix(slidingWindowReplayTurnCount)
+            .map { turn in "\(turn.role == .user ? "User" : "Assistant"): \(turn.text)" }
+            .joined(separator: "\n")
     }
 
     private func updateTurn(id: UUID, _ mutate: (inout PageChatTurn) -> Void) {

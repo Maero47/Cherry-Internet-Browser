@@ -14,17 +14,6 @@ struct AskThisPagePanel: View {
     let pageText: String
     let onDismiss: () -> Void
 
-    private enum Segment: String, CaseIterable {
-        case summary = "Summary"
-        case ask = "Ask"
-    }
-
-    @State private var segment: Segment = .summary
-
-    @State private var isSummarizing = false
-    @State private var summaryResult: PageSummaryResult?
-    @State private var summaryError: String?
-
     @StateObject private var chatSession = PageChatSession()
     @State private var draft: String = ""
 
@@ -40,20 +29,7 @@ struct AskThisPagePanel: View {
             } else if pageText.isEmpty {
                 noContentView
             } else {
-                segmentPicker
-                Divider()
-                switch segment {
-                case .summary:
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 16) {
-                            summaryContent
-                        }
-                        .padding(16)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                case .ask:
-                    chatContent
-                }
+                chatContent
             }
         }
         .frame(width: 380)
@@ -63,7 +39,7 @@ struct AskThisPagePanel: View {
         }
         .task(id: pageText) {
             guard availability.isAvailable, !pageText.isEmpty else { return }
-            chatSession.configure(pageTitle: pageTitle, pageText: pageText, summary: summaryResult)
+            chatSession.configure(pageTitle: pageTitle, pageText: pageText, summary: nil)
         }
     }
 
@@ -141,77 +117,6 @@ struct AskThisPagePanel: View {
             Spacer()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-
-    // MARK: - Segment picker
-
-    private var segmentPicker: some View {
-        Picker("", selection: $segment) {
-            ForEach(Segment.allCases, id: \.self) { seg in
-                Text(seg.rawValue).tag(seg)
-            }
-        }
-        .pickerStyle(.segmented)
-        .labelsHidden()
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-    }
-
-    // MARK: - Summary
-
-    @ViewBuilder
-    private var summaryContent: some View {
-        if let result = summaryResult {
-            VStack(alignment: .leading, spacing: 14) {
-                if result.wasTruncated {
-                    truncationNotice
-                }
-
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Summary")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                    Text(result.summary)
-                        .font(.system(size: 13))
-                        .textSelection(.enabled)
-                }
-
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Key Points")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                    ForEach(Array(result.keyPoints.enumerated()), id: \.offset) { _, point in
-                        HStack(alignment: .top, spacing: 6) {
-                            Text("•").foregroundStyle(.secondary)
-                            Text(point)
-                                .font(.system(size: 13))
-                                .textSelection(.enabled)
-                        }
-                    }
-                }
-
-                Button("Regenerate") { runSummarize() }
-                    .buttonStyle(.plain)
-                    .font(.system(size: 11))
-                    .foregroundStyle(SettingsManager.shared.accentColor)
-            }
-        } else if isSummarizing {
-            loadingRow(text: "Reading the page…")
-        } else {
-            VStack(alignment: .leading, spacing: 10) {
-                if let error = summaryError {
-                    Text(error)
-                        .font(.system(size: 12))
-                        .foregroundStyle(.red.opacity(0.85))
-                }
-                Text("Get a concise summary and the key points of this page, generated entirely on-device.")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-                Button("Summarize Page") { runSummarize() }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
-            }
-        }
     }
 
     // MARK: - Ask (chat)
@@ -296,7 +201,7 @@ struct AskThisPagePanel: View {
                     if turn.isStreaming && turn.text.isEmpty {
                         TypingDotsView()
                     } else {
-                        Text(turn.text)
+                        Text(Self.assistantMarkdown(turn.text))
                             .font(.system(size: 13))
                             .foregroundStyle(.primary)
                             .textSelection(.enabled)
@@ -304,7 +209,7 @@ struct AskThisPagePanel: View {
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
-                .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
                 Spacer(minLength: 40)
             }
 
@@ -322,6 +227,15 @@ struct AskThisPagePanel: View {
             .background(Color.red.opacity(0.08), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+
+    /// Renders assistant text as markdown (so `**bold**`, headings, lists,
+    /// etc. show as formatting instead of literal asterisks) while
+    /// preserving newlines/whitespace as typed. Falls back to plain text if
+    /// parsing throws, since the model's output isn't guaranteed valid markdown.
+    private static func assistantMarkdown(_ text: String) -> AttributedString {
+        (try? AttributedString(markdown: text, options: AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)))
+            ?? AttributedString(text)
     }
 
     private let examplePrompts = [
@@ -368,39 +282,26 @@ struct AskThisPagePanel: View {
     }
 
     private var chatInputRow: some View {
-        VStack(spacing: 8) {
-            if chatSession.isBlockedByContextLimit {
-                Button {
-                    chatSession.startNewChat()
-                } label: {
-                    Label("Start New Chat", systemImage: "arrow.counterclockwise")
-                        .font(.system(size: 11, weight: .medium))
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-            }
+        HStack(spacing: 8) {
+            TextField("Ask about this page…", text: $draft)
+                .textFieldStyle(.plain)
+                .font(.system(size: 12))
+                .padding(8)
+                .background(RoundedRectangle(cornerRadius: 8).fill(Color(nsColor: .controlBackgroundColor)))
+                .onSubmit(sendDraft)
+                .disabled(!chatSession.canSend)
 
-            HStack(spacing: 8) {
-                TextField("Ask about this page…", text: $draft)
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 12))
-                    .padding(8)
-                    .background(RoundedRectangle(cornerRadius: 8).fill(Color(nsColor: .controlBackgroundColor)))
-                    .onSubmit(sendDraft)
-                    .disabled(!chatSession.canSend)
-
-                Button(action: sendDraft) {
-                    Image(systemName: "arrow.up.circle.fill")
-                        .font(.system(size: 20))
-                        .foregroundStyle(
-                            draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !chatSession.canSend
-                                ? AnyShapeStyle(.secondary)
-                                : AnyShapeStyle(SettingsManager.shared.accentColor)
-                        )
-                }
-                .buttonStyle(.plain)
-                .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !chatSession.canSend)
+            Button(action: sendDraft) {
+                Image(systemName: "arrow.up.circle.fill")
+                    .font(.system(size: 20))
+                    .foregroundStyle(
+                        draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !chatSession.canSend
+                            ? AnyShapeStyle(.secondary)
+                            : AnyShapeStyle(SettingsManager.shared.accentColor)
+                    )
             }
+            .buttonStyle(.plain)
+            .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !chatSession.canSend)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
@@ -413,47 +314,6 @@ struct AskThisPagePanel: View {
         draft = ""
         chatSession.send(text)
     }
-
-    // MARK: - Shared bits
-
-    private func loadingRow(text: String) -> some View {
-        HStack(spacing: 8) {
-            ProgressView()
-                .controlSize(.small)
-            Text(text)
-                .font(.system(size: 12))
-                .foregroundStyle(.secondary)
-        }
-        .padding(.top, 20)
-    }
-
-    private var truncationNotice: some View {
-        HStack(spacing: 6) {
-            Image(systemName: "info.circle")
-                .font(.system(size: 10))
-                .foregroundStyle(.secondary)
-            Text("This page is long — only part of it was used.")
-                .font(.system(size: 10))
-                .foregroundStyle(.secondary)
-        }
-    }
-
-    // MARK: - Actions
-
-    private func runSummarize() {
-        guard !isSummarizing else { return }
-        isSummarizing = true
-        summaryError = nil
-        Task { @MainActor in
-            let result = await PageAIService.summarize(pageText: pageText, pageTitle: pageTitle)
-            isSummarizing = false
-            switch result {
-            case .success(let value): summaryResult = value
-            case .failure(let error): summaryError = error.errorDescription
-            }
-        }
-    }
-
 }
 
 /// Three dots that pulse in sequence, shown while an assistant reply hasn't

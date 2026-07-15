@@ -110,15 +110,18 @@ enum PageAIService {
     /// Creates a fresh, page-grounded chat engine. `pageText` is kept
     /// alongside `grounding` (which only holds a summary or capped prefix)
     /// so each turn can retrieve the chunks most relevant to that turn's
-    /// question from the full page. Returns `nil` below macOS 26 or without
-    /// Foundation Models — callers treat `nil` as "chat isn't available"
-    /// without needing to know why. The returned value is type-erased so
-    /// this signature (and every other caller of it) stays free of
-    /// Foundation Models types.
-    static func makeChatEngine(pageTitle: String, pageText: String, grounding: String) -> AnyObject? {
+    /// question from the full page. `recentConversation` optionally seeds the
+    /// engine with a compact replay of the most recent turns — used to keep a
+    /// chat's follow-up context alive across a sliding-window rebuild after a
+    /// context-window overflow, without carrying the whole prior transcript
+    /// forward. Returns `nil` below macOS 26 or without Foundation Models —
+    /// callers treat `nil` as "chat isn't available" without needing to know
+    /// why. The returned value is type-erased so this signature (and every
+    /// other caller of it) stays free of Foundation Models types.
+    static func makeChatEngine(pageTitle: String, pageText: String, grounding: String, recentConversation: String? = nil) -> AnyObject? {
         guard #available(macOS 26.0, *) else { return nil }
         #if canImport(FoundationModels)
-        return makeChatEngineOnDevice(pageTitle: pageTitle, pageText: pageText, grounding: grounding)
+        return makeChatEngineOnDevice(pageTitle: pageTitle, pageText: pageText, grounding: grounding, recentConversation: recentConversation)
         #else
         return nil
         #endif
@@ -202,7 +205,9 @@ private extension PageAIService {
     You answer questions about a single web page's content, for a browser side panel. Answer \
     ONLY using the page content provided in the prompt. If the answer is not present in that \
     content, say plainly that the page doesn't contain that information — never guess or use \
-    outside knowledge. Keep answers concise and address the question directly.
+    outside knowledge. Keep answers concise and address the question directly. Do not refer to \
+    yourself by any name and do not describe yourself as an AI assistant; just answer the \
+    question directly.
     """
 
     static func mapGenerationError(_ error: Error) -> PageAIError {
@@ -311,11 +316,13 @@ private extension PageAIService {
     supplied alongside a question — never invent facts, names, numbers, or claims that \
     aren't present in them. If the answer isn't in the provided content, say so plainly \
     instead of guessing. Keep replies conversational and reasonably concise, and use the \
-    earlier turns of this conversation as context for follow-up questions.
+    earlier turns of this conversation as context for follow-up questions. Do not refer to \
+    yourself by any name and do not describe yourself as an AI assistant; just answer the \
+    question directly.
     """
 
-    static func chatInstructions(pageTitle: String, grounding: String) -> String {
-        """
+    static func chatInstructions(pageTitle: String, grounding: String, recentConversation: String? = nil) -> String {
+        var text = """
         \(chatInstructionsPrefix)
 
         Page title: \(pageTitle)
@@ -323,6 +330,15 @@ private extension PageAIService {
         Page content:
         \(grounding)
         """
+        if let recentConversation, !recentConversation.isEmpty {
+            text += """
+
+
+            Recent conversation so far (older turns were trimmed to fit; use this for context on follow-up questions):
+            \(recentConversation)
+            """
+        }
+        return text
     }
 
     /// `pageText` is the full extracted page text, kept on the engine so
@@ -330,11 +346,13 @@ private extension PageAIService {
     /// `grounding` (a summary, or a capped prefix as a last resort) is baked
     /// into the session's fixed instructions as a light whole-page anchor
     /// that's always present, even on turns where retrieval finds nothing
-    /// or isn't available.
-    static func makeChatEngineOnDevice(pageTitle: String, pageText: String, grounding: String) -> AnyObject? {
+    /// or isn't available. `recentConversation`, when supplied, is a compact
+    /// replay of recent turns baked into the same fixed instructions — see
+    /// `makeChatEngine`.
+    static func makeChatEngineOnDevice(pageTitle: String, pageText: String, grounding: String, recentConversation: String? = nil) -> AnyObject? {
         guard !grounding.isEmpty else { return nil }
         return PageChatEngine(
-            instructions: chatInstructions(pageTitle: pageTitle, grounding: grounding),
+            instructions: chatInstructions(pageTitle: pageTitle, grounding: grounding, recentConversation: recentConversation),
             pageText: pageText
         )
     }
