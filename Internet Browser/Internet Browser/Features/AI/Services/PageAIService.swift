@@ -277,8 +277,7 @@ private extension PageAIService {
 
         let workingText: String
         let wasTruncated: Bool
-        if await PageRetriever.shared.index(pageText: pageText),
-           let retrieved = await PageRetriever.shared.retrieve(query: question),
+        if let retrieved = await PageRetriever.shared.retrieve(pageText: pageText, query: question),
            !retrieved.isEmpty {
             // Grounded on the most relevant sections rather than a prefix,
             // so there's nothing "truncated" about this answer.
@@ -340,6 +339,16 @@ private extension PageAIService {
         )
     }
 
+    /// Chat's per-turn retrieval topK, smaller than Q&A's
+    /// `PageRetriever.defaultTopK`. Chat's persistent `LanguageModelSession`
+    /// keeps every past turn's prompt in its transcript forever, so retrieved
+    /// excerpts injected each turn accumulate across the conversation —
+    /// unlike single-shot Q&A, which never re-sends anything. A smaller
+    /// per-turn footprint keeps a multi-turn chat from hitting
+    /// `.exceededContextWindowSize` much sooner than the old blind-prefix
+    /// behavior did.
+    static let chatRetrievalTopK = 3
+
     /// Builds the per-turn prompt sent to the chat session: retrieves the
     /// chunks of `pageText` most relevant to `message` and prepends them, so
     /// each question is grounded on the page sections that actually answer
@@ -349,9 +358,11 @@ private extension PageAIService {
     /// identical to today's behavior, relying on the engine's fixed grounding.
     static func chatTurnPrompt(pageText: String, message: String) async -> String {
         guard !pageText.isEmpty else { return message }
-        guard await PageRetriever.shared.index(pageText: pageText),
-              let retrieved = await PageRetriever.shared.retrieve(query: message),
-              !retrieved.isEmpty else {
+        guard let retrieved = await PageRetriever.shared.retrieve(
+            pageText: pageText,
+            query: message,
+            topK: chatRetrievalTopK
+        ), !retrieved.isEmpty else {
             return message
         }
         let context = retrieved.map(\.text).joined(separator: "\n\n---\n\n")

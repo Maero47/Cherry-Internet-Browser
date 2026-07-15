@@ -37,10 +37,16 @@ enum RetrievalMath {
     static func meanPool(_ vectors: [[Double]]) -> [Float] {
         guard let width = vectors.first?.count, width > 0 else { return [] }
         var sums = [Double](repeating: 0, count: width)
+        var matchingCount = 0
         for vector in vectors where vector.count == width {
             for i in 0..<width { sums[i] += vector[i] }
+            matchingCount += 1
         }
-        let count = Double(vectors.count)
+        // Divide by the vectors actually summed, not the total input count —
+        // any mismatched-width vectors were skipped above, and averaging
+        // over the full count would understate the mean.
+        guard matchingCount > 0 else { return [] }
+        let count = Double(matchingCount)
         return sums.map { Float($0 / count) }
     }
 
@@ -76,10 +82,10 @@ enum RetrievalMath {
 private let ragChunkMaxChars = 900
 private let defaultRetrievalTopK = 5
 
-/// On-device retrieval over one page's text at a time. Callers `index(pageText:)`
-/// once per page (results are cached by exact text match, so repeated
-/// questions about the same page don't re-embed) then `retrieve(query:)` per
-/// question.
+/// On-device retrieval over one page's text at a time. Callers call
+/// `retrieve(pageText:query:)` per question; the index (chunks + embeddings)
+/// is cached by exact page-text match so repeated questions about the same
+/// page don't re-embed.
 ///
 /// A plain (non-`MainActor`) actor so the embedding work — which is real CPU
 /// inference, even if Neural-Engine accelerated — never blocks the main
@@ -96,13 +102,43 @@ actor PageRetriever {
 
     private init() {}
 
+    /// Retrieves the chunks of `pageText` most relevant to `query`. Atomic
+    /// per call: this method (re)builds the index for `pageText` if needed,
+    /// then snapshots the chunk/embedding arrays into LOCAL constants before
+    /// its only remaining suspension point (embedding the query). Ranking
+    /// afterwards reads only that local snapshot, never the actor's mutable
+    /// `chunks`/`chunkEmbeddings` — so a concurrent call for a DIFFERENT
+    /// page (another tab, or a stale in-flight turn after navigating) that
+    /// overwrites the shared index while this call's query is embedding
+    /// cannot corrupt this call's ranking or return the wrong page's chunks.
+    ///
+    /// Returns `nil` when retrieval isn't usable: assets not ready,
+    /// embedding failed, the page is too short to chunk, or `query` is
+    /// empty — callers should fall back to their existing truncation path.
+    func retrieve(pageText: String, query: String, topK: Int = defaultRetrievalTopK) async -> [PageChunk]? {
+        guard !query.isEmpty else { return nil }
+        guard await index(pageText: pageText), indexedPageText == pageText else { return nil }
+
+        // Snapshot now, synchronously, before the only await below — no
+        // other call can interleave between this line and the guard above.
+        let localChunks = chunks
+        let localEmbeddings = chunkEmbeddings
+
+        guard let queryEmbeddings = await Self.embedAll([query]), let queryVector = queryEmbeddings.first else {
+            return nil
+        }
+
+        let ranked = RetrievalMath.rankIndices(chunkEmbeddings: localEmbeddings, query: queryVector)
+        let topIndices = Set(ranked.prefix(topK))
+        return localChunks.filter { topIndices.contains($0.index) }
+    }
+
     /// Chunks and embeds `pageText` if it isn't already cached. Returns
     /// `false` — leaving any previously cached index untouched — when
     /// retrieval isn't usable: embedding assets unavailable, embedding
     /// failed, or the page is short enough that chunking wouldn't help
     /// (a single chunk gives retrieval nothing to rank).
-    @discardableResult
-    func index(pageText: String) async -> Bool {
+    private func index(pageText: String) async -> Bool {
         if indexedPageText == pageText, !chunks.isEmpty { return true }
 
         let newChunks = TextChunker.chunk(pageText, maxChars: Self.chunkMaxChars)
@@ -116,22 +152,6 @@ actor PageRetriever {
         chunks = newChunks
         chunkEmbeddings = embeddings
         return true
-    }
-
-    /// Ranks the currently indexed chunks against `query` and returns the
-    /// top-K, in original document order for readability. `nil` means
-    /// retrieval isn't usable right now (nothing indexed, or embedding the
-    /// query failed) — callers should fall back to their existing
-    /// truncation path.
-    func retrieve(query: String, topK: Int = defaultRetrievalTopK) async -> [PageChunk]? {
-        guard !chunks.isEmpty, !query.isEmpty else { return nil }
-        guard let queryEmbeddings = await Self.embedAll([query]), let queryVector = queryEmbeddings.first else {
-            return nil
-        }
-
-        let ranked = RetrievalMath.rankIndices(chunkEmbeddings: chunkEmbeddings, query: queryVector)
-        let topIndices = Set(ranked.prefix(topK))
-        return chunks.filter { topIndices.contains($0.index) }
     }
 
     /// Drops the cached index. Not required for correctness (a page-text
