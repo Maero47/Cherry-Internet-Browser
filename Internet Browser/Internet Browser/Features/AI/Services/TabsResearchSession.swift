@@ -59,19 +59,30 @@ final class TabsResearchSession: ObservableObject {
     /// pre-refresh state. Now every caller awaits the SAME gather and sees its
     /// result before proceeding.
     private var prepareTask: Task<Void, Never>?
+    /// Set when a new gather is requested while one is already running (e.g. the
+    /// tab set changed again mid-flight) so the owner re-gathers once more with
+    /// the latest tabs rather than committing a snapshot that's already stale.
+    private var regatherRequested = false
 
     func prepare(tabManager: TabManager) async {
-        if let task = prepareTask {
-            await task.value
+        // A gather is already running: request a trailing re-gather (so the final
+        // index reflects the latest tab set) and await the whole chain to settle.
+        if prepareTask != nil {
+            regatherRequested = true
+            while let task = prepareTask { await task.value }
             return
         }
-        let task = Task { @MainActor [weak self] in
-            guard let self else { return }
-            await self.performPrepare(tabManager: tabManager)
-        }
-        prepareTask = task
-        await task.value
-        prepareTask = nil
+        // Owner: run gathers back-to-back as long as changes keep arriving.
+        repeat {
+            regatherRequested = false
+            let task = Task { @MainActor [weak self] in
+                guard let self else { return }
+                await self.performPrepare(tabManager: tabManager)
+            }
+            prepareTask = task
+            await task.value
+            prepareTask = nil
+        } while regatherRequested
     }
 
     private func performPrepare(tabManager: TabManager) async {
