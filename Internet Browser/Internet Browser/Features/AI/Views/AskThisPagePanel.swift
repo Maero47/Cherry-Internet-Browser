@@ -932,9 +932,8 @@ private struct TabSelectorBar: View {
     /// Selected tabs in tab-strip order, active tab first so the chip that
     /// reads as "this page" stays anchored at the leading edge.
     private var selectedTabs: [Tab] {
-        tabManager.tabs
-            .filter { selectedTabIDs.contains($0.id) }
-            .sorted { a, _ in a.id == activeTabID }
+        let selected = tabManager.tabs.filter { selectedTabIDs.contains($0.id) }
+        return selected.filter { $0.id == activeTabID } + selected.filter { $0.id != activeTabID }
     }
 
     /// Same eligibility as `TabsResearchSession.performPrepare`: private,
@@ -1011,13 +1010,17 @@ private struct TabSelectorBar: View {
         )
     }
 
-    /// Removing the last chip falls back to re-selecting the active tab —
-    /// the selection is never allowed to be empty.
+    /// Removing the last chip falls back to re-selecting the active tab
+    /// (or, if it has since been closed, the currently selected tab) — the
+    /// selection is never allowed to be empty.
     private func remove(_ tabID: UUID) {
         var updated = selectedTabIDs
         updated.remove(tabID)
         if updated.isEmpty {
-            guard let fallback = activeTabID ?? tabManager.selectedTabID else { return }
+            let activeStillOpen = activeTabID.flatMap { id in
+                tabManager.tabs.contains(where: { $0.id == id }) ? id : nil
+            }
+            guard let fallback = activeStillOpen ?? tabManager.selectedTabID else { return }
             updated = [fallback]
         }
         selectedTabIDs = updated
