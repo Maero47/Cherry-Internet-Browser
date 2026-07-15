@@ -239,6 +239,10 @@ struct AskThisPagePanel: View {
         enum Mode { case general, page, research }
         let isAvailable: Bool
         let mode: Mode
+        /// Both snapshot fields, not just the text: `PageChatSession.configure`
+        /// treats a title-only change as a reconfigure trigger too, so the key
+        /// must re-fire the task for either changing.
+        let pageTitle: String
         let pageText: String
         /// Whether the snapshot belongs to the current active tab. In the key
         /// so a re-extraction landing with `snapshotTabID` finally matching
@@ -250,6 +254,7 @@ struct AskThisPagePanel: View {
         ChatConfigureKey(
             isAvailable: availability.isAvailable,
             mode: isGeneralChat ? .general : (isSinglePageSelection ? .page : .research),
+            pageTitle: pageTitle,
             pageText: pageText,
             isSnapshotCurrent: isSnapshotCurrent
         )
