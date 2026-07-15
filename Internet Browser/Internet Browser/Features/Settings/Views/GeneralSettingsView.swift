@@ -10,6 +10,7 @@ import UniformTypeIdentifiers
 struct GeneralSettingsView: View {
     @Bindable private var settings = SettingsManager.shared
     private var themeManager: FirefoxThemeManager { .shared }
+    private var modelManager: LLMModelManager { .shared }
 
     var body: some View {
         SettingsStack {
@@ -26,6 +27,31 @@ struct GeneralSettingsView: View {
                     .labelsHidden()
                     .pickerStyle(.menu)
                     .fixedSize()
+                }
+            }
+
+            SettingsCard(
+                icon: "brain",
+                title: "AI",
+                subtitle: "Powers \"Ask This Page\" and \"All Tabs\" research."
+            ) {
+                SettingsLabeledRow(
+                    title: "AI Engine",
+                    subtitle: "Qwen runs entirely on this Mac and is much stronger than Apple's built-in model."
+                ) {
+                    Picker("", selection: $settings.aiEngine) {
+                        ForEach(AIEngine.allCases) { engine in
+                            Text(engine.rawValue).tag(engine)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .fixedSize()
+                }
+
+                if settings.aiEngine == .qwen {
+                    Divider()
+                    qwenModelRow
                 }
             }
 
@@ -210,6 +236,76 @@ struct GeneralSettingsView: View {
                     title: "Restore Previous Session on Launch",
                     isOn: $settings.restorePreviousSession
                 )
+            }
+        }
+    }
+
+    // MARK: - AI (Qwen model download)
+
+    /// Shown only while `AIEngine.qwen` is selected: download/progress/cancel
+    /// control for the local Qwen model, mirroring the conditional-row
+    /// pattern used by the Tabs card above and the Downloads card's button.
+    @ViewBuilder
+    private var qwenModelRow: some View {
+        if !LLMModelManager.isMLXImportable {
+            SettingsLabeledRow(title: "Qwen Model") {
+                Text("Not available in this build")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+        } else if modelManager.isDownloaded {
+            SettingsLabeledRow(title: "Qwen Model") {
+                Label("Downloaded", systemImage: "checkmark.circle.fill")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.green)
+            }
+        } else if modelManager.isDownloading {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Text("Downloading Qwen3-8B…")
+                        .font(.system(size: 12))
+                    Spacer()
+                    Button("Cancel") {
+                        modelManager.cancelDownload()
+                    }
+                    .controlSize(.small)
+                }
+
+                ProgressView(value: modelManager.downloadFraction)
+                    .progressViewStyle(.linear)
+
+                HStack(spacing: 6) {
+                    Text(modelManager.formattedProgressPercent)
+                    if let total = modelManager.formattedDownloadedTotal {
+                        Text("· \(total)")
+                    }
+                    if let speed = modelManager.formattedSpeed {
+                        Text("· \(speed)")
+                    }
+                    if let eta = modelManager.formattedETA {
+                        Text("· \(eta)")
+                    }
+                }
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+            }
+        } else {
+            VStack(alignment: .leading, spacing: 6) {
+                SettingsLabeledRow(
+                    title: "Qwen Model",
+                    subtitle: "About 5GB, downloaded once — then Qwen runs fully offline."
+                ) {
+                    Button("Download Model") {
+                        modelManager.download()
+                    }
+                    .controlSize(.small)
+                }
+
+                if let error = modelManager.errorMessage {
+                    Text(error)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.red)
+                }
             }
         }
     }
