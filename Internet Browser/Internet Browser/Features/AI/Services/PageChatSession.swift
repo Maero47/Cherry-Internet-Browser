@@ -25,6 +25,9 @@ struct PageChatTurn: Identifiable, Equatable {
     let role: Role
     var text: String
     var isStreaming: Bool = false
+    /// Sources cited in this turn's answer, e.g. from the "All Tabs" research
+    /// chat. Always empty for plain single-page chat turns.
+    var sources: [ResearchSource] = []
 }
 
 @MainActor

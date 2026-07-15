@@ -565,6 +565,7 @@ struct BrowserView: View {
             AskThisPagePanel(
                 pageTitle: viewModel.askThisPageTitle,
                 pageText: viewModel.askThisPageText,
+                tabManager: viewModel.tabManager,
                 onDismiss: { viewModel.showAskThisPage = false }
             )
             .transition(.move(edge: .trailing).combined(with: .opacity))

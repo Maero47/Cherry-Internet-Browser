@@ -71,17 +71,6 @@ enum PageAIService {
         await PageAIExtractor.extract(from: webView)
     }
 
-    static func summarize(pageText: String, pageTitle: String) async -> Result<PageSummaryResult, PageAIError> {
-        guard #available(macOS 26.0, *) else {
-            return .failure(.notAvailable("Ask This Page requires macOS 26 or later."))
-        }
-        #if canImport(FoundationModels)
-        return await summarizeOnDevice(pageText: pageText, pageTitle: pageTitle)
-        #else
-        return .failure(.notAvailable("Foundation Models isn't available in this build."))
-        #endif
-    }
-
     static func answer(question: String, pageText: String, pageTitle: String) async -> Result<PageAnswerResult, PageAIError> {
         guard #available(macOS 26.0, *) else {
             return .failure(.notAvailable("Ask This Page requires macOS 26 or later."))
@@ -141,30 +130,46 @@ enum PageAIService {
         return AsyncThrowingStream { $0.finish(throwing: PageAIError.notAvailable("Foundation Models isn't available in this build.")) }
         #endif
     }
+
+    /// Creates a fresh engine for the "All Tabs" research chat — a session
+    /// instructed to synthesize an answer from source-labeled excerpts
+    /// gathered across multiple open tabs and to cite them inline. Unlike
+    /// `makeChatEngine`, no page text is baked in: each turn's grounding
+    /// comes entirely from the source-tagged chunks passed to
+    /// `streamResearchReply`, retrieved fresh per question by
+    /// `TabsResearchService`. Returns `nil` below macOS 26 or without
+    /// Foundation Models, same as `makeChatEngine`.
+    static func makeResearchEngine() -> AnyObject? {
+        guard #available(macOS 26.0, *) else { return nil }
+        #if canImport(FoundationModels)
+        return ResearchChatEngine(instructions: researchInstructions)
+        #else
+        return nil
+        #endif
+    }
+
+    /// Sends one research question to an engine produced by
+    /// `makeResearchEngine`, grounded on `chunks` (already retrieved and
+    /// ranked across all open tabs by the caller), and streams back the
+    /// assistant's cumulative reply. Mirrors `streamChatReply`'s streaming
+    /// shape exactly.
+    static func streamResearchReply(engine: AnyObject, question: String, chunks: [ResearchChunk]) -> AsyncThrowingStream<String, Error> {
+        guard #available(macOS 26.0, *) else {
+            return AsyncThrowingStream { $0.finish(throwing: PageAIError.notAvailable("Ask This Page requires macOS 26 or later.")) }
+        }
+        #if canImport(FoundationModels)
+        return streamResearchReplyOnDevice(engine: engine, question: question, chunks: chunks)
+        #else
+        return AsyncThrowingStream { $0.finish(throwing: PageAIError.notAvailable("Foundation Models isn't available in this build.")) }
+        #endif
+    }
 }
 
 #if canImport(FoundationModels)
 
 @available(macOS 26.0, *)
-@Generable
-struct GeneratedPageSummary {
-    @Guide(description: "A concise, neutral 2 to 4 sentence summary of the page's main content, in the same language as the page.")
-    let summary: String
-    @Guide(description: "3 to 6 short, concrete key points from the page — specific facts, claims, or takeaways, not generic filler.")
-    let keyPoints: [String]
-}
-
-@available(macOS 26.0, *)
 private extension PageAIService {
 
-    /// Per-chunk budget for map-reduce summarization. Comfortably under the
-    /// 4096-token window once instructions + prompt scaffolding are added
-    /// (roughly 4 chars/token for English, so ~2800 chars ≈ 700 tokens).
-    static let chunkMaxChars = 2800
-    /// At most this many chunks feed the map step for one summary. Longer
-    /// pages are deliberately truncated before chunking rather than left
-    /// unbounded, since the reduce step also has to fit in one context window.
-    static let maxChunksForSummary = 12
     /// Q&A answers directly over raw page text (no map-reduce per the v1
     /// scope), so it gets a smaller, deliberate truncation cap of its own.
     static let qaTextCap = 6000
@@ -195,21 +200,6 @@ private extension PageAIService {
         }
     }
 
-    static let chunkSummaryInstructions = """
-    You are condensing one excerpt from a single web page into short factual notes, as part \
-    of summarizing the whole page. Only use information present in the excerpt — never invent \
-    facts, and do not add outside knowledge. Reply with 2 to 4 sentences capturing the concrete \
-    facts, names, numbers, and claims in the excerpt. If the excerpt is boilerplate/navigation \
-    with no real content, reply exactly: "No substantive content in this excerpt."
-    """
-
-    static let finalSummaryInstructions = """
-    You write concise, neutral summaries of web pages for a browser side panel. Base the summary \
-    and key points ONLY on the supplied content — never invent facts, names, numbers, or claims \
-    that aren't present in it. If the supplied content has little real information, say so \
-    plainly in the summary instead of padding it out.
-    """
-
     static let qaInstructions = """
     You answer questions about a single web page's content, for a browser side panel. Answer \
     ONLY using the page content provided in the prompt. If the answer is not present in that \
@@ -229,59 +219,6 @@ private extension PageAIService {
             }
         }
         return .generationFailed(error.localizedDescription)
-    }
-
-    static func summarizeOnDevice(pageText: String, pageTitle: String) async -> Result<PageSummaryResult, PageAIError> {
-        let cap = chunkMaxChars * maxChunksForSummary
-        let wasTruncated = pageText.count > cap
-        let workingText = wasTruncated ? String(pageText.prefix(cap)) : pageText
-        let chunks = TextChunker.chunk(workingText, maxChars: chunkMaxChars)
-
-        guard !chunks.isEmpty else {
-            return .failure(.generationFailed("There's no readable content on this page to summarize."))
-        }
-
-        do {
-            let condensed: String
-            if chunks.count == 1 {
-                condensed = chunks[0]
-            } else {
-                var notes: [String] = []
-                for chunk in chunks {
-                    // A fresh session per chunk is deliberate: LanguageModelSession
-                    // accumulates a transcript, so reusing one session across chunks
-                    // would layer each chunk's prompt+response on top of the last,
-                    // growing cumulative context roughly linearly with chunk count
-                    // and blowing past the 4096-token window well before the
-                    // maxChunksForSummary cap — exactly the long-page case chunking
-                    // exists to handle. Each chunk must be summarized in isolation.
-                    let mapSession = LanguageModelSession(instructions: chunkSummaryInstructions)
-                    let prompt = "Page title: \(pageTitle)\n\nExcerpt:\n\(chunk)"
-                    let response = try await mapSession.respond(to: prompt)
-                    notes.append(response.content)
-                }
-                condensed = notes.enumerated()
-                    .map { "Excerpt \($0.offset + 1) notes: \($0.element)" }
-                    .joined(separator: "\n\n")
-            }
-
-            let reduceSession = LanguageModelSession(instructions: finalSummaryInstructions)
-            let reducePrompt = """
-            Page title: \(pageTitle)
-
-            Content to summarize (raw page text, or condensed notes from a longer page):
-
-            \(condensed)
-            """
-            let result = try await reduceSession.respond(to: reducePrompt, generating: GeneratedPageSummary.self)
-            return .success(PageSummaryResult(
-                summary: result.content.summary,
-                keyPoints: result.content.keyPoints,
-                wasTruncated: wasTruncated
-            ))
-        } catch {
-            return .failure(mapGenerationError(error))
-        }
     }
 
     static func answerOnDevice(question: String, pageText: String, pageTitle: String) async -> Result<PageAnswerResult, PageAIError> {
@@ -421,6 +358,56 @@ private extension PageAIService {
             continuation.onTermination = { _ in task.cancel() }
         }
     }
+
+    static let researchInstructions = """
+    You answer questions by synthesizing information gathered from several currently open \
+    browser tabs, for a browser side panel. Each excerpt you're given is labeled with the tab \
+    it came from, like `[Source 2 — "Page Title"]`. Answer ONLY using the information present \
+    in the supplied excerpts — never invent facts, names, numbers, or claims that aren't in \
+    them, and never use outside knowledge. Cite the source of every concrete fact inline using \
+    its bracketed number, for example: "The XPS 13 weighs 1.2 kg [2]." When sources disagree, \
+    point out the disagreement and cite each side. If the excerpts don't contain the answer, say \
+    so plainly instead of guessing. Keep replies conversational and reasonably concise, and use \
+    earlier turns of this conversation as context for follow-up questions. Do not refer to \
+    yourself by any name and do not describe yourself as an AI assistant; just answer the \
+    question directly.
+    """
+
+    /// Builds the per-question prompt for the research chat: every retrieved
+    /// chunk is presented labeled with its source tab so the model can (and
+    /// is instructed to) cite it inline as `[N]`.
+    static func researchPrompt(question: String, chunks: [ResearchChunk]) -> String {
+        let context = chunks
+            .map { "[Source \($0.source.index) — \"\($0.source.title)\"]\n\($0.text)" }
+            .joined(separator: "\n\n---\n\n")
+        return """
+        Relevant excerpts from open tabs:
+        \(context)
+
+        Question: \(question)
+        """
+    }
+
+    static func streamResearchReplyOnDevice(engine: AnyObject, question: String, chunks: [ResearchChunk]) -> AsyncThrowingStream<String, Error> {
+        guard let researchEngine = engine as? ResearchChatEngine else {
+            return AsyncThrowingStream { $0.finish(throwing: PageAIError.generationFailed("This research session is unavailable.")) }
+        }
+        return AsyncThrowingStream { continuation in
+            let task = Task {
+                do {
+                    let prompt = researchPrompt(question: question, chunks: chunks)
+                    let stream = researchEngine.session.streamResponse(to: prompt)
+                    for try await partial in stream {
+                        continuation.yield(partial.content)
+                    }
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: mapGenerationError(error))
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
 }
 
 /// Wraps the one Foundation Models type a chat conversation actually needs
@@ -440,6 +427,19 @@ private final class PageChatEngine {
     init(instructions: String, pageText: String) {
         session = LanguageModelSession(instructions: instructions)
         self.pageText = pageText
+    }
+}
+
+/// Wraps the "All Tabs" research chat's `LanguageModelSession`. Unlike
+/// `PageChatEngine`, there's no single page's text to hold onto: each turn's
+/// grounding comes from chunks retrieved fresh (across all indexed tabs) by
+/// `TabsResearchService`, passed straight into `streamResearchReplyOnDevice`.
+@available(macOS 26.0, *)
+private final class ResearchChatEngine {
+    let session: LanguageModelSession
+
+    init(instructions: String) {
+        session = LanguageModelSession(instructions: instructions)
     }
 }
 
