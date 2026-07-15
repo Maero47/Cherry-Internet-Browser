@@ -5,11 +5,12 @@
 
 import SwiftUI
 
-/// Trailing side panel for on-device page Q&A, and (when more than the
-/// current page is selected in the tab picker) cited research over the
-/// chosen open tabs. Mirrors `ViewSourcePanel`'s shape (fixed-width trailing
-/// panel with a header bar + dismiss button) since it's the closest existing
-/// precedent for a panel driven by pre-fetched page content.
+/// Trailing side panel for on-device page Q&A, (when more than the current
+/// page is selected in the tab picker) cited research over the chosen open
+/// tabs, and (when the tab selection is empty) a general ungrounded chat
+/// with the current engine. Mirrors `ViewSourcePanel`'s shape (fixed-width
+/// trailing panel with a header bar + dismiss button) since it's the closest
+/// existing precedent for a panel driven by pre-fetched page content.
 struct AskThisPagePanel: View {
     let pageTitle: String
     let pageText: String
@@ -29,7 +30,8 @@ struct AskThisPagePanel: View {
     @State private var copiedTurnID: UUID?
     /// The tabs the conversation answers from. Defaults to just the active
     /// tab (this-page parity); adding more switches to the research session
-    /// over exactly this set. Never allowed to become empty.
+    /// over exactly this set. EMPTY is a valid state: it means general chat —
+    /// a direct, ungrounded conversation with the current engine.
     @State private var selectedTabIDs: Set<UUID>
     /// The tab whose `pageTitle`/`pageText` snapshot was passed in when the
     /// panel opened. `@State` (captured once) rather than recomputed: the
@@ -43,16 +45,39 @@ struct AskThisPagePanel: View {
         self.onDismiss = onDismiss
         let active = tabManager.selectedTabID
         _activeTabID = State(initialValue: active)
-        _selectedTabIDs = State(initialValue: active.map { [$0] } ?? [])
+        // An active tab with no readable content (blank/new tab, home page)
+        // can't ground a chat — start with an EMPTY selection, i.e. general
+        // chat, instead of a dead "no readable content" state.
+        if let active, !pageText.isEmpty {
+            _selectedTabIDs = State(initialValue: [active])
+        } else {
+            _selectedTabIDs = State(initialValue: [])
+        }
     }
 
     private var availability: PageAIAvailability { PageAIService.availability }
 
     /// Exactly the active tab selected → the fast single-page chat path
     /// (identical to the old "This Page" mode). Anything else answers via the
-    /// research session over the selected set.
+    /// research session over the selected set — unless the selection is
+    /// general-chat-shaped (see `isGeneralChat`).
     private var isSinglePageSelection: Bool {
         selectedTabIDs.count == 1 && selectedTabIDs.first == activeTabID
+    }
+
+    /// Nothing usable to ground on → general chat: a direct conversation
+    /// with the current engine, answering from the model's own knowledge.
+    /// Covers an empty selection (the user removed every chip, or the panel
+    /// opened on a contentless tab) and the active tab being selected while
+    /// its page snapshot has no readable text.
+    private var isGeneralChat: Bool {
+        selectedTabIDs.isEmpty || (isSinglePageSelection && pageText.isEmpty)
+    }
+
+    /// The selection shapes that answer via the research session: two or
+    /// more tabs, or a single tab that isn't the active one.
+    private var isResearchSelection: Bool {
+        !isGeneralChat && !isSinglePageSelection
     }
 
     var body: some View {
@@ -81,8 +106,11 @@ struct AskThisPagePanel: View {
                     selectedTabIDs: $selectedTabIDs
                 )
                 Divider()
-                if isSinglePageSelection {
-                    if pageText.isEmpty { noContentView } else { chatContent }
+                // General chat and this-page chat are both `chatSession` —
+                // they differ only in how the session was configured
+                // (see the configure task below) and in the empty-state copy.
+                if isGeneralChat || isSinglePageSelection {
+                    chatContent
                 } else {
                     researchContent
                 }
@@ -93,51 +121,72 @@ struct AskThisPagePanel: View {
         .overlay(alignment: .leading) {
             Rectangle().fill(Color.primary.opacity(0.1)).frame(width: 0.5)
         }
-        // Keyed on availability AS WELL as the page: if the panel opened
-        // while the chosen engine was unavailable, the first run failed its
-        // guard and `pageText` never changes for the panel's life — switching
-        // to a working engine from the header menu must re-run configure so
-        // the chat works without closing/reopening the panel. (`configure`
-        // no-ops when the page is unchanged AND already configured, so a
-        // later availability flip never resets a live conversation.)
-        .task(id: ChatConfigureKey(isAvailable: availability.isAvailable, pageText: pageText)) {
-            guard availability.isAvailable, !pageText.isEmpty else { return }
-            chatSession.configure(pageTitle: pageTitle, pageText: pageText, summary: nil)
+        // Keyed on availability AS WELL as the page and the routed mode: if
+        // the panel opened while the chosen engine was unavailable, the first
+        // run failed its guard and `pageText` never changes for the panel's
+        // life — switching to a working engine from the header menu must
+        // re-run configure so the chat works without closing/reopening the
+        // panel. The mode token makes general↔page transitions re-fire this
+        // task; both `configure` and `configureGeneral` no-op when the
+        // session is already in that exact state, so a re-fire never resets
+        // a live conversation whose grounding didn't actually change (e.g.
+        // general → research → general keeps the general chat).
+        .task(id: chatConfigureKey) {
+            guard availability.isAvailable else { return }
+            if isGeneralChat {
+                chatSession.configureGeneral()
+            } else if isSinglePageSelection {
+                chatSession.configure(pageTitle: pageTitle, pageText: pageText, summary: nil)
+            }
         }
         // Re-gather whenever a research-shaped selection is active and the
         // selected set changes, so the index always covers exactly the chosen
         // tabs. Re-running with an unchanged content snapshot stays cheap,
         // since buildIndex caches by content equality.
         .task(id: researchGatherKey) {
-            guard !isSinglePageSelection, availability.isAvailable else { return }
+            guard isResearchSelection, availability.isAvailable else { return }
             await researchSession.prepare(tabManager: tabManager, includeTabIDs: selectedTabIDs)
         }
         // A selected tab can be CLOSED while the panel is open: prune it from
         // the selection (which also retriggers the gather via the key above)
-        // instead of silently keeping its stale content in the index.
+        // instead of silently keeping its stale content in the index. All
+        // selected tabs closing leaves the selection empty — general chat —
+        // rather than snapping back to the active tab.
         .onChange(of: openTabIDs) { _, openIDs in
             let pruned = selectedTabIDs.intersection(openIDs)
             guard pruned != selectedTabIDs else { return }
-            selectedTabIDs = ensureNonEmptySelection(pruned)
+            selectedTabIDs = pruned
         }
     }
 
-    /// Identity for the single-page configure task: re-fires when the page
-    /// snapshot changes OR when availability flips (e.g. the user switches
-    /// from an unavailable engine to a working one in the header menu).
+    /// Identity for the chat configure task: re-fires when the page snapshot
+    /// changes, when availability flips (e.g. the user switches from an
+    /// unavailable engine to a working one in the header menu), or when the
+    /// routed mode changes (general ↔ page ↔ research), so entering or
+    /// leaving general chat reconfigures the session.
     private struct ChatConfigureKey: Equatable {
+        enum Mode { case general, page, research }
         let isAvailable: Bool
+        let mode: Mode
         let pageText: String
     }
 
-    /// Empty for the single-page selection (so the gather task stays idle);
-    /// otherwise a stable key for the selected tab set — sorted, so only real
-    /// membership changes retrigger a re-gather. Prefixed with an
-    /// availability token for the same reason as `ChatConfigureKey`: a gather
-    /// skipped while the engine was unavailable must re-run once a working
-    /// engine is chosen.
+    private var chatConfigureKey: ChatConfigureKey {
+        ChatConfigureKey(
+            isAvailable: availability.isAvailable,
+            mode: isGeneralChat ? .general : (isSinglePageSelection ? .page : .research),
+            pageText: pageText
+        )
+    }
+
+    /// Empty for the single-page and general-chat selections (so the gather
+    /// task stays idle); otherwise a stable key for the selected tab set —
+    /// sorted, so only real membership changes retrigger a re-gather.
+    /// Prefixed with an availability token for the same reason as
+    /// `ChatConfigureKey`: a gather skipped while the engine was unavailable
+    /// must re-run once a working engine is chosen.
     private var researchGatherKey: String {
-        guard !isSinglePageSelection else { return "" }
+        guard isResearchSelection else { return "" }
         let ids = selectedTabIDs.map(\.uuidString).sorted().joined(separator: ",")
         return "\(availability.isAvailable)|\(ids)"
     }
@@ -145,24 +194,11 @@ struct AskThisPagePanel: View {
     /// Whether the currently routed path already has a conversation on
     /// screen — if so, the unavailable view must never replace it.
     private var activePathHasTurns: Bool {
-        isSinglePageSelection ? !chatSession.turns.isEmpty : !researchSession.turns.isEmpty
+        (isGeneralChat || isSinglePageSelection) ? !chatSession.turns.isEmpty : !researchSession.turns.isEmpty
     }
 
     private var openTabIDs: Set<UUID> {
         Set(tabManager.tabs.map(\.id))
-    }
-
-    /// The selection must never be empty: fall back to the active tab, or —
-    /// if the active tab itself was closed — the currently selected tab.
-    private func ensureNonEmptySelection(_ selection: Set<UUID>) -> Set<UUID> {
-        guard selection.isEmpty else { return selection }
-        if let active = activeTabID, tabManager.tabs.contains(where: { $0.id == active }) {
-            return [active]
-        }
-        if let current = tabManager.selectedTabID {
-            return [current]
-        }
-        return selection
     }
 
     // MARK: - Header
@@ -176,7 +212,7 @@ struct AskThisPagePanel: View {
             VStack(alignment: .leading, spacing: 0) {
                 Text("Ask This Page")
                     .font(.system(size: 12, weight: .semibold))
-                Text(pageTitle)
+                Text(isGeneralChat ? "General chat" : pageTitle)
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -243,7 +279,7 @@ struct AskThisPagePanel: View {
     /// switch only applies to their next chat.
     private var showsEngineSwitchHint: Bool {
         let current = SettingsManager.shared.aiEngine
-        if isSinglePageSelection {
+        if isGeneralChat || isSinglePageSelection {
             guard let built = chatSession.conversationEngine, !chatSession.turns.isEmpty else { return false }
             return built != current
         }
@@ -278,22 +314,6 @@ struct AskThisPagePanel: View {
                 .font(.system(size: 28))
                 .foregroundStyle(.secondary)
             Text(unavailableMessage)
-                .font(.system(size: 12))
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal, 24)
-            Spacer()
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-
-    private var noContentView: some View {
-        VStack(spacing: 10) {
-            Spacer()
-            Image(systemName: "doc.text.magnifyingglass")
-                .font(.system(size: 28))
-                .foregroundStyle(.secondary)
-            Text("Couldn't find readable content on this page.")
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
@@ -630,22 +650,30 @@ struct AskThisPagePanel: View {
         "Explain simply",
     ]
 
+    private let generalExamplePrompts = [
+        "Explain a concept",
+        "Draft an email",
+        "Brainstorm ideas",
+    ]
+
     private var chatEmptyState: some View {
         VStack(spacing: 14) {
             Spacer()
             Image(systemName: "bubble.left.and.bubble.right")
                 .font(.system(size: 26))
                 .foregroundStyle(.secondary)
-            Text("Ask anything about this page")
+            Text(isGeneralChat ? "Ask anything" : "Ask anything about this page")
                 .font(.system(size: 13, weight: .semibold))
-            Text("Answers are grounded in this page's content and generated entirely on-device.")
+            Text(isGeneralChat
+                ? "Chats on-device with the selected engine. Add a tab to ground answers in a page."
+                : "Answers are grounded in this page's content and generated entirely on-device.")
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 32)
 
             VStack(spacing: 6) {
-                ForEach(examplePrompts, id: \.self) { prompt in
+                ForEach(isGeneralChat ? generalExamplePrompts : examplePrompts, id: \.self) { prompt in
                     Button {
                         chatSession.send(prompt)
                     } label: {
@@ -669,7 +697,7 @@ struct AskThisPagePanel: View {
 
     private var chatInputRow: some View {
         inputRow(
-            placeholder: "Ask about this page…",
+            placeholder: isGeneralChat ? "Ask anything…" : "Ask about this page…",
             canSend: chatSession.canSend,
             isResponding: chatSession.isResponding,
             onSend: sendDraft,
@@ -1063,20 +1091,11 @@ private struct TabSelectorBar: View {
         )
     }
 
-    /// Removing the last chip falls back to re-selecting the active tab
-    /// (or, if it has since been closed, the currently selected tab) — the
-    /// selection is never allowed to be empty.
+    /// Removing the last chip leaves the selection EMPTY — that's the valid
+    /// general-chat state, not an error. The chips row and ＋ menu stay
+    /// visible so the user can add a tab to ground the chat again.
     private func remove(_ tabID: UUID) {
-        var updated = selectedTabIDs
-        updated.remove(tabID)
-        if updated.isEmpty {
-            let activeStillOpen = activeTabID.flatMap { id in
-                tabManager.tabs.contains(where: { $0.id == id }) ? id : nil
-            }
-            guard let fallback = activeStillOpen ?? tabManager.selectedTabID else { return }
-            updated = [fallback]
-        }
-        selectedTabIDs = updated
+        selectedTabIDs.remove(tabID)
     }
 }
 
