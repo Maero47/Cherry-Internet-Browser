@@ -28,6 +28,10 @@ struct AskThisPagePanel: View {
     @StateObject private var researchSession = TabsResearchSession()
     @State private var mode: AskThisPageMode = .thisPage
     @State private var draft: String = ""
+    /// Turn IDs whose reasoning ("Thoughts") disclosure is expanded. Kept on
+    /// the panel (not inside the row builder) because rows live in a ForEach —
+    /// a `@State` in the row would reset on every turns-array mutation.
+    @State private var expandedReasoning: Set<UUID> = []
 
     private let availability = PageAIService.availability
 
@@ -245,6 +249,9 @@ struct AskThisPagePanel: View {
 
         case .assistant:
             VStack(alignment: .leading, spacing: 6) {
+                if let reasoning = turn.reasoning, !reasoning.isEmpty {
+                    reasoningDisclosure(reasoning: reasoning, for: turn)
+                }
                 HStack(spacing: 0) {
                     Group {
                         if turn.isStreaming && turn.text.isEmpty {
@@ -280,6 +287,56 @@ struct AskThisPagePanel: View {
             .background(Color.red.opacity(0.08), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+
+    /// Collapsible chain-of-thought control shown above a reasoning model's
+    /// answer bubble. While the model is still inside its think block (no
+    /// answer text yet) it reads "Thinking…" with the animated dots; once the
+    /// answer starts (or the stream ends) it becomes a collapsed-by-default
+    /// "Thoughts" disclosure. Engines without a think block (`reasoning ==
+    /// nil`) never reach this view.
+    private func reasoningDisclosure(reasoning: String, for turn: PageChatTurn) -> some View {
+        let isThinking = turn.isStreaming && turn.text.isEmpty
+        let isExpanded = expandedReasoning.contains(turn.id)
+        return VStack(alignment: .leading, spacing: 4) {
+            Button {
+                if isExpanded {
+                    expandedReasoning.remove(turn.id)
+                } else {
+                    expandedReasoning.insert(turn.id)
+                }
+            } label: {
+                HStack(spacing: 5) {
+                    if isThinking {
+                        Text("Thinking…")
+                        TypingDotsView()
+                            .scaleEffect(0.7)
+                    } else {
+                        Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                            .font(.system(size: 8, weight: .semibold))
+                        Text("Thoughts")
+                    }
+                }
+                .font(.system(size: 10.5, weight: .medium))
+                .foregroundStyle(.secondary)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if isExpanded {
+                Text(reasoning)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .padding(.leading, 8)
+                    .overlay(alignment: .leading) {
+                        Rectangle()
+                            .fill(Color.secondary.opacity(0.25))
+                            .frame(width: 2)
+                    }
+            }
+        }
+        .padding(.leading, 2)
     }
 
     /// Renders assistant text as markdown (so `**bold**`, headings, lists,

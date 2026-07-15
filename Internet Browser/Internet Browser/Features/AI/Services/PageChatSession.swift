@@ -25,6 +25,10 @@ struct PageChatTurn: Identifiable, Equatable {
     let role: Role
     var text: String
     var isStreaming: Bool = false
+    /// The model's `<think>…</think>` chain-of-thought, split out of the raw
+    /// stream by `ReasoningSplitter`. `nil` for engines that don't emit one
+    /// (Apple Foundation Models) and for user/error turns.
+    var reasoning: String? = nil
     /// Sources cited in this turn's answer, e.g. from the "All Tabs" research
     /// chat. Always empty for plain single-page chat turns.
     var sources: [ResearchSource] = []
@@ -130,7 +134,14 @@ final class PageChatSession: ObservableObject {
             let stream = PageAIService.streamChatReply(engine: engine, message: message)
             for try await partial in stream {
                 guard !Task.isCancelled else { return }
-                updateTurn(id: assistantID) { $0.text = partial }
+                // Each partial is the cumulative reply so far; split the
+                // reasoning-model think block out on every snapshot so the UI
+                // can show "Thinking…" until the actual answer starts.
+                let parts = ReasoningSplitter.split(partial)
+                updateTurn(id: assistantID) {
+                    $0.reasoning = parts.reasoning
+                    $0.text = parts.answer
+                }
             }
             guard !Task.isCancelled else { return }
             updateTurn(id: assistantID) { $0.isStreaming = false }

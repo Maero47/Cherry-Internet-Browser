@@ -186,8 +186,16 @@ final class TabsResearchSession: ObservableObject {
             let stream = PageAIService.streamResearchReply(engine: engine, question: message, chunks: retrieved)
             for try await partial in stream {
                 guard !Task.isCancelled else { return }
-                finalText = partial
-                updateTurn(id: assistantID) { $0.text = partial }
+                // Cumulative snapshot: split any reasoning-model think block
+                // out each time. Citations are scanned over the ANSWER only —
+                // a `[N]` mentioned inside the model's chain-of-thought isn't
+                // a citation the user can see.
+                let parts = ReasoningSplitter.split(partial)
+                finalText = parts.answer
+                updateTurn(id: assistantID) {
+                    $0.reasoning = parts.reasoning
+                    $0.text = parts.answer
+                }
             }
             guard !Task.isCancelled else { return }
             let citedSources = TabsResearchService.citedSources(inAnswer: finalText, candidates: candidateSources)
