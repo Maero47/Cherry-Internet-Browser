@@ -181,6 +181,51 @@ final class TabManager {
         return tab
     }
 
+    /// Opens `url` as a real background tab that starts loading IMMEDIATELY.
+    /// A plain `newTab(url:switchTo:false)` stays inert until selected —
+    /// only the displayed tab gets a `WebViewWrapper`, which is what normally
+    /// creates the web view — so the research agent creates the web view
+    /// here and kicks off the load itself. The user's focused tab is never
+    /// changed; the tab just appears in the tab bar, and selecting it later
+    /// makes `WebViewWrapper` adopt this web view as-is (the same path an
+    /// opened popup takes). The configuration mirrors the wrapper's
+    /// load-relevant pieces (Safari UA, JS setting, HTTPS upgrade, ad-block
+    /// rules); the interactive extras (autofill, devtools bridges) only
+    /// matter once the user is looking at the tab and are skipped, exactly
+    /// like adopted popups skip them.
+    @discardableResult
+    func openBackgroundResearchTab(url: URL, title: String) -> Tab {
+        let tab = newTab(url: url, switchTo: false)
+        // Seed the tab-bar title from the search result; the page's real
+        // title takes over via KVO once the tab is selected and adopted.
+        if !title.isEmpty {
+            tab.title = title
+        }
+
+        let settings = SettingsManager.shared
+        let configuration = WKWebViewConfiguration()
+        configuration.applicationNameForUserAgent = "Version/18.3 Safari/605.1.15"
+        configuration.defaultWebpagePreferences.allowsContentJavaScript = settings.enableJavaScript
+        if settings.httpsOnlyMode {
+            configuration.upgradeKnownHostsToHTTPS = true
+        }
+        if settings.adBlockEnabled && !settings.isAdBlockPaused(for: url) {
+            let adBlocker = AdBlockManager.shared
+            if adBlocker.rulesReady {
+                adBlocker.applyRules(to: configuration)
+            }
+            adBlocker.applyCosmeticRules(to: configuration)
+        }
+
+        let webView = CherryWebView(frame: .zero, configuration: configuration)
+        webView.allowsBackForwardNavigationGestures = true
+        webView.allowsMagnification = true
+        webView.tabID = tab.id
+        tab.adoptWebView(webView)
+        webView.load(URLRequest(url: url))
+        return tab
+    }
+
     func closeTab(_ tab: Tab) {
         guard let index = tabs.firstIndex(of: tab) else { return }
 
