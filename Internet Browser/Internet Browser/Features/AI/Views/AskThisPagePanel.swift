@@ -61,14 +61,19 @@ struct AskThisPagePanel: View {
     /// The single-shot web research agent's progress through its four steps.
     /// `.idle` means no agent run is active (the panel's normal state).
     private enum WebAgentPhase: Equatable {
-        case idle, searching, opening, reading, answering
+        case idle, searching, opening
+        case reading(settled: Int, total: Int)
+        case indexing
+        case answering
 
         var label: String? {
             switch self {
             case .idle: return nil
             case .searching: return "Searching the web…"
             case .opening: return "Opening results…"
-            case .reading: return "Reading results…"
+            case .reading(let settled, let total):
+                return total > 0 ? "Reading results (\(settled)/\(total))…" : "Reading results…"
+            case .indexing: return "Indexing…"
             case .answering: return "Answering…"
             }
         }
@@ -1042,14 +1047,13 @@ struct AskThisPagePanel: View {
 
     // MARK: - Web research agent
 
-    /// How long to wait for the opened result tabs to finish loading before
-    /// reading them. Slow stragglers aren't worth stalling the whole answer
-    /// for — whatever has rendered by then gets extracted. A straggler that
-    /// finishes after the cap still gets indexed: the background tab mirrors
-    /// its webview's `isLoading` (`Tab.beginBackgroundLoadObservation`), so
-    /// the load finishing flips `selectedTabsLoadingFingerprint` and the
+    /// The bounded wait policy for the opened result tabs lives in
+    /// `WebAgentLoadWait` (pure/tested). Slow stragglers aren't worth stalling
+    /// the whole answer for — whatever has rendered by then gets extracted. A
+    /// straggler that finishes after the cap still gets indexed: the background
+    /// tab mirrors its webview's `isLoading` (`Tab.beginBackgroundLoadObservation`),
+    /// so the load finishing flips `selectedTabsLoadingFingerprint` and the
     /// panel's normal staleness re-gather fires.
-    private static let resultLoadTimeout: Duration = .seconds(15)
 
     private func webAgentStatusBar(_ label: String) -> some View {
         HStack(spacing: 8) {
@@ -1127,9 +1131,13 @@ struct AskThisPagePanel: View {
         // the tabs (or edits the selection) whenever they like.
         selectedTabIDs = openedIDs
 
-        webAgentPhase = .reading
+        webAgentPhase = .reading(settled: 0, total: openedTabs.count)
         await waitForResultLoads(of: openedTabs)
         guard !Task.isCancelled else { return }
+        // Extraction + hybrid indexing is its own bounded step — give it a
+        // distinct label so the long index build isn't hidden under (and
+        // mistaken for a hang on) "Reading results…".
+        webAgentPhase = .indexing
         await researchSession.prepare(tabManager: tabManager, includeTabIDs: openedIDs)
         guard !Task.isCancelled else { return }
         guard researchSession.canSend else {
@@ -1141,26 +1149,34 @@ struct AskThisPagePanel: View {
         researchSession.send(question)
     }
 
-    /// Waits until every opened result tab's webview finishes loading, or
-    /// `resultLoadTimeout` passes — polling, because these background
-    /// webviews have no `WebViewWrapper` coordinator wired up (that only
-    /// happens once a tab is displayed), so there's no delegate to await.
+    /// Waits for the opened result tabs to settle, per `WebAgentLoadWait`'s
+    /// bounded policy — polling, because these background webviews have no
+    /// `WebViewWrapper` coordinator wired up (that only happens once a tab is
+    /// displayed), so there's no delegate to await. Proceeds the moment all
+    /// tabs settle, or once a majority has settled past a grace window, or at
+    /// the hard `maxWait` cap regardless — a page that never stops loading
+    /// must never hold up the answer. Updates the `.reading` phase with the
+    /// live settled count so the status shows real progress, not a frozen
+    /// "Reading results…".
     @MainActor
     private func waitForResultLoads(of tabs: [Tab]) async {
-        let deadline = ContinuousClock.now + Self.resultLoadTimeout
+        let total = tabs.count
+        guard total > 0 else { return }
+        let start = ContinuousClock.now
         // A load() call needs a beat to flip isLoading on — never sample
         // straight away, or an instant all-false reads as "done".
-        repeat {
-            try? await Task.sleep(for: .milliseconds(300))
+        while true {
+            try? await Task.sleep(for: WebAgentLoadWait.pollInterval)
             guard !Task.isCancelled else { return }
-            let anyLoading = tabs.contains { $0.webView?.isLoading == true }
-            if !anyLoading {
+            let settled = tabs.filter { $0.webView?.isLoading != true }.count
+            webAgentPhase = .reading(settled: settled, total: total)
+            if WebAgentLoadWait.shouldProceed(settled: settled, total: total, elapsed: ContinuousClock.now - start) {
                 // Small settle so late JS-rendered content (SPAs) has a
                 // chance to land before extraction reads innerText.
-                try? await Task.sleep(for: .milliseconds(500))
+                try? await Task.sleep(for: WebAgentLoadWait.settleBeat)
                 return
             }
-        } while ContinuousClock.now < deadline
+        }
     }
 
     // MARK: - Research (All Tabs)
