@@ -621,12 +621,15 @@ struct WebViewWrapper: NSViewRepresentable {
         }
 
         private func saveHistory(for webView: WKWebView) {
-            if let url = webView.url,
-               (url.scheme == "https" || url.scheme == "http"),
-               !(tab?.isPrivate ?? false) {
-                let title = webView.title ?? url.host ?? url.absoluteString
-                HistoryRepository.shared.addHistoryItem(url: url, title: title, favicon: tab?.favicon)
-            }
+            // Require a live, non-private tab. `tab` is weak now, so a nil tab
+            // (deallocated mid-load, e.g. window closed) must NOT default to
+            // "not private" — that would write a just-closed PRIVATE tab's URL
+            // to persistent history. When the tab is gone, skip the write.
+            guard let tab, !tab.isPrivate,
+                  let url = webView.url,
+                  url.scheme == "https" || url.scheme == "http" else { return }
+            let title = webView.title ?? url.host ?? url.absoluteString
+            HistoryRepository.shared.addHistoryItem(url: url, title: title, favicon: tab.favicon)
         }
 
         func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
