@@ -41,6 +41,16 @@ final class TabsResearchSession: ObservableObject {
     private var isIndexed = false
     private var streamTask: Task<Void, Never>?
 
+    /// Stable identity of the CURRENT conversation, used as the history
+    /// store's upsert key — same role as `PageChatSession.conversationID`.
+    private(set) var conversationID = UUID()
+
+    /// Set by `restore`: a compact replay of the reopened conversation's
+    /// recent turns, folded into the NEXT engine build (the original engine's
+    /// state can't be restored) so follow-up questions stay coherent.
+    /// Consumed by the first successful build; cleared by `startNewChat`.
+    private var pendingRestoredReplay: String?
+
     var canSend: Bool { !isResponding && isIndexed }
 
     deinit {
@@ -146,9 +156,32 @@ final class TabsResearchSession: ObservableObject {
         includedTabCount = inputs.count
         isIndexed = true
         if engine == nil {
-            engine = PageAIService.makeResearchEngine()
+            // A restored conversation's first (re)build seeds the fresh
+            // engine with the reopened transcript's recent turns, so
+            // continuing it over the NEW index stays coherent.
+            engine = PageAIService.makeResearchEngine(recentConversation: pendingRestoredReplay)
+            if engine != nil { pendingRestoredReplay = nil }
             conversationEngine = engine == nil ? nil : SettingsManager.shared.aiEngine
         }
+    }
+
+    /// Loads a saved research conversation's transcript as the current
+    /// conversation. Display-only: the original tabs/index/engine are NOT
+    /// resurrected — `isIndexed` is dropped so the panel's next
+    /// `prepare(tabManager:includeTabIDs:)` re-grounds on whatever tabs are
+    /// CURRENTLY selected (or leaves the chat read-only via the existing
+    /// unavailable states when there's nothing to index). The rebuilt engine
+    /// is seeded with a replay of the restored turns.
+    func restore(id: UUID, turns: [PageChatTurn]) {
+        streamTask?.cancel()
+        streamTask = nil
+        isResponding = false
+        conversationID = id
+        self.turns = turns
+        engine = nil
+        conversationEngine = nil
+        isIndexed = false
+        pendingRestoredReplay = PageChatSession.recentConversationReplay(from: turns)
     }
 
     /// Clears the conversation and rebuilds the engine, keeping the current
@@ -158,6 +191,8 @@ final class TabsResearchSession: ObservableObject {
         streamTask = nil
         turns = []
         isResponding = false
+        conversationID = UUID()
+        pendingRestoredReplay = nil
         engine = isIndexed ? PageAIService.makeResearchEngine() : nil
         conversationEngine = engine == nil ? nil : SettingsManager.shared.aiEngine
     }

@@ -49,6 +49,24 @@ final class PageChatSession: ObservableObject {
     /// and a context-overflow rebuild stay in the mode the conversation is in.
     private(set) var isGeneral = false
 
+    /// Stable identity of the CURRENT conversation, used as the history
+    /// store's upsert key: re-saving a growing conversation updates its saved
+    /// entry instead of duplicating it. Re-rolled by `startNewChat` (a fresh
+    /// conversation) and adopted from the saved session by `restore`.
+    private(set) var conversationID = UUID()
+
+    /// True while the visible transcript came from history (`restore`). A
+    /// grounding change then RE-GROUNDS the conversation (fresh lazy engine)
+    /// but keeps the transcript on screen — a reopened chat's history must
+    /// not be wiped by the page-follow machinery, which normally resets the
+    /// chat whenever the page changes. Cleared by `startNewChat`.
+    private var hasRestoredTranscript = false
+
+    /// Set by `restore`: the next `send` must first build a fresh engine
+    /// seeded with a replay of the restored turns (the original engine's
+    /// KV-cache state is gone for good). Cleared once a build succeeds.
+    private var needsRestoredEngine = false
+
     private var pageTitle = ""
     private var pageText = ""
     private var groundingSummary: PageSummaryResult?
@@ -79,7 +97,14 @@ final class PageChatSession: ObservableObject {
         self.pageTitle = pageTitle
         self.pageText = pageText
         self.groundingSummary = summary
-        startNewChat()
+        // A restored transcript survives grounding changes: continuing simply
+        // re-grounds on the CURRENT page (fresh lazy engine, seeded with a
+        // replay of the restored turns) while the transcript stays on screen.
+        if hasRestoredTranscript {
+            invalidateEngineForRestoredConversation()
+        } else {
+            startNewChat()
+        }
     }
 
     /// Switches the session to GENERAL mode — no page grounding; the model
@@ -92,7 +117,41 @@ final class PageChatSession: ObservableObject {
         pageTitle = ""
         pageText = ""
         groundingSummary = nil
-        startNewChat()
+        if hasRestoredTranscript {
+            invalidateEngineForRestoredConversation()
+        } else {
+            startNewChat()
+        }
+    }
+
+    /// Loads a saved conversation's transcript as the current conversation.
+    /// Only display state is restored — the original engine (and its
+    /// KV-cache) is gone, so the engine slot is left empty and the next
+    /// `send` builds a fresh one for the CURRENT grounding, seeded with a
+    /// compact replay of the restored turns (see `needsRestoredEngine`).
+    /// `pageTitle`/`pageText` should be the panel's current page snapshot
+    /// (ignored when `asGeneral`); if the live page then differs or changes,
+    /// `configure` re-grounds without wiping the restored transcript.
+    func restore(id: UUID, turns: [PageChatTurn], asGeneral: Bool, pageTitle: String, pageText: String) {
+        streamTask?.cancel()
+        streamTask = nil
+        isResponding = false
+        conversationID = id
+        isGeneral = asGeneral
+        self.pageTitle = asGeneral ? "" : pageTitle
+        self.pageText = asGeneral ? "" : pageText
+        groundingSummary = nil
+        self.turns = turns
+        hasRestoredTranscript = true
+        invalidateEngineForRestoredConversation()
+    }
+
+    /// Drops the engine so the next `send` lazily rebuilds it (with a replay
+    /// of the current turns) for whatever the grounding is by then.
+    private func invalidateEngineForRestoredConversation() {
+        engine = nil
+        conversationEngine = nil
+        needsRestoredEngine = true
     }
 
     func startNewChat() {
@@ -100,6 +159,9 @@ final class PageChatSession: ObservableObject {
         streamTask = nil
         turns = []
         isResponding = false
+        conversationID = UUID()
+        hasRestoredTranscript = false
+        needsRestoredEngine = false
         if isGeneral {
             engine = PageAIService.makeGeneralChatEngine()
         } else {
@@ -129,6 +191,16 @@ final class PageChatSession: ObservableObject {
     func send(_ text: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, canSend else { return }
+
+        // Continuing a reopened conversation: build the deferred fresh engine
+        // now, seeded with a replay of the restored recent turns so
+        // follow-ups stay coherent. Reuses the context-overflow rebuild path,
+        // which is exactly this operation. Kept pending until a build
+        // succeeds, so an unavailable engine can be switched and retried.
+        if needsRestoredEngine {
+            rebuildEngineForSlidingWindow(history: turns)
+            if engine != nil { needsRestoredEngine = false }
+        }
 
         guard engine != nil else {
             turns.append(PageChatTurn(role: .error, text: "Ask This Page requires macOS 26 or later."))
@@ -282,8 +354,9 @@ final class PageChatSession: ObservableObject {
 
     /// Formats the last `slidingWindowReplayTurnCount` non-error, non-streaming
     /// turns as a compact "Speaker: text" transcript for seeding a rebuilt
-    /// engine's instructions.
-    private static func recentConversationReplay(from history: [PageChatTurn]) -> String? {
+    /// engine's instructions. Internal (not private) so `TabsResearchSession`
+    /// can seed its own restored-conversation engine the same way.
+    static func recentConversationReplay(from history: [PageChatTurn]) -> String? {
         let replayable = history.filter { $0.role != .error && !$0.isStreaming }
         guard !replayable.isEmpty else { return nil }
         return replayable.suffix(slidingWindowReplayTurnCount)

@@ -222,20 +222,32 @@ enum PageAIService {
     /// comes entirely from the source-tagged chunks passed to
     /// `streamResearchReply`, retrieved fresh per question by
     /// `TabsResearchService`. Returns `nil` below macOS 26 or without
-    /// Foundation Models, same as `makeChatEngine`.
-    static func makeResearchEngine() -> AnyObject? {
+    /// Foundation Models, same as `makeChatEngine`. `recentConversation`
+    /// seeds the instructions with a replay of a reopened conversation's
+    /// recent turns (same pattern as `makeChatEngine`), used when a saved
+    /// research chat from history is continued on a fresh engine.
+    static func makeResearchEngine(recentConversation: String? = nil) -> AnyObject? {
+        var instructions = researchInstructions
+        if let recentConversation, !recentConversation.isEmpty {
+            instructions += """
+
+
+            Recent conversation so far (older turns were trimmed to fit; use this for context on follow-up questions):
+            \(recentConversation)
+            """
+        }
         switch SettingsManager.shared.aiEngine {
         case .apple:
             guard #available(macOS 26.0, *) else { return nil }
             #if canImport(FoundationModels)
-            return ResearchChatEngine(instructions: researchInstructions)
+            return ResearchChatEngine(instructions: instructions)
             #else
             return nil
             #endif
         case .qwen:
             #if canImport(MLXLLM)
             guard LLMModelManager.shared.isDownloaded else { return nil }
-            return MLXChatEngine(instructions: researchInstructions)
+            return MLXChatEngine(instructions: instructions)
             #else
             return nil
             #endif
