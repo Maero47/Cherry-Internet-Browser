@@ -1296,14 +1296,26 @@ struct AskThisPagePanel: View {
         webAgentPhase = .indexing
         let session = researchSession
         let manager = tabManager
+        // The index build runs DETACHED and we wait for it only up to a hard
+        // budget, cancellably. A structured task-group race can't bound this:
+        // `withTaskGroup` awaits its children before returning, and a child
+        // awaiting a non-throwing `Task`'s `.value` ignores cancellation, so
+        // the group would still block on a wedged build past the timeout (and
+        // ignore panel-dismiss cancellation too). Instead poll a MainActor
+        // completion flag with cancellable sleeps: on timeout we leave the
+        // build running (its result still lands in the session, upgrading
+        // research mode when ready) and proceed with whatever is indexed; on
+        // cancellation we stop and cancel the build.
+        let flag = WebAgentPrepareFlag()
         let prepare = Task { @MainActor in
             await session.prepare(tabManager: manager, includeTabIDs: openedIDs)
+            flag.done = true
         }
-        await withTaskGroup(of: Void.self) { group in
-            group.addTask { @MainActor in await prepare.value }
-            group.addTask { try? await Task.sleep(for: WebAgentIndexBudget.prepareTimeout) }
-            await group.next()
-            group.cancelAll()
+        let indexStart = ContinuousClock.now
+        while !flag.done {
+            if Task.isCancelled { prepare.cancel(); return }
+            if ContinuousClock.now - indexStart >= WebAgentIndexBudget.prepareTimeout { break }
+            try? await Task.sleep(for: .milliseconds(150))
         }
         guard !Task.isCancelled else { return }
         guard researchSession.canSend else {
@@ -1785,4 +1797,14 @@ private struct TypingDotsView: View {
         .frame(height: 14)
         .onAppear { animate = true }
     }
+}
+
+/// A tiny `@MainActor`-isolated completion flag for the web agent's cancellable,
+/// budgeted wait on its detached index build (see `performWebResearch`). Being
+/// MainActor-isolated makes it `Sendable`, so the detached build task and the
+/// polling loop only ever touch `done` on the main actor — no data race, and
+/// the wait can honor cancellation (which awaiting a non-throwing `Task.value`
+/// cannot).
+@MainActor private final class WebAgentPrepareFlag {
+    var done = false
 }

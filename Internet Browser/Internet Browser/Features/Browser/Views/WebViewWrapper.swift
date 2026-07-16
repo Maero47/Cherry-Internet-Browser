@@ -242,6 +242,11 @@ struct WebViewWrapper: NSViewRepresentable {
             // while it had no wrapper; from here the coordinator's KVO below
             // owns those writes — never leave both observing.
             tab.endBackgroundLoadObservation()
+            // Displaying an agent-opened result tab promotes it to a normal
+            // user tab: drop the web-agent index cap so a later deliberate
+            // research gather over it indexes the full page, not just the
+            // first budgeted slice.
+            tab.isWebResearchTab = false
         } else {
             let cherry = CherryWebView(frame: .zero, configuration: configuration)
             cherry.allowsBackForwardNavigationGestures = true
