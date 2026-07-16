@@ -278,20 +278,25 @@ private extension PageAIService {
     /// accumulate across the conversation — unlike single-shot Q&A, which
     /// never re-sends anything. A smaller per-turn footprint keeps a
     /// multi-turn chat from overflowing its context window much sooner than
-    /// the old blind-prefix behavior did.
-    static let chatRetrievalTopK = 3
+    /// the old blind-prefix behavior did. Raised from 3 to 4 with hybrid
+    /// retrieval: fused BM25+dense ranking earns the extra chunk in
+    /// precision, and the smaller chunk target (700 chars vs the old 900)
+    /// keeps the per-turn footprint about the same (4×700 ≈ 3×900).
+    static let chatRetrievalTopK = 4
 
     /// Builds the per-turn prompt sent to the chat engine: retrieves the
     /// chunks of `pageText` most relevant to `message` and prepends them, so
     /// each question is grounded on the page sections that actually answer
     /// it rather than only the fixed instructions-level summary/prefix. If
-    /// retrieval isn't usable (assets not ready, embedding failed, or the
-    /// page is too short to chunk), falls back to sending the bare message —
-    /// relying on the engine's fixed grounding instead.
-    static func chatTurnPrompt(pageText: String, message: String) async -> String {
+    /// retrieval isn't usable (page too short to chunk, or neither the
+    /// lexical nor the dense ranking produced a signal), falls back to
+    /// sending the bare message — relying on the engine's fixed grounding
+    /// instead.
+    static func chatTurnPrompt(pageText: String, pageTitle: String, message: String) async -> String {
         guard !pageText.isEmpty else { return message }
         guard let retrieved = await PageRetriever.shared.retrieve(
             pageText: pageText,
+            pageTitle: pageTitle,
             query: message,
             topK: chatRetrievalTopK
         ), !retrieved.isEmpty else {
@@ -444,7 +449,7 @@ private extension PageAIService {
 
         let workingText: String
         let wasTruncated: Bool
-        if let retrieved = await PageRetriever.shared.retrieve(pageText: pageText, query: question),
+        if let retrieved = await PageRetriever.shared.retrieve(pageText: pageText, pageTitle: pageTitle, query: question),
            !retrieved.isEmpty {
             // Grounded on the most relevant sections rather than a prefix,
             // so there's nothing "truncated" about this answer.
@@ -484,7 +489,8 @@ private extension PageAIService {
         guard !grounding.isEmpty else { return nil }
         return PageChatEngine(
             instructions: chatInstructions(pageTitle: pageTitle, grounding: grounding, recentConversation: recentConversation),
-            pageText: pageText
+            pageText: pageText,
+            pageTitle: pageTitle
         )
     }
 
@@ -495,7 +501,7 @@ private extension PageAIService {
         return AsyncThrowingStream { continuation in
             let task = Task {
                 do {
-                    let prompt = await chatTurnPrompt(pageText: chatEngine.pageText, message: message)
+                    let prompt = await chatTurnPrompt(pageText: chatEngine.pageText, pageTitle: chatEngine.pageTitle, message: message)
                     for try await partial in chatEngine.stream(prompt: prompt) {
                         continuation.yield(partial)
                     }
@@ -542,10 +548,14 @@ private final class PageChatEngine {
     /// the (usually much shorter) grounding baked into `session`'s fixed
     /// instructions.
     let pageText: String
+    /// Kept alongside `pageText` so per-turn retrieval can index each chunk
+    /// under the page title as its contextual prefix.
+    let pageTitle: String
 
-    init(instructions: String, pageText: String) {
+    init(instructions: String, pageText: String, pageTitle: String = "") {
         session = LanguageModelSession(instructions: instructions)
         self.pageText = pageText
+        self.pageTitle = pageTitle
     }
 }
 
@@ -621,7 +631,7 @@ private extension PageAIService {
 
         let workingText: String
         let wasTruncated: Bool
-        if let retrieved = await PageRetriever.shared.retrieve(pageText: pageText, query: question),
+        if let retrieved = await PageRetriever.shared.retrieve(pageText: pageText, pageTitle: pageTitle, query: question),
            !retrieved.isEmpty {
             workingText = retrieved.map(\.text).joined(separator: "\n\n---\n\n")
             wasTruncated = false
@@ -658,7 +668,8 @@ private extension PageAIService {
         guard LLMModelManager.shared.isDownloaded, !grounding.isEmpty else { return nil }
         return MLXChatEngine(
             instructions: chatInstructions(pageTitle: pageTitle, grounding: grounding, recentConversation: recentConversation),
-            pageText: pageText
+            pageText: pageText,
+            pageTitle: pageTitle
         )
     }
 
@@ -669,7 +680,11 @@ private extension PageAIService {
         return AsyncThrowingStream { continuation in
             let task = Task {
                 do {
-                    let prompt = await chatTurnPrompt(pageText: chatEngine.pageText ?? "", message: message)
+                    let prompt = await chatTurnPrompt(
+                        pageText: chatEngine.pageText ?? "",
+                        pageTitle: chatEngine.pageTitle ?? "",
+                        message: message
+                    )
                     for try await partial in chatEngine.stream(prompt: prompt) {
                         continuation.yield(partial)
                     }

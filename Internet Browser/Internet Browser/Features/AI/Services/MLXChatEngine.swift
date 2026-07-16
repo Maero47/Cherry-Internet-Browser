@@ -96,12 +96,17 @@ actor MLXChatEngine {
     /// chunks passed in per question instead (mirrors `PageChatEngine` vs
     /// `ResearchChatEngine`'s asymmetry).
     let pageText: String?
+    /// Kept alongside `pageText` so per-turn retrieval can index each chunk
+    /// under the page title as its contextual prefix — `nil` for the
+    /// research engine, same as `pageText`.
+    let pageTitle: String?
     private var session: ChatSession?
     private var isFirstTurn = true
 
-    init(instructions: String?, pageText: String? = nil) {
+    init(instructions: String?, pageText: String? = nil, pageTitle: String? = nil) {
         self.instructions = instructions
         self.pageText = pageText
+        self.pageTitle = pageTitle
     }
 
     /// Pure logic, split out for testability: whether/how to fold

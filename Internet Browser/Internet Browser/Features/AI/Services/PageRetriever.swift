@@ -2,11 +2,13 @@
 //  PageRetriever.swift
 //  Cherry Browser
 //
-//  On-device retrieval (RAG) over a single page's extracted text: chunk it
-//  into embedder-sized passages, embed each chunk once with Apple's
-//  NLContextualEmbedding, and rank chunks against a question by cosine
-//  similarity so answer paths can ground the model on the most relevant
-//  sections instead of a blind prefix of the page.
+//  On-device HYBRID retrieval (RAG) over a single page's extracted text:
+//  chunk it into overlapping, embedder-sized passages, index each chunk
+//  both densely (one mean-pooled NLContextualEmbedding vector) and
+//  lexically (Okapi BM25 over its tokens), then rank a question by fusing
+//  the cosine ranking and the BM25 ranking with Reciprocal Rank Fusion —
+//  dense retrieval carries the semantics, BM25 carries the exact terms
+//  (names, numbers, code, rare words) embeddings are weak on.
 //
 //  NLContextualEmbedding itself only needs macOS 14+ / NaturalLanguage, so
 //  this layer is deliberately independent of Foundation Models and macOS 26
@@ -196,9 +198,16 @@ nonisolated struct BM25Index {
 
 /// Retrieval passages are sized well under `NLContextualEmbedding`'s
 /// 256-token-per-request limit (~4 chars/token for English, fewer for
-/// denser scripts), leaving headroom so a single embedding call covers the
-/// whole chunk without silent truncation.
-private let ragChunkMaxChars = 900
+/// denser scripts). The budget that has to stay under that limit is
+/// target + carried overlap + the bracketed title prefix (capped at 120
+/// chars by `RetrievalMath.indexableText`): 700 + 100 + ~125 ≈ 925 chars —
+/// about the old 900-char single-chunk budget. The smaller 700-char target
+/// (vs the old 900) also dilutes each chunk's mean-pooled vector less.
+private let ragChunkTargetChars = 700
+/// ~14% of the target: adjacent chunks carry the previous chunk's tail
+/// sentences so an answer spanning a chunk boundary appears whole in at
+/// least one chunk.
+private let ragChunkOverlapChars = 100
 private let defaultRetrievalTopK = 5
 
 /// On-device retrieval over one page's text at a time. Callers call
@@ -212,64 +221,125 @@ private let defaultRetrievalTopK = 5
 actor PageRetriever {
     static let shared = PageRetriever()
 
-    static let chunkMaxChars = ragChunkMaxChars
+    static let chunkTargetChars = ragChunkTargetChars
+    static let chunkOverlapChars = ragChunkOverlapChars
     static let defaultTopK = defaultRetrievalTopK
 
     private var indexedPageText: String?
+    private var indexedTitle: String?
     private var chunks: [PageChunk] = []
-    private var chunkEmbeddings: [[Float]] = []
+    /// `nil` when the index was built without embeddings (assets not ready /
+    /// model failure) — retrieval then runs BM25-only until an upgrade
+    /// attempt on a later call succeeds.
+    private var chunkEmbeddings: [[Float]]?
+    private var bm25: BM25Index?
 
     private init() {}
 
-    /// Retrieves the chunks of `pageText` most relevant to `query`. Atomic
-    /// per call: this method (re)builds the index for `pageText` if needed,
-    /// then snapshots the chunk/embedding arrays into LOCAL constants before
-    /// its only remaining suspension point (embedding the query). Ranking
-    /// afterwards reads only that local snapshot, never the actor's mutable
-    /// `chunks`/`chunkEmbeddings` — so a concurrent call for a DIFFERENT
-    /// page (another tab, or a stale in-flight turn after navigating) that
+    /// Retrieves the chunks of `pageText` most relevant to `query`, ranked
+    /// by HYBRID retrieval: the dense cosine ranking and the lexical BM25
+    /// ranking over the whole chunk pool, fused with Reciprocal Rank Fusion,
+    /// trimmed to the fused top-K, and returned in document order.
+    /// `pageTitle` is threaded into the index as each chunk's contextual
+    /// prefix (see `RetrievalMath.indexableText`); the returned chunk text
+    /// itself stays clean.
+    ///
+    /// Atomic per call: this method (re)builds the index for `pageText` if
+    /// needed, then snapshots the chunk/embedding/BM25 state into LOCAL
+    /// constants before its only remaining suspension point (embedding the
+    /// query). Ranking afterwards reads only that local snapshot, never the
+    /// actor's mutable index — so a concurrent call for a DIFFERENT page
+    /// (another tab, or a stale in-flight turn after navigating) that
     /// overwrites the shared index while this call's query is embedding
     /// cannot corrupt this call's ranking or return the wrong page's chunks.
     ///
-    /// Returns `nil` when retrieval isn't usable: assets not ready,
-    /// embedding failed, the page is too short to chunk, or `query` is
-    /// empty — callers should fall back to their existing truncation path.
-    func retrieve(pageText: String, query: String, topK: Int = defaultRetrievalTopK) async -> [PageChunk]? {
+    /// Degrades gracefully: if embeddings are unavailable, the BM25 ranking
+    /// alone drives retrieval (lexical scoring needs no model assets).
+    /// Returns `nil` only when NOTHING is usable: the page is too short to
+    /// chunk, `query` is empty, or neither ranking produced a signal —
+    /// callers should fall back to their existing truncation path.
+    func retrieve(pageText: String, pageTitle: String = "", query: String, topK: Int = defaultRetrievalTopK) async -> [PageChunk]? {
         guard !query.isEmpty else { return nil }
-        guard await index(pageText: pageText), indexedPageText == pageText else { return nil }
+        guard await index(pageText: pageText, title: pageTitle),
+              indexedPageText == pageText, indexedTitle == pageTitle else { return nil }
 
         // Snapshot now, synchronously, before the only await below — no
         // other call can interleave between this line and the guard above.
         let localChunks = chunks
         let localEmbeddings = chunkEmbeddings
+        let localBM25 = bm25
 
-        guard let queryEmbeddings = await Self.embedAll([query]), let queryVector = queryEmbeddings.first else {
-            return nil
+        let bm25Ranking = localBM25?.rankedIndices(query: RetrievalMath.tokenize(query)) ?? []
+
+        var denseRanking: [Int] = []
+        if let localEmbeddings,
+           let queryEmbeddings = await Self.embedAll([query]),
+           let queryVector = queryEmbeddings.first {
+            denseRanking = RetrievalMath.rankIndices(chunkEmbeddings: localEmbeddings, query: queryVector)
         }
 
-        let ranked = RetrievalMath.rankIndices(chunkEmbeddings: localEmbeddings, query: queryVector)
-        let topIndices = Set(ranked.prefix(topK))
+        let fused: [Int]
+        switch (denseRanking.isEmpty, bm25Ranking.isEmpty) {
+        case (true, true):
+            return nil
+        case (false, true):
+            fused = denseRanking
+        case (true, false):
+            fused = bm25Ranking
+        case (false, false):
+            fused = RetrievalMath.rrf(rankings: [denseRanking, bm25Ranking])
+        }
+
+        let topIndices = Set(fused.prefix(topK))
         return localChunks.filter { topIndices.contains($0.index) }
     }
 
-    /// Chunks and embeds `pageText` if it isn't already cached. Returns
-    /// `false` — leaving any previously cached index untouched — when
-    /// retrieval isn't usable: embedding assets unavailable, embedding
-    /// failed, or the page is short enough that chunking wouldn't help
-    /// (a single chunk gives retrieval nothing to rank).
-    private func index(pageText: String) async -> Bool {
-        if indexedPageText == pageText, !chunks.isEmpty { return true }
+    /// Chunks and indexes `pageText` (BM25 always; embeddings when the model
+    /// is usable) unless it's already cached under the same text + title.
+    /// Returns `false` — leaving any previously cached index untouched —
+    /// only when the page is short enough that chunking wouldn't help (a
+    /// single chunk gives retrieval nothing to rank). An embedding failure
+    /// no longer fails indexing: the BM25 side needs no model, so the index
+    /// is stored without embeddings and later calls try to add them once
+    /// assets become available.
+    private func index(pageText: String, title: String) async -> Bool {
+        if indexedPageText == pageText, indexedTitle == title, !chunks.isEmpty {
+            if chunkEmbeddings == nil {
+                // Assets may have become available since this index was
+                // built BM25-only — try to upgrade it with embeddings. The
+                // identity re-check after the await mirrors `retrieve`'s
+                // snapshot discipline: a concurrent rebuild for a different
+                // page must not receive this page's vectors.
+                let indexTexts = chunks.map { RetrievalMath.indexableText(title: title, chunk: $0.text) }
+                if let embeddings = await Self.embedAll(indexTexts),
+                   indexedPageText == pageText, indexedTitle == title, chunkEmbeddings == nil {
+                    chunkEmbeddings = embeddings
+                }
+            }
+            return true
+        }
 
-        let newChunks = TextChunker.chunk(pageText, maxChars: Self.chunkMaxChars)
-            .enumerated()
-            .map { PageChunk(index: $0.offset, text: $0.element) }
+        let newChunks = TextChunker.retrievalChunks(
+            pageText,
+            targetChars: Self.chunkTargetChars,
+            overlapChars: Self.chunkOverlapChars
+        )
+        .enumerated()
+        .map { PageChunk(index: $0.offset, text: $0.element) }
         guard newChunks.count > 1 else { return false }
 
-        guard let embeddings = await Self.embedAll(newChunks.map(\.text)) else { return false }
+        // Both halves of the hybrid index — the BM25 corpus and the chunk
+        // embeddings — are built over the SAME title-prefixed index text,
+        // so lexical and dense retrieval see identical documents.
+        let indexTexts = newChunks.map { RetrievalMath.indexableText(title: title, chunk: $0.text) }
+        let newBM25 = BM25Index(corpus: indexTexts.map(RetrievalMath.tokenize))
+        let newEmbeddings = await Self.embedAll(indexTexts)
 
         indexedPageText = pageText
+        indexedTitle = title
         chunks = newChunks
-        chunkEmbeddings = embeddings
+        chunkEmbeddings = newEmbeddings
+        bm25 = newBM25
         return true
     }
 
@@ -278,8 +348,10 @@ actor PageRetriever {
     /// page the user has navigated away from.
     func reset() {
         indexedPageText = nil
+        indexedTitle = nil
         chunks = []
-        chunkEmbeddings = []
+        chunkEmbeddings = nil
+        bm25 = nil
     }
 
     /// Embeds each string in `texts` (mean-pooled to one 512-dim vector per
