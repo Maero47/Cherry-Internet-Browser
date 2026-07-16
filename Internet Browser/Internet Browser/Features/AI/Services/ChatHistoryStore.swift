@@ -210,7 +210,13 @@ extension SavedChatSession {
         turns: [PageChatTurn],
         now: Date = Date()
     ) -> SavedChatSession? {
-        let saved = turns.compactMap(SavedTurn.init)
+        var saved = turns.compactMap(SavedTurn.init)
+        // Drop a trailing user question whose assistant reply is still
+        // streaming (and was therefore dropped by the projection): saving it
+        // would restore a dangling, unanswered turn and seed it into the
+        // rebuilt engine's replay. The completed exchange re-saves when the
+        // reply finishes (the isResponding→false trigger).
+        while saved.last?.role == .user { saved.removeLast() }
         guard saved.contains(where: { $0.role == .user }),
               saved.contains(where: { $0.role == .assistant }) else { return nil }
         return SavedChatSession(

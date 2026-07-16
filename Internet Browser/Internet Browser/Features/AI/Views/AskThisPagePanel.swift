@@ -1413,6 +1413,10 @@ struct AskThisPagePanel: View {
             Spacer()
             Button {
                 saveResearchConversation()
+                // A fresh chat returns to normal selection-shaped routing —
+                // drop the reopen pin so New Chat doesn't stay stuck on the
+                // research path over a single-page/empty selection.
+                researchRestoreOverride = false
                 Task {
                     await researchSession.prepare(tabManager: tabManager, includeTabIDs: selectedTabIDs)
                     researchSession.startNewChat()
