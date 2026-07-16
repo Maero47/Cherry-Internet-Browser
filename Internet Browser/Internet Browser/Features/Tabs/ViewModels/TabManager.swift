@@ -127,6 +127,13 @@ final class TabManager {
         // the secondary tab to primary instead of leaving a dangling secondary.
         let promotedTabID: UUID? = (isSplitActive && selectedTabID == tab.id) ? secondarySelectedTabID : nil
 
+        // The tab is moving to another TabManager — if its webview is parked
+        // in THIS manager's off-screen research host, release it so the host
+        // (whose lifetime tracks this manager) never outlives its claim on a
+        // transferred webview. The webview stays alive via tab.webView and
+        // reparents into the destination's hierarchy when displayed.
+        detachFromResearchHost(tab.webView)
+
         // The tab is moving to another window, not disappearing — windowIsClosing
         // is false even when this empties the source window; that window's own
         // close is announced separately via ExtensionManager.windowClosed.
@@ -220,11 +227,21 @@ final class TabManager {
             adBlocker.applyCosmeticRules(to: configuration)
         }
 
-        let webView = CherryWebView(frame: .zero, configuration: configuration)
+        // A real (off-screen) viewport, never `.zero`: WebKit lays the page
+        // out against the view's size, and at 0×0 every element collapses to
+        // an empty box — `innerText` (what `PageAIExtractor` reads) comes
+        // back "" for the whole page and the tab counts as an extraction
+        // failure. Same frame as `WebSearchService`'s never-displayed webview,
+        // which extracts fine for exactly this reason.
+        let webView = CherryWebView(frame: CGRect(x: 0, y: 0, width: 1024, height: 768), configuration: configuration)
         webView.allowsBackForwardNavigationGestures = true
         webView.allowsMagnification = true
         webView.tabID = tab.id
         tab.adoptWebView(webView)
+        // Park it in the shared off-screen host so it also has a window-backed
+        // view hierarchy — a view in no window at all is where WebKit throttles
+        // rendering work hardest, and result pages should render like pages.
+        attachToResearchHost(webView)
         // With no wrapper coordinator until the tab is displayed, the tab
         // mirrors url/title/isLoading itself: the tab bar gets a live
         // spinner/title, redirects land in `tab.url` (so adoption won't
@@ -233,6 +250,53 @@ final class TabManager {
         tab.beginBackgroundLoadObservation()
         webView.load(URLRequest(url: url))
         return tab
+    }
+
+    // MARK: - Background research webview host
+
+    /// Never-shown window that parks agent-opened research webviews while
+    /// they load (`openBackgroundResearchTab`), so WebKit treats them as
+    /// real, window-attached views and keeps scheduling layout/rendering —
+    /// a non-zero frame alone can still be render-throttled for a view in
+    /// no window. Borderless, transparent, and never ordered on screen:
+    /// nothing flashes, `isVisible` stays false (so the "no visible windows
+    /// → quit" checks in close paths never count it), and it holds no key
+    /// or main status. One shared host per TabManager, created lazily and
+    /// released with the manager. Webviews leave it automatically when
+    /// `WebViewWrapper` adopts them (AppKit reparents on addSubview) and
+    /// explicitly via `detachFromResearchHost` on close/transfer/sleep, so
+    /// the host never keeps a dead webview alive.
+    @ObservationIgnored private var researchWebViewHost: NSWindow?
+
+    private func attachToResearchHost(_ webView: NSView) {
+        let host: NSWindow
+        if let existing = researchWebViewHost {
+            host = existing
+        } else {
+            let window = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 1024, height: 768),
+                styleMask: [.borderless],
+                backing: .buffered,
+                defer: false
+            )
+            window.isReleasedWhenClosed = false
+            window.isExcludedFromWindowsMenu = true
+            window.ignoresMouseEvents = true
+            // Defense-in-depth: even if something ever ordered it in, an
+            // alpha-0 window paints nothing and stays !isVisible.
+            window.alphaValue = 0
+            researchWebViewHost = window
+            host = window
+        }
+        host.contentView?.addSubview(webView)
+    }
+
+    /// Removes `webView` from the research host if it is parked there.
+    /// Safe on any webview — displayed ones live in a browser window's
+    /// hierarchy, not the host, and are left alone.
+    private func detachFromResearchHost(_ webView: NSView?) {
+        guard let webView, webView.window === researchWebViewHost else { return }
+        webView.removeFromSuperview()
     }
 
     func closeTab(_ tab: Tab) {
@@ -247,8 +311,11 @@ final class TabManager {
 
         // Stop media and release the webView before removing the tab. End any
         // background-load mirroring first so the blanking below can't write
-        // about:blank state back onto the closing tab.
+        // about:blank state back onto the closing tab. If it's a parked
+        // research webview, pull it out of the off-screen host too — the
+        // host's view hierarchy must not keep the closed webview alive.
         tab.endBackgroundLoadObservation()
+        detachFromResearchHost(tab.webView)
         tab.webView?.stopLoading()
         tab.webView?.loadHTMLString("", baseURL: nil)
         tab.webView = nil
@@ -364,8 +431,15 @@ final class TabManager {
               let destIndex = tabs.firstIndex(where: { $0.id == targetID }),
               sourceIndex != destIndex else { return }
         let tab = tabs.remove(at: sourceIndex)
-        let insertIndex = destIndex > sourceIndex ? destIndex : destIndex
-        tabs.insert(tab, at: min(insertIndex, tabs.count))
+        // The dragged tab must land AT the target's pre-move position — the
+        // same result the tab bars' `tabs.move(fromOffsets:toOffset:)` reorder
+        // paths produce. That is `destIndex` in BOTH directions: dragging
+        // right, removing the source shifts the target down to destIndex - 1,
+        // so inserting at destIndex fills exactly the slot the target vacated;
+        // dragging left, nothing before destIndex moved. (A `destIndex - 1`
+        // "post-removal" adjustment would land the tab one slot short of the
+        // target on rightward drags.)
+        tabs.insert(tab, at: min(destIndex, tabs.count))
     }
 
     // MARK: - Duplicate / Reopen
@@ -492,6 +566,10 @@ final class TabManager {
                   tab.id != secondarySelectedTabID,
                   !tab.showHomePage,
                   now.timeIntervalSince(tab.lastActiveDate) > sleepTimeout else { continue }
+            // sleep() drops tab.webView without unparenting it — a research
+            // webview parked in the off-screen host must leave the hierarchy
+            // first or the host would keep the "released" webview alive.
+            detachFromResearchHost(tab.webView)
             tab.sleep()
         }
     }

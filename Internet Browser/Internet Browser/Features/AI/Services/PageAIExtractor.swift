@@ -46,9 +46,13 @@ struct PageAIExtractor {
             if (scoredBest) candidates.push(scoredBest);
         }
 
+        // Rank by textContent, not innerText: innerText needs a live render
+        // tree (it's '' for anything WebKit hasn't laid out — background
+        // tabs, mid-load reads), while textContent is layout-independent, so
+        // a real container still wins even when nothing has rendered yet.
         var best = null, bestLen = -1;
         candidates.forEach(function(el) {
-            var len = (el.innerText || '').length;
+            var len = (el.textContent || '').length;
             if (len > bestLen) { bestLen = len; best = el; }
         });
 
@@ -78,6 +82,17 @@ struct PageAIExtractor {
         if (text.length < MIN && document.body) {
             var liveBody = normalize(document.body.innerText);
             if (liveBody.length > text.length) text = liveBody;
+        }
+
+        // Layout-independent last resort: every read above except the clone's
+        // textContent branch depends on innerText, which is '' without a
+        // render tree. Strip the obvious non-content and take the body's raw
+        // textContent rather than returning null on an unrendered page.
+        if (text.length < MIN && document.body) {
+            var bodyClone = document.body.cloneNode(true);
+            bodyClone.querySelectorAll('script, style, noscript').forEach(function(el) { el.remove(); });
+            var bodyText = normalize(bodyClone.textContent);
+            if (bodyText.length > text.length) text = bodyText;
         }
 
         if (text.length < 40) return null;

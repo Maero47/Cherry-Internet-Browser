@@ -18,37 +18,39 @@ final class WebAgentLoadWaitTests: XCTestCase {
     }
 
     func testNothingSettledWaitsUntilTheHardCap() {
-        XCTAssertFalse(WebAgentLoadWait.shouldProceed(settled: 0, total: 5, elapsed: .seconds(6.9)))
+        XCTAssertFalse(WebAgentLoadWait.shouldProceed(settled: 0, total: 5, elapsed: .seconds(4.9)))
         XCTAssertTrue(WebAgentLoadWait.shouldProceed(settled: 0, total: 5, elapsed: WebAgentLoadWait.maxWait))
     }
 
-    func testHardCapProceedsEvenWithAMinoritySettled() {
-        XCTAssertTrue(WebAgentLoadWait.shouldProceed(settled: 1, total: 5, elapsed: .seconds(8)))
+    func testHardCapProceedsEvenWithNothingSettled() {
+        XCTAssertTrue(WebAgentLoadWait.shouldProceed(settled: 0, total: 5, elapsed: .seconds(6)))
     }
 
-    func testMajorityBeforeGraceKeepsWaitingForStragglers() {
+    func testSettledBeforeGraceKeepsWaitingForStragglers() {
         XCTAssertFalse(WebAgentLoadWait.shouldProceed(settled: 4, total: 5, elapsed: .seconds(1)))
+        XCTAssertFalse(WebAgentLoadWait.shouldProceed(settled: 1, total: 5, elapsed: .seconds(2.4)))
     }
 
-    func testMajorityAfterGraceProceeds() {
-        XCTAssertTrue(WebAgentLoadWait.shouldProceed(settled: 3, total: 5, elapsed: WebAgentLoadWait.majorityGrace))
+    func testAnySettledAfterGraceProceeds() {
+        // The old policy demanded a strict majority (3/5) past the grace, so
+        // the common result set with 2-3 perpetually-loading pages sat there
+        // until the hard cap. Now one settled tab past the grace is enough.
+        XCTAssertTrue(WebAgentLoadWait.shouldProceed(settled: 1, total: 5, elapsed: WebAgentLoadWait.settledGrace))
+        XCTAssertTrue(WebAgentLoadWait.shouldProceed(settled: 2, total: 5, elapsed: .seconds(3)))
+        XCTAssertTrue(WebAgentLoadWait.shouldProceed(settled: 2, total: 4, elapsed: .seconds(3)))
         XCTAssertTrue(WebAgentLoadWait.shouldProceed(settled: 4, total: 5, elapsed: .seconds(3)))
     }
 
-    func testMinorityAfterGraceKeepsWaiting() {
-        XCTAssertFalse(WebAgentLoadWait.shouldProceed(settled: 2, total: 5, elapsed: .seconds(3)))
-    }
-
-    func testExactHalfIsNotAMajority() {
-        XCTAssertFalse(WebAgentLoadWait.shouldProceed(settled: 2, total: 4, elapsed: .seconds(3)))
-        XCTAssertTrue(WebAgentLoadWait.shouldProceed(settled: 3, total: 4, elapsed: .seconds(3)))
+    func testGraceRequiresAtLeastOneSettledTab() {
+        XCTAssertFalse(WebAgentLoadWait.shouldProceed(settled: 0, total: 5, elapsed: .seconds(3)))
     }
 
     func testHardCapIsBounded() {
         // The whole flow's no-indefinite-wait guarantee rests on this:
         // shouldProceed is unconditionally true once elapsed reaches maxWait,
-        // and maxWait itself stays single-digit seconds.
-        XCTAssertLessThanOrEqual(WebAgentLoadWait.maxWait, .seconds(8))
+        // and maxWait itself stays small — the panel must never sit longer
+        // than ~5s on "Reading results…".
+        XCTAssertLessThanOrEqual(WebAgentLoadWait.maxWait, .seconds(5))
         XCTAssertTrue(WebAgentLoadWait.shouldProceed(settled: 0, total: 100, elapsed: WebAgentLoadWait.maxWait))
     }
 }
