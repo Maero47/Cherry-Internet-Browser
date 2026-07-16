@@ -73,6 +73,125 @@ enum RetrievalMath {
             .sorted { $0.1 > $1.1 }
             .map { $0.0 }
     }
+
+    /// Deterministic lowercasing word tokenizer for BM25: splits on anything
+    /// that isn't a letter or digit, keeping full Unicode letters/digits so
+    /// Turkish and other accented Latin text tokenizes into whole words
+    /// (matching the Latin-script embedder's coverage). Pure — no
+    /// NaturalLanguage dependency, so lexical retrieval needs no model assets.
+    nonisolated static func tokenize(_ text: String) -> [String] {
+        text.lowercased()
+            .split { !($0.isLetter || $0.isNumber) }
+            .map(String.init)
+    }
+
+    /// Reciprocal Rank Fusion: fuses several ranked lists of chunk indices
+    /// (e.g. a dense cosine ranking and a BM25 ranking) into one ranking by
+    /// `sum(1 / (k + rank))` per index, best first. Operating on RANKS
+    /// rather than raw scores is what makes the fusion robust to the
+    /// incompatible scales of cosine (−1…1) and BM25 (unbounded). An index
+    /// absent from a list simply gets no contribution from it; exact score
+    /// ties break toward the lower (earlier-in-document) index so the result
+    /// is deterministic.
+    nonisolated static func rrf(rankings: [[Int]], k: Int = 60) -> [Int] {
+        var scores: [Int: Double] = [:]
+        for ranking in rankings {
+            for (position, index) in ranking.enumerated() {
+                scores[index, default: 0] += 1 / Double(k + position + 1)
+            }
+        }
+        return scores.keys.sorted {
+            let a = scores[$0]!, b = scores[$1]!
+            return a == b ? $0 < $1 : a > b
+        }
+    }
+
+    /// The text a chunk is INDEXED under (embedded + BM25-tokenized): the
+    /// page/tab title prepended as a cheap contextual prefix, so a chunk
+    /// that lost the document's subject during splitting still carries it.
+    /// The chunk text callers return to the model stays clean — the prefix
+    /// exists only inside the index. The title is trimmed and capped so a
+    /// pathological title can't crowd the chunk out of the embedder's
+    /// per-request token budget.
+    nonisolated static func indexableText(title: String, chunk: String) -> String {
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return chunk }
+        return "[\(trimmed.prefix(120))] \(chunk)"
+    }
+}
+
+/// Classic Okapi BM25 over a tokenized chunk corpus. Precomputes postings
+/// (term → documents containing it, with counts), inverse document
+/// frequencies, and length normalization at index time, so scoring a query
+/// costs only its terms' posting lists — no per-query corpus scan. Pure and
+/// model-free: this is the lexical half of hybrid retrieval, strong exactly
+/// where dense embeddings are weak (names, numbers, code, rare words), and
+/// it keeps working even when embedding assets aren't available.
+nonisolated struct BM25Index {
+    /// Standard Okapi parameters: `k1` bounds how quickly repeated term
+    /// occurrences saturate; `b` sets how strongly longer documents are
+    /// penalized.
+    static let k1 = 1.5
+    static let b = 0.75
+
+    private let postings: [String: [(document: Int, count: Int)]]
+    private let inverseDocumentFrequency: [String: Double]
+    private let documentLengths: [Int]
+    private let averageDocumentLength: Double
+
+    var documentCount: Int { documentLengths.count }
+
+    init(corpus: [[String]]) {
+        documentLengths = corpus.map(\.count)
+        let totalLength = documentLengths.reduce(0, +)
+        averageDocumentLength = corpus.isEmpty ? 0 : Double(totalLength) / Double(corpus.count)
+
+        var postings: [String: [(document: Int, count: Int)]] = [:]
+        for (document, tokens) in corpus.enumerated() {
+            var counts: [String: Int] = [:]
+            for token in tokens { counts[token, default: 0] += 1 }
+            for (term, count) in counts { postings[term, default: []].append((document, count)) }
+        }
+        self.postings = postings
+
+        // The "+1" inside the log is the non-negative IDF variant (as used
+        // by Lucene): a term present in most documents scores near zero
+        // instead of going negative and actively repelling matches.
+        let n = Double(corpus.count)
+        inverseDocumentFrequency = postings.mapValues { posting in
+            let df = Double(posting.count)
+            return Foundation.log((n - df + 0.5) / (df + 0.5) + 1)
+        }
+    }
+
+    /// One score per corpus document for `query` (already tokenized with the
+    /// same tokenizer as the corpus). Duplicate query terms count once — a
+    /// user repeating a word shouldn't double its weight.
+    func scores(query: [String]) -> [Double] {
+        var scores = [Double](repeating: 0, count: documentCount)
+        guard averageDocumentLength > 0 else { return scores }
+        for term in Set(query) {
+            guard let posting = postings[term], let idf = inverseDocumentFrequency[term] else { continue }
+            for (document, count) in posting {
+                let tf = Double(count)
+                let lengthNorm = 1 - Self.b + Self.b * Double(documentLengths[document]) / averageDocumentLength
+                scores[document] += idf * (tf * (Self.k1 + 1)) / (tf + Self.k1 * lengthNorm)
+            }
+        }
+        return scores
+    }
+
+    /// Document indices ranked best-first, INCLUDING only documents with a
+    /// positive score — a document sharing no term with the query carries no
+    /// lexical signal, and giving it an arbitrary tie rank would just inject
+    /// noise into rank fusion. Ties break toward the lower index so the
+    /// ranking is deterministic.
+    func rankedIndices(query: [String]) -> [Int] {
+        let scores = scores(query: query)
+        return scores.indices
+            .filter { scores[$0] > 0 }
+            .sorted { scores[$0] == scores[$1] ? $0 < $1 : scores[$0] > scores[$1] }
+    }
 }
 
 /// Retrieval passages are sized well under `NLContextualEmbedding`'s
