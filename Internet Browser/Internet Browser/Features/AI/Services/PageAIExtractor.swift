@@ -46,13 +46,16 @@ struct PageAIExtractor {
             if (scoredBest) candidates.push(scoredBest);
         }
 
-        // Rank by textContent, not innerText: innerText needs a live render
-        // tree (it's '' for anything WebKit hasn't laid out — background
-        // tabs, mid-load reads), while textContent is layout-independent, so
-        // a real container still wins even when nothing has rendered yet.
+        // Rank by innerText where it's available (rendered pages: it reflects
+        // VISIBLE text, so nav/script/hidden blobs don't inflate a container's
+        // score — the long-standing displayed-page behavior), falling back to
+        // textContent when innerText is empty. innerText needs a live render
+        // tree (it's '' for anything WebKit hasn't laid out — background tabs,
+        // mid-load reads), while textContent is layout-independent, so a real
+        // container still wins even when nothing has rendered yet.
         var best = null, bestLen = -1;
         candidates.forEach(function(el) {
-            var len = (el.textContent || '').length;
+            var len = (el.innerText || '').length || (el.textContent || '').length;
             if (len > bestLen) { bestLen = len; best = el; }
         });
 
