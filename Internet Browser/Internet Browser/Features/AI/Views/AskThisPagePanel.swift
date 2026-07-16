@@ -56,6 +56,17 @@ struct AskThisPagePanel: View {
     /// content is stale; the task keyed on this triggers a re-gather.
     @State private var researchRefreshCount = 0
 
+    // MARK: Chat history state
+
+    /// Whether the header's history popover is open.
+    @State private var showHistory = false
+    /// Forces the panel into the research path after reopening a saved
+    /// research conversation whose transcript would otherwise be invisible
+    /// (routing is selection-shaped, and the current selection may be
+    /// single-page or empty). Cleared the moment the user edits the tab
+    /// selection — from then on the selection's own shape routes again.
+    @State private var researchRestoreOverride = false
+
     // MARK: Web research agent state
 
     /// The single-shot web research agent's progress through its four steps.
@@ -113,12 +124,20 @@ struct AskThisPagePanel: View {
 
     private var availability: PageAIAvailability { PageAIService.availability }
 
-    /// Exactly the active tab selected → the fast single-page chat path
-    /// (identical to the old "This Page" mode). Anything else answers via the
-    /// research session over the selected set — unless the selection is
-    /// general-chat-shaped (see `isGeneralChat`).
-    private var isSinglePageSelection: Bool {
+    /// The selection's own shape, before the research-restore override:
+    /// exactly the active tab selected → the fast single-page chat path
+    /// (identical to the old "This Page" mode).
+    private var isActiveTabOnlySelection: Bool {
         selectedTabIDs.count == 1 && selectedTabIDs.first == activeTabID
+    }
+
+    /// Exactly the active tab selected → the fast single-page chat path.
+    /// Anything else answers via the research session over the selected set —
+    /// unless the selection is general-chat-shaped (see `isGeneralChat`).
+    /// A reopened research conversation overrides both non-research shapes
+    /// (see `researchRestoreOverride`).
+    private var isSinglePageSelection: Bool {
+        !researchRestoreOverride && isActiveTabOnlySelection
     }
 
     /// Nothing usable to ground on → general chat: a direct conversation
@@ -127,7 +146,7 @@ struct AskThisPagePanel: View {
     /// opened on a contentless tab) and the active tab being selected while
     /// its page snapshot has no readable text.
     private var isGeneralChat: Bool {
-        selectedTabIDs.isEmpty || (isSinglePageSelection && pageText.isEmpty)
+        !researchRestoreOverride && (selectedTabIDs.isEmpty || (isActiveTabOnlySelection && pageText.isEmpty))
     }
 
     /// The selection shapes that answer via the research session: two or
@@ -206,8 +225,14 @@ struct AskThisPagePanel: View {
             // `snapshotTabID` landing re-fires this key with the right text.
             guard !isSinglePageSelection || isSnapshotCurrent else { return }
             if isGeneralChat {
+                // A context switch can reset the conversation (configure
+                // starts a new chat when the grounding changed) — persist the
+                // one on screen first. Saving is idempotent: unchanged
+                // content is skipped by the store, so re-fires cost nothing.
+                saveChatConversation()
                 chatSession.configureGeneral()
             } else if isSinglePageSelection {
+                saveChatConversation()
                 chatSession.configure(pageTitle: pageTitle, pageText: pageText, summary: nil)
             }
         }
@@ -275,14 +300,105 @@ struct AskThisPagePanel: View {
         }
         // The agent's last step hands off to the research session's normal
         // streaming; "Answering…" clears when that stream finishes (or is
-        // stopped), returning the panel to its plain research mode.
+        // stopped), returning the panel to its plain research mode. A reply
+        // finishing (or being stopped with partial text) is also a history
+        // save point.
         .onChange(of: researchSession.isResponding) { _, responding in
             if !responding && webAgentPhase == .answering {
                 webAgentPhase = .idle
             }
+            if !responding {
+                saveResearchConversation()
+            }
+        }
+        // An assistant turn finished streaming (or was stopped with partial
+        // text) — persist the conversation as it now stands.
+        .onChange(of: chatSession.isResponding) { _, responding in
+            if !responding {
+                saveChatConversation()
+            }
+        }
+        // The user edited the tab selection — its shape routes again, and a
+        // reopened research conversation stops pinning the panel to research.
+        .onChange(of: selectedTabIDs) { _, _ in
+            researchRestoreOverride = false
         }
         .onDisappear {
             webAgentTask?.cancel()
+            saveChatConversation()
+            saveResearchConversation()
+        }
+    }
+
+    // MARK: - Chat history
+
+    /// Projects the single-page/general conversation into a history snapshot
+    /// and upserts it. A no-op until the conversation has one completed
+    /// user + assistant exchange (`SavedChatSession.snapshot` returns `nil`),
+    /// and when nothing changed since the last save.
+    private func saveChatConversation() {
+        guard let snapshot = SavedChatSession.snapshot(
+            id: chatSession.conversationID,
+            kind: chatSession.isGeneral ? .general : .page,
+            fallbackTitle: chatSession.isGeneral ? "New chat" : pageTitle,
+            turns: chatSession.turns
+        ) else { return }
+        ChatHistoryStore.shared.upsert(snapshot)
+    }
+
+    private func saveResearchConversation() {
+        guard let snapshot = SavedChatSession.snapshot(
+            id: researchSession.conversationID,
+            kind: .research,
+            fallbackTitle: "Research chat",
+            turns: researchSession.turns
+        ) else { return }
+        ChatHistoryStore.shared.upsert(snapshot)
+    }
+
+    /// Reopens a saved conversation from history as the current one.
+    /// The transcript is always shown; continuing builds a FRESH engine for
+    /// the CURRENT context, seeded with a replay of the reopened turns (the
+    /// original engine state is gone — see the sessions' `restore` docs):
+    /// - general: continues cleanly, nothing external needed.
+    /// - page: re-grounds on the CURRENT page; with no usable page it
+    ///   behaves as a general chat. The original page text is not resurrected.
+    /// - research: re-grounds on the CURRENTLY selected tabs; with nothing to
+    ///   index it degrades to the existing unavailable states (citation chips
+    ///   stay as plain labels — a stale tabID just doesn't focus a tab). The
+    ///   original result tabs are never auto-reopened.
+    private func reopen(_ saved: SavedChatSession) {
+        // Persist whatever is on screen before it's replaced.
+        saveChatConversation()
+        saveResearchConversation()
+
+        let turns = saved.turns.map { $0.asChatTurn() }
+        switch saved.kind {
+        case .general:
+            researchRestoreOverride = false
+            selectedTabIDs = []
+            chatSession.restore(id: saved.id, turns: turns, asGeneral: true, pageTitle: "", pageText: "")
+        case .page:
+            researchRestoreOverride = false
+            if let active = activeTabID {
+                selectedTabIDs = [active]
+                // The panel's current snapshot, even if mid-refresh: the
+                // configure/follow tasks re-ground on the live page as it
+                // settles, keeping the restored transcript either way.
+                chatSession.restore(id: saved.id, turns: turns, asGeneral: false, pageTitle: pageTitle, pageText: pageText)
+            } else {
+                selectedTabIDs = []
+                chatSession.restore(id: saved.id, turns: turns, asGeneral: true, pageTitle: "", pageText: "")
+            }
+        case .research:
+            researchSession.restore(id: saved.id, turns: turns)
+            if !isResearchSelection {
+                researchRestoreOverride = true
+            }
+            // Re-ground on the current selection right away (restore dropped
+            // the index): an empty/ineligible selection leaves the chat
+            // read-only via the existing unavailable states.
+            Task { await researchSession.prepare(tabManager: tabManager, includeTabIDs: selectedTabIDs) }
         }
     }
 
@@ -417,6 +533,24 @@ struct AskThisPagePanel: View {
 
             engineMenu
 
+            Button {
+                showHistory = true
+            } label: {
+                Image(systemName: "clock.arrow.circlepath")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 20, height: 20)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Chat history")
+            .popover(isPresented: $showHistory, arrowEdge: .bottom) {
+                ChatHistoryList(store: ChatHistoryStore.shared) { saved in
+                    showHistory = false
+                    reopen(saved)
+                }
+            }
+
             Button(action: onDismiss) {
                 Image(systemName: "xmark")
                     .font(.system(size: 10, weight: .medium))
@@ -540,6 +674,7 @@ struct AskThisPagePanel: View {
         HStack {
             Spacer()
             Button {
+                saveChatConversation()
                 chatSession.startNewChat()
             } label: {
                 Label("New Chat", systemImage: "square.and.pencil")
@@ -1277,6 +1412,7 @@ struct AskThisPagePanel: View {
             }
             Spacer()
             Button {
+                saveResearchConversation()
                 Task {
                     await researchSession.prepare(tabManager: tabManager, includeTabIDs: selectedTabIDs)
                     researchSession.startNewChat()
@@ -1492,6 +1628,101 @@ private struct TabSelectorBar: View {
     /// visible so the user can add a tab to ground the chat again.
     private func remove(_ tabID: UUID) {
         selectedTabIDs.remove(tabID)
+    }
+}
+
+/// The header history button's popover: past conversations newest-first,
+/// each row showing a kind icon, the title, and a relative timestamp. Tap a
+/// row to reopen it; a hover-revealed trash button deletes it.
+private struct ChatHistoryList: View {
+    let store: ChatHistoryStore
+    let onSelect: (SavedChatSession) -> Void
+
+    @State private var hoveredID: UUID?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("Chat History")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+            Divider()
+            if store.sessions.isEmpty {
+                Text("No past chats yet")
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 24)
+            } else {
+                ScrollView {
+                    VStack(spacing: 1) {
+                        ForEach(store.sessions) { session in
+                            row(for: session)
+                        }
+                    }
+                    .padding(6)
+                }
+                .frame(maxHeight: 320)
+            }
+        }
+        .frame(width: 300)
+    }
+
+    private func row(for session: SavedChatSession) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: icon(for: session.kind))
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .frame(width: 16)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(session.title)
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                Text(session.updatedAt.formatted(.relative(presentation: .named)))
+                    .font(.system(size: 9.5))
+                    .foregroundStyle(.tertiary)
+            }
+            Spacer(minLength: 4)
+            if hoveredID == session.id {
+                Button {
+                    store.delete(id: session.id)
+                } label: {
+                    Image(systemName: "trash")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 18, height: 18)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Delete this chat")
+            }
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
+        .background(
+            hoveredID == session.id ? Color.primary.opacity(0.06) : Color.clear,
+            in: RoundedRectangle(cornerRadius: 6, style: .continuous)
+        )
+        .contentShape(Rectangle())
+        .onTapGesture { onSelect(session) }
+        .onHover { hovering in
+            if hovering {
+                hoveredID = session.id
+            } else if hoveredID == session.id {
+                hoveredID = nil
+            }
+        }
+    }
+
+    private func icon(for kind: SavedChatSession.Kind) -> String {
+        switch kind {
+        case .page: return "doc.text"
+        case .general: return "bubble.left.and.bubble.right"
+        case .research: return "globe"
+        }
     }
 }
 
