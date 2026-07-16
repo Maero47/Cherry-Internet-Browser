@@ -1254,6 +1254,11 @@ struct AskThisPagePanel: View {
     /// beyond opening the result URLs.
     @MainActor
     private func performWebResearch(question: String) async {
+        // Persist any live general/single-page conversation before the flow
+        // flips the selection into research mode (whose configure branch saves
+        // nothing) — otherwise a crash between here and the next save could
+        // drop it.
+        saveChatConversation()
         webAgentPhase = .searching
         // Whatever way this run exits, only "Answering…" may outlive it —
         // that phase is cleared by the isResponding onChange when the

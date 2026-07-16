@@ -97,10 +97,16 @@ final class PageChatSession: ObservableObject {
         self.pageTitle = pageTitle
         self.pageText = pageText
         self.groundingSummary = summary
-        // A restored transcript survives grounding changes: continuing simply
-        // re-grounds on the CURRENT page (fresh lazy engine, seeded with a
-        // replay of the restored turns) while the transcript stays on screen.
-        if hasRestoredTranscript {
+        // Never wipe a conversation that's already on screen (restored, mid-
+        // stream, or with visible turns) just because the grounded page
+        // finished loading or its extracted text drifted (ads/SPA/dynamic
+        // content fire later `didFinish`s). Re-ground for the NEXT turn instead
+        // — keep the transcript and any in-flight answer, exactly like the
+        // research path refreshes its index without touching turns, and like a
+        // restored transcript survives a grounding change. Only a fresh, empty
+        // session starts a brand-new chat. (A genuinely different page can be
+        // reset explicitly with New Chat.)
+        if hasRestoredTranscript || isResponding || !turns.isEmpty {
             invalidateEngineForRestoredConversation()
         } else {
             startNewChat()
