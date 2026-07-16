@@ -357,12 +357,14 @@ final class Tab: NSObject, Identifiable {
         guard isSleeping else { return }
         isSleeping = false
         lastActiveDate = Date()
-        // WebView will be re-created by WebViewWrapper; reload the URL
-        if let savedURL = sleepURL ?? url {
-            // Delay slightly to let the WebView get created
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
-                self?.webView?.load(URLRequest(url: savedURL))
-            }
+        // No load here: `webView` is nil after sleep, so when the woken tab
+        // is displayed WebViewWrapper.makeNSView creates a fresh webview and
+        // performs the (single) load of `url` itself — issuing a delayed
+        // load here as well double-loaded the page. A woken tab that is
+        // never displayed simply keeps its restored `url` until it is.
+        if let savedURL = sleepURL {
+            url = savedURL
+            sleepURL = nil
         }
     }
 }

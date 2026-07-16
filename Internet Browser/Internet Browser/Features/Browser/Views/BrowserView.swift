@@ -279,7 +279,11 @@ struct BrowserView: View {
                             tab: primaryTab,
                             isFocused: !viewModel.tabManager.focusedPaneIsSecondary,
                             isSplitPane: true,
-                            onFocusPane: { viewModel.tabManager.focusedPaneIsSecondary = false }
+                            // Weak: this closure becomes CherryWebView.onFocused,
+                            // retained by the webview — a strong viewModel capture
+                            // would leak the window graph (webView → closure →
+                            // viewModel → tab → webView).
+                            onFocusPane: { [weak viewModel] in viewModel?.tabManager.focusedPaneIsSecondary = false }
                         )
                         .onDrop(of: [.cherryBrowserTab], isTargeted: nil) { providers in
                             viewModel.handleContentAreaDrop()
@@ -290,7 +294,8 @@ struct BrowserView: View {
                             tab: secondaryTab,
                             isFocused: viewModel.tabManager.focusedPaneIsSecondary,
                             isSplitPane: true,
-                            onFocusPane: { viewModel.tabManager.focusedPaneIsSecondary = true }
+                            // Weak: same webview-retained closure as the primary pane.
+                            onFocusPane: { [weak viewModel] in viewModel?.tabManager.focusedPaneIsSecondary = true }
                         )
                         .frame(minWidth: 400, maxWidth: .infinity, maxHeight: .infinity)
                     }
@@ -970,8 +975,13 @@ struct BrowserContentView: View {
                     onNewTab: { url in
                         viewModel.newTab(url: url)
                     },
-                    onNewTabWithWebView: { webView, url in
-                        viewModel.newTabWithWebView(webView, url: url)
+                    // Weak: the wrapper's coordinator stores this closure, and
+                    // the webview's userContentController retains the
+                    // coordinator — a strong viewModel capture here would
+                    // rebuild the window-wide retain cycle Coordinator's weak
+                    // references exist to break.
+                    onNewTabWithWebView: { [weak viewModel] webView, url in
+                        viewModel?.newTabWithWebView(webView, url: url)
                     },
                     viewModel: viewModel,
                     onFocused: onFocusPane
