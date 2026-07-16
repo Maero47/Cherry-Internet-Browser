@@ -4,6 +4,7 @@
 //
 
 import SwiftUI
+import WebKit
 
 /// Trailing side panel for on-device page Q&A, (when more than the current
 /// page is selected in the tab picker) cited research over the chosen open
@@ -54,6 +55,38 @@ struct AskThisPagePanel: View {
     /// Bumped when a selected research tab finishes navigating — its indexed
     /// content is stale; the task keyed on this triggers a re-gather.
     @State private var researchRefreshCount = 0
+
+    // MARK: Web research agent state
+
+    /// The single-shot web research agent's progress through its four steps.
+    /// `.idle` means no agent run is active (the panel's normal state).
+    private enum WebAgentPhase: Equatable {
+        case idle, searching, opening, reading, answering
+
+        var label: String? {
+            switch self {
+            case .idle: return nil
+            case .searching: return "Searching the web…"
+            case .opening: return "Opening results…"
+            case .reading: return "Reading results…"
+            case .answering: return "Answering…"
+            }
+        }
+    }
+
+    /// When `true`, the next send runs the web research agent on the typed
+    /// question instead of sending it to the current chat. One-shot: it
+    /// disarms as soon as a run starts.
+    @State private var webSearchArmed = false
+    @State private var webAgentPhase: WebAgentPhase = .idle
+    /// Friendly failure line ("Couldn't find web results for that."), shown
+    /// under the status bar's slot until the next send or agent run.
+    @State private var webAgentError: String?
+    /// The in-flight agent run, kept so dismissing the panel cancels it.
+    @State private var webAgentTask: Task<Void, Never>?
+    /// Owned per-panel, like the sessions: a fresh off-screen webview is
+    /// created inside each `search` call, so this holds no page state.
+    @State private var webSearchService = WebSearchService()
 
     init(pageTitle: String, pageText: String, tabManager: TabManager, onDismiss: @escaping () -> Void) {
         _pageTitle = State(initialValue: pageTitle)
@@ -128,6 +161,13 @@ struct AskThisPagePanel: View {
                     selectedTabIDs: $selectedTabIDs
                 )
                 Divider()
+                if let phaseLabel = webAgentPhase.label {
+                    webAgentStatusBar(phaseLabel)
+                    Divider()
+                } else if let webAgentError {
+                    webAgentErrorBar(webAgentError)
+                    Divider()
+                }
                 // General chat and this-page chat are both `chatSession` —
                 // they differ only in how the session was configured
                 // (see the configure task below) and in the empty-state copy.
@@ -227,6 +267,17 @@ struct AskThisPagePanel: View {
             let pruned = selectedTabIDs.intersection(openIDs)
             guard pruned != selectedTabIDs else { return }
             selectedTabIDs = pruned
+        }
+        // The agent's last step hands off to the research session's normal
+        // streaming; "Answering…" clears when that stream finishes (or is
+        // stopped), returning the panel to its plain research mode.
+        .onChange(of: researchSession.isResponding) { _, responding in
+            if !responding && webAgentPhase == .answering {
+                webAgentPhase = .idle
+            }
+        }
+        .onDisappear {
+            webAgentTask?.cancel()
         }
     }
 
@@ -827,6 +878,33 @@ struct AskThisPagePanel: View {
                 }
             }
             .padding(.top, 4)
+
+            // The web research agent's prominent entry point: arm web-search
+            // mode (or disarm it), then the typed question runs the flow.
+            // Only in general chat — with a page or tabs selected, questions
+            // already have grounding.
+            if isGeneralChat {
+                Button {
+                    webSearchArmed.toggle()
+                } label: {
+                    Label(webSearchArmed ? "Web search on — type a question" : "Search the web",
+                          systemImage: webSearchArmed ? "checkmark" : "globe")
+                        .font(.system(size: 11.5, weight: .medium))
+                        .foregroundStyle(webSearchArmed ? .white : SettingsManager.shared.accentColor)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .background(
+                            webSearchArmed
+                                ? AnyShapeStyle(SettingsManager.shared.accentColor)
+                                : AnyShapeStyle(SettingsManager.shared.accentColor.opacity(0.12)),
+                            in: Capsule()
+                        )
+                }
+                .buttonStyle(.plain)
+                .disabled(!availability.isAvailable || webAgentPhase != .idle)
+                .help("Search DuckDuckGo, open the top results as tabs, and answer with citations")
+                .padding(.top, 8)
+            }
             Spacer()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -856,13 +934,39 @@ struct AskThisPagePanel: View {
         onStop: @escaping () -> Void
     ) -> some View {
         HStack(spacing: 8) {
-            TextField(placeholder, text: $draft)
+            // Web-search toggle: reachable from every mode, so the agent can
+            // be invoked mid-conversation too. While armed, the next send
+            // runs the research agent on the question instead of the chat.
+            Button {
+                webSearchArmed.toggle()
+            } label: {
+                Image(systemName: "globe")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(
+                        webSearchArmed
+                            ? AnyShapeStyle(SettingsManager.shared.accentColor)
+                            : AnyShapeStyle(.secondary)
+                    )
+                    .frame(width: 22, height: 22)
+                    .background(
+                        webSearchArmed
+                            ? AnyShapeStyle(SettingsManager.shared.accentColor.opacity(0.15))
+                            : AnyShapeStyle(Color.clear),
+                        in: Circle()
+                    )
+                    .contentShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .disabled(!availability.isAvailable || webAgentPhase != .idle)
+            .help("Search the web: open the top results as tabs and answer with citations")
+
+            TextField(webSearchArmed ? "Search the web…" : placeholder, text: $draft)
                 .textFieldStyle(.plain)
                 .font(.system(size: 12))
                 .padding(8)
                 .background(RoundedRectangle(cornerRadius: 8).fill(Color(nsColor: .controlBackgroundColor)))
                 .onSubmit(onSend)
-                .disabled(!canSend)
+                .disabled(!canSend && !webSearchArmed)
 
             if isResponding {
                 Button(action: onStop) {
@@ -873,17 +977,21 @@ struct AskThisPagePanel: View {
                 .buttonStyle(.plain)
                 .help("Stop generating")
             } else {
+                // An armed web search bypasses the session's own gating — it
+                // needs no built index or configured chat, just availability
+                // (already required to arm) and no run in flight.
+                let sendable = canSend || (webSearchArmed && webAgentPhase == .idle)
                 Button(action: onSend) {
                     Image(systemName: "arrow.up.circle.fill")
                         .font(.system(size: 20))
                         .foregroundStyle(
-                            draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !canSend
+                            draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !sendable
                                 ? AnyShapeStyle(.secondary)
                                 : AnyShapeStyle(SettingsManager.shared.accentColor)
                         )
                 }
                 .buttonStyle(.plain)
-                .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !canSend)
+                .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !sendable)
             }
         }
         .padding(.horizontal, 12)
@@ -892,9 +1000,14 @@ struct AskThisPagePanel: View {
     }
 
     private func sendDraft() {
+        if webSearchArmed {
+            startWebResearchFromDraft()
+            return
+        }
         let text = draft
         guard chatSession.canSend, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         draft = ""
+        webAgentError = nil
         chatSession.send(text)
     }
 
@@ -925,6 +1038,127 @@ struct AskThisPagePanel: View {
     private func focusTab(id: UUID) {
         guard let tab = tabManager.tabs.first(where: { $0.id == id }) else { return }
         tabManager.selectTab(tab)
+    }
+
+    // MARK: - Web research agent
+
+    /// How long to wait for the opened result tabs to finish loading before
+    /// reading them. Slow stragglers aren't worth stalling the whole answer
+    /// for — whatever has rendered by then gets extracted (and a straggler
+    /// that finishes later re-indexes via the normal staleness re-gather the
+    /// next time the selection changes).
+    private static let resultLoadTimeout: Duration = .seconds(15)
+
+    private func webAgentStatusBar(_ label: String) -> some View {
+        HStack(spacing: 8) {
+            ProgressView()
+                .controlSize(.small)
+                .scaleEffect(0.7)
+            Text(label)
+                .font(.system(size: 10.5, weight: .medium))
+                .foregroundStyle(.secondary)
+            Spacer()
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(Color(nsColor: .windowBackgroundColor))
+    }
+
+    private func webAgentErrorBar(_ message: String) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: "exclamationmark.triangle")
+                .font(.system(size: 10))
+            Text(message)
+                .font(.system(size: 10.5))
+            Spacer()
+        }
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(Color(nsColor: .windowBackgroundColor))
+    }
+
+    /// Consumes the typed draft as the research question and starts one
+    /// agent run. Guarded to a single run at a time; arming is one-shot.
+    private func startWebResearchFromDraft() {
+        let question = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !question.isEmpty, availability.isAvailable, webAgentPhase == .idle else { return }
+        draft = ""
+        webSearchArmed = false
+        webAgentError = nil
+        webAgentTask = Task { @MainActor in
+            await performWebResearch(question: question)
+        }
+    }
+
+    /// The single-shot, read-only web research flow: ONE DuckDuckGo search,
+    /// open the top results as real background tabs (never stealing focus),
+    /// wait for them to load, index them through the existing multi-tab
+    /// research pipeline, and stream a cited answer. Fetched page content
+    /// only ever feeds the research session's excerpts — it is data to
+    /// summarize, never instructions to act on; the agent takes no action
+    /// beyond opening the result URLs.
+    @MainActor
+    private func performWebResearch(question: String) async {
+        webAgentPhase = .searching
+        // Whatever way this run exits, only "Answering…" may outlive it —
+        // that phase is cleared by the isResponding onChange when the
+        // stream finishes.
+        defer {
+            if webAgentPhase != .answering { webAgentPhase = .idle }
+        }
+
+        let results = await webSearchService.search(question)
+        guard !Task.isCancelled else { return }
+        guard !results.isEmpty else {
+            webAgentError = "Couldn't find web results for that."
+            return
+        }
+
+        webAgentPhase = .opening
+        let openedTabs = results.map { result in
+            tabManager.openBackgroundResearchTab(url: result.url, title: result.title)
+        }
+        let openedIDs = Set(openedTabs.map(\.id))
+        // From here the panel is simply in research mode over these tabs:
+        // chips appear, follow-ups hit the same index, and the user closes
+        // the tabs (or edits the selection) whenever they like.
+        selectedTabIDs = openedIDs
+
+        webAgentPhase = .reading
+        await waitForResultLoads(of: openedTabs)
+        guard !Task.isCancelled else { return }
+        await researchSession.prepare(tabManager: tabManager, includeTabIDs: openedIDs)
+        guard !Task.isCancelled else { return }
+        guard researchSession.canSend else {
+            webAgentError = "Couldn't read the opened results."
+            return
+        }
+
+        webAgentPhase = .answering
+        researchSession.send(question)
+    }
+
+    /// Waits until every opened result tab's webview finishes loading, or
+    /// `resultLoadTimeout` passes — polling, because these background
+    /// webviews have no `WebViewWrapper` coordinator wired up (that only
+    /// happens once a tab is displayed), so there's no delegate to await.
+    @MainActor
+    private func waitForResultLoads(of tabs: [Tab]) async {
+        let deadline = ContinuousClock.now + Self.resultLoadTimeout
+        // A load() call needs a beat to flip isLoading on — never sample
+        // straight away, or an instant all-false reads as "done".
+        repeat {
+            try? await Task.sleep(for: .milliseconds(300))
+            guard !Task.isCancelled else { return }
+            let anyLoading = tabs.contains { $0.webView?.isLoading == true }
+            if !anyLoading {
+                // Small settle so late JS-rendered content (SPAs) has a
+                // chance to land before extraction reads innerText.
+                try? await Task.sleep(for: .milliseconds(500))
+                return
+            }
+        } while ContinuousClock.now < deadline
     }
 
     // MARK: - Research (All Tabs)
@@ -1113,9 +1347,14 @@ struct AskThisPagePanel: View {
     }
 
     private func sendResearchDraft() {
+        if webSearchArmed {
+            startWebResearchFromDraft()
+            return
+        }
         let text = draft
         guard researchSession.canSend, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         draft = ""
+        webAgentError = nil
         researchSession.send(text)
     }
 }
