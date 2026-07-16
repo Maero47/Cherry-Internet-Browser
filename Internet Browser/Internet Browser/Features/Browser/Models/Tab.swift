@@ -47,6 +47,13 @@ final class Tab: NSObject, Identifiable {
     /// view-plumbing state, not something the UI observes.
     @ObservationIgnored var findHelperInjected: Bool = false
 
+    /// Set on tabs the web research AGENT opened as background result tabs
+    /// (`TabManager.openBackgroundResearchTab`). The research indexer caps
+    /// how much of such a tab's text it embeds (`WebAgentIndexBudget`) so the
+    /// agent stays responsive; the user's own tabs are never capped. Plumbing
+    /// state, not something the UI observes.
+    @ObservationIgnored var isWebResearchTab: Bool = false
+
     private(set) var createdAt: Date
 
     // Store URL before sleeping so we can reload

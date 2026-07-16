@@ -43,10 +43,11 @@ struct AskThisPagePanel: View {
     @State private var hoveredTurnID: UUID?
     /// Briefly holds the turn just copied so its icon flips to a checkmark.
     @State private var copiedTurnID: UUID?
-    /// The tabs the conversation answers from. Defaults to just the active
-    /// tab (this-page parity); adding more switches to the research session
-    /// over exactly this set. EMPTY is a valid state: it means general chat —
-    /// a direct, ungrounded conversation with the current engine.
+    /// The tabs the conversation answers from. Starts EMPTY — general chat, a
+    /// direct, ungrounded conversation with the current engine — so the panel
+    /// opens on the general empty state (where the web-search entry lives).
+    /// Adding the active tab switches to the single-page chat; adding more
+    /// switches to the research session over exactly this set.
     @State private var selectedTabIDs: Set<UUID>
     /// The focused browser tab. Kept in sync with `tabManager.selectedTabID`
     /// while the panel is open (see the `onChange` in `body`), so the header
@@ -95,6 +96,19 @@ struct AskThisPagePanel: View {
     /// disarms as soon as a run starts.
     @State private var webSearchArmed = false
     @State private var webAgentPhase: WebAgentPhase = .idle
+
+    /// The status bar's label: the phase's own text, except while indexing,
+    /// where the research session's live extraction counter is folded in
+    /// ("Indexing (2/5)…") so the longest step visibly moves — same idea as
+    /// the reading phase's settled counter. Once extraction completes, the
+    /// counter reads (n/n) while the (bounded) embed step runs.
+    private var webAgentStatusLabel: String? {
+        if case .indexing = webAgentPhase,
+           let progress = researchSession.prepareProgress, progress.totalTabs > 0 {
+            return "Indexing (\(progress.extractedTabs)/\(progress.totalTabs))…"
+        }
+        return webAgentPhase.label
+    }
     /// Friendly failure line ("Couldn't find web results for that."), shown
     /// under the status bar's slot until the next send or agent run.
     @State private var webAgentError: String?
@@ -112,14 +126,13 @@ struct AskThisPagePanel: View {
         let active = tabManager.selectedTabID
         _activeTabID = State(initialValue: active)
         _snapshotTabID = State(initialValue: active)
-        // An active tab with no readable content (blank/new tab, home page)
-        // can't ground a chat — start with an EMPTY selection, i.e. general
-        // chat, instead of a dead "no readable content" state.
-        if let active, !pageText.isEmpty {
-            _selectedTabIDs = State(initialValue: [active])
-        } else {
-            _selectedTabIDs = State(initialValue: [])
-        }
+        // The panel always opens in GENERAL chat (empty selection), even when
+        // the active tab has readable content: the prominent "Search the web"
+        // entry lives only in the general empty state, and grounding on the
+        // current page stays one tap away — the tab picker's ＋ menu lists the
+        // active tab, and adding it switches to single-page mode over the
+        // snapshot extracted at open (kept live by the follow task).
+        _selectedTabIDs = State(initialValue: [])
     }
 
     private var availability: PageAIAvailability { PageAIService.availability }
@@ -185,7 +198,7 @@ struct AskThisPagePanel: View {
                     selectedTabIDs: $selectedTabIDs
                 )
                 Divider()
-                if let phaseLabel = webAgentPhase.label {
+                if let phaseLabel = webAgentStatusLabel {
                     webAgentStatusBar(phaseLabel)
                     Divider()
                 } else if let webAgentError {
@@ -1269,11 +1282,29 @@ struct AskThisPagePanel: View {
         webAgentPhase = .reading(settled: 0, total: openedTabs.count)
         await waitForResultLoads(of: openedTabs)
         guard !Task.isCancelled else { return }
-        // Extraction + hybrid indexing is its own bounded step — give it a
-        // distinct label so the long index build isn't hidden under (and
-        // mistaken for a hang on) "Reading results…".
+        // Extraction + hybrid indexing is its own bounded step — a distinct
+        // label (with a live extraction counter, see webAgentStatusLabel) so
+        // the index build isn't mistaken for a hang on "Reading results…".
+        // The build itself is budgeted: extraction is parallel and each
+        // agent-opened tab's indexed text is capped (`WebAgentIndexBudget`),
+        // so `prepare` normally finishes in seconds — but it's still RACED
+        // against a hard timeout so no wedged page/model can pin the panel on
+        // "Indexing…" forever. On expiry the build keeps running detached
+        // (its result still lands in the session, upgrading the panel's
+        // research mode when ready); the agent itself proceeds with whatever
+        // is indexed by then, or fails with the normal message.
         webAgentPhase = .indexing
-        await researchSession.prepare(tabManager: tabManager, includeTabIDs: openedIDs)
+        let session = researchSession
+        let manager = tabManager
+        let prepare = Task { @MainActor in
+            await session.prepare(tabManager: manager, includeTabIDs: openedIDs)
+        }
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask { @MainActor in await prepare.value }
+            group.addTask { try? await Task.sleep(for: WebAgentIndexBudget.prepareTimeout) }
+            await group.next()
+            group.cancelAll()
+        }
         guard !Task.isCancelled else { return }
         guard researchSession.canSend else {
             webAgentError = "Couldn't read the opened results."

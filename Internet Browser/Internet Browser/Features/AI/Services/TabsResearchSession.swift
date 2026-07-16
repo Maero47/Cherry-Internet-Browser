@@ -25,6 +25,17 @@ final class TabsResearchSession: ObservableObject {
     @Published private(set) var hasPrepared = false
     @Published private(set) var includedTabCount = 0
     @Published private(set) var skippedTabCount = 0
+    /// Live progress of the CURRENT gather's extraction fan-out: how many of
+    /// the eligible tabs have finished extracting (successfully or not) out
+    /// of how many were attempted. `nil` outside a gather. Drives the web
+    /// agent's "Indexing (n/m)…" label so the index build reads as moving,
+    /// not hung.
+    @Published private(set) var prepareProgress: PrepareProgress?
+
+    struct PrepareProgress: Equatable {
+        var extractedTabs: Int
+        var totalTabs: Int
+    }
     /// Which AI engine setting the current conversation's engine was built
     /// with — same role as `PageChatSession.conversationEngine`.
     @Published private(set) var conversationEngine: AIEngine?
@@ -122,22 +133,49 @@ final class TabsResearchSession: ObservableObject {
             !tab.isPrivate && tab.internalPage == nil && !tab.showHomePage && tab.webView != nil
         }
 
-        var inputs: [ResearchTabInput] = []
-        var extractionFailures = 0
-        for tab in eligibleTabs {
-            guard let webView = tab.webView,
-                  let content = await PageAIService.extractPageText(from: webView),
-                  !content.text.isEmpty else {
-                extractionFailures += 1
-                continue
+        prepareProgress = PrepareProgress(extractedTabs: 0, totalTabs: eligibleTabs.count)
+        defer { prepareProgress = nil }
+
+        // Extract all tabs CONCURRENTLY: each call just awaits that webview's
+        // JS evaluation inside WebKit, so fanning out lets five pages extract
+        // in roughly one page's time instead of serially. The children are
+        // MainActor like this method (webviews are main-thread objects — the
+        // parallelism is in WebKit, not on this actor), and results carry
+        // their slot index so tab order — and thus the [N] source numbering —
+        // is preserved regardless of completion order.
+        let extracted: [ResearchTabInput?] = await withTaskGroup(
+            of: (Int, ResearchTabInput?).self
+        ) { group in
+            for (slot, tab) in eligibleTabs.enumerated() {
+                group.addTask { @MainActor in
+                    guard let webView = tab.webView,
+                          let content = await PageAIService.extractPageText(from: webView),
+                          !content.text.isEmpty else {
+                        return (slot, nil)
+                    }
+                    // Agent-opened result tabs are indexed under the web
+                    // agent's per-tab budget so embedding stays a few seconds;
+                    // the user's own tabs are never capped.
+                    let text = tab.isWebResearchTab
+                        ? WebAgentIndexBudget.cappedText(content.text)
+                        : content.text
+                    return (slot, ResearchTabInput(
+                        tabID: tab.id,
+                        title: content.title.isEmpty ? tab.title : content.title,
+                        url: tab.url,
+                        text: text
+                    ))
+                }
             }
-            inputs.append(ResearchTabInput(
-                tabID: tab.id,
-                title: content.title.isEmpty ? tab.title : content.title,
-                url: tab.url,
-                text: content.text
-            ))
+            var slots = [ResearchTabInput?](repeating: nil, count: eligibleTabs.count)
+            for await (slot, input) in group {
+                slots[slot] = input
+                prepareProgress?.extractedTabs += 1
+            }
+            return slots
         }
+        let inputs = extracted.compactMap { $0 }
+        let extractionFailures = eligibleTabs.count - inputs.count
 
         skippedTabCount = (candidateTabs.count - eligibleTabs.count) + extractionFailures
 

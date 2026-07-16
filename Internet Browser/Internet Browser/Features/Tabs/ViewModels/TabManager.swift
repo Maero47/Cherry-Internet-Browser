@@ -196,6 +196,9 @@ final class TabManager {
     @discardableResult
     func openBackgroundResearchTab(url: URL, title: String) -> Tab {
         let tab = newTab(url: url, switchTo: false)
+        // Mark it as agent-opened so the research indexer applies the web
+        // agent's per-tab index budget to it (see `WebAgentIndexBudget`).
+        tab.isWebResearchTab = true
         // Seed the tab-bar title from the search result; the page's real
         // title takes over via KVO once the tab is selected and adopted.
         if !title.isEmpty {
