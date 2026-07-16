@@ -238,6 +238,10 @@ struct WebViewWrapper: NSViewRepresentable {
         let webView: WKWebView
         if isAdoptedWebView {
             webView = tab.webView!
+            // A background research tab mirrored url/title/isLoading itself
+            // while it had no wrapper; from here the coordinator's KVO below
+            // owns those writes — never leave both observing.
+            tab.endBackgroundLoadObservation()
         } else {
             let cherry = CherryWebView(frame: .zero, configuration: configuration)
             cherry.allowsBackForwardNavigationGestures = true

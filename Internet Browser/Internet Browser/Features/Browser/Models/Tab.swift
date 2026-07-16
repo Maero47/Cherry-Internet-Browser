@@ -260,6 +260,61 @@ final class Tab: NSObject, Identifiable {
         faviconBeforeInternalPage = nil
     }
 
+    // MARK: - Background load observation
+
+    /// KVO bridges for a webview loading WITHOUT a `WebViewWrapper` (a
+    /// background research tab): only the displayed tab gets a wrapper
+    /// coordinator, so until this tab is selected nothing else mirrors the
+    /// webview into the model. Mirroring matters for three things — the tab
+    /// bar shows a live spinner/title, a redirect lands in `url` so adoption
+    /// doesn't see a stale seed URL and issue a spurious reload of it (see
+    /// `WebViewWrapper.updateNSView`'s reload condition), and the research
+    /// panel's staleness re-gather (keyed on `isLoading`) can fire when a
+    /// slow result page finishes after the agent's wait cap. Not observed —
+    /// view plumbing, not UI state.
+    @ObservationIgnored private var backgroundLoadObservations: [NSKeyValueObservation] = []
+
+    /// Starts mirroring `webView`'s `url`/`title`/`isLoading` into the tab.
+    /// Call right after attaching a webview that will load in the background;
+    /// `WebViewWrapper` tears it down on adoption (its coordinator takes
+    /// over the same properties — double KVO would race the two writers).
+    func beginBackgroundLoadObservation() {
+        endBackgroundLoadObservation()
+        guard let webView else { return }
+        backgroundLoadObservations = [
+            webView.observe(\.url, options: [.new]) { [weak self] webView, _ in
+                let url = webView.url
+                Task { @MainActor in
+                    guard let self, let url else { return }
+                    self.url = url
+                }
+            },
+            webView.observe(\.title, options: [.new]) { [weak self] webView, _ in
+                let title = webView.title
+                Task { @MainActor in
+                    guard let self, let title, !title.isEmpty else { return }
+                    self.title = title
+                }
+            },
+            webView.observe(\.isLoading, options: [.new]) { [weak self] webView, _ in
+                let loading = webView.isLoading
+                Task { @MainActor in
+                    self?.isLoading = loading
+                }
+            },
+        ]
+    }
+
+    /// Stops the background mirroring. Safe to call when none is active;
+    /// called on wrapper adoption, sleep, and close so the coordinator's own
+    /// KVO (or teardown) never coexists with these observers.
+    func endBackgroundLoadObservation() {
+        for observation in backgroundLoadObservations {
+            observation.invalidate()
+        }
+        backgroundLoadObservations = []
+    }
+
     func reload() {
         webView?.reload()
     }
@@ -285,7 +340,9 @@ final class Tab: NSObject, Identifiable {
         guard !isSleeping, !showHomePage, internalPage == nil else { return }
         sleepURL = url
         isSleeping = true
-        // Release the WebView to free memory
+        // Release the WebView to free memory (a never-displayed background
+        // research tab may still be mirroring it — stop that first).
+        endBackgroundLoadObservation()
         webView = nil
     }
 

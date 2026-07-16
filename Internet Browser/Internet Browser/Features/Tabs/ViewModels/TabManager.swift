@@ -222,6 +222,12 @@ final class TabManager {
         webView.allowsMagnification = true
         webView.tabID = tab.id
         tab.adoptWebView(webView)
+        // With no wrapper coordinator until the tab is displayed, the tab
+        // mirrors url/title/isLoading itself: the tab bar gets a live
+        // spinner/title, redirects land in `tab.url` (so adoption won't
+        // reload the stale seed URL), and the research panel can see the
+        // load finish. Torn down when `WebViewWrapper` adopts the webview.
+        tab.beginBackgroundLoadObservation()
         webView.load(URLRequest(url: url))
         return tab
     }
@@ -236,7 +242,10 @@ final class TabManager {
             recentlyClosedTabs.removeLast()
         }
 
-        // Stop media and release the webView before removing the tab
+        // Stop media and release the webView before removing the tab. End any
+        // background-load mirroring first so the blanking below can't write
+        // about:blank state back onto the closing tab.
+        tab.endBackgroundLoadObservation()
         tab.webView?.stopLoading()
         tab.webView?.loadHTMLString("", baseURL: nil)
         tab.webView = nil

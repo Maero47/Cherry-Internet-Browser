@@ -1044,9 +1044,11 @@ struct AskThisPagePanel: View {
 
     /// How long to wait for the opened result tabs to finish loading before
     /// reading them. Slow stragglers aren't worth stalling the whole answer
-    /// for — whatever has rendered by then gets extracted (and a straggler
-    /// that finishes later re-indexes via the normal staleness re-gather the
-    /// next time the selection changes).
+    /// for — whatever has rendered by then gets extracted. A straggler that
+    /// finishes after the cap still gets indexed: the background tab mirrors
+    /// its webview's `isLoading` (`Tab.beginBackgroundLoadObservation`), so
+    /// the load finishing flips `selectedTabsLoadingFingerprint` and the
+    /// panel's normal staleness re-gather fires.
     private static let resultLoadTimeout: Duration = .seconds(15)
 
     private func webAgentStatusBar(_ label: String) -> some View {
