@@ -19,18 +19,23 @@
 import Foundation
 import WebKit
 
-/// One web search hit, ready to open as a tab.
+/// One web search hit, ready to open as a tab. `snippet` is DuckDuckGo's own
+/// result summary — used as a fallback source when the opened page can't be
+/// extracted (bot-gated/heavy sites), so every result still contributes text.
 struct WebSearchResult: Equatable {
     let url: URL
     let title: String
+    var snippet: String = ""
 }
 
-/// One raw `<a>` pulled off the results page by the extraction JS, before
+/// One raw result pulled off the results page by the extraction JS, before
 /// any filtering. `isAd` is the DOM-level signal (the anchor sat inside a
 /// `.result--ad` container); URL-level ad signals are handled in parsing.
+/// `snippet` is the result's `.result__snippet` text, if present.
 struct WebSearchAnchor: Equatable {
     let href: String
     let text: String
+    var snippet: String = ""
     var isAd: Bool = false
 }
 
@@ -57,15 +62,36 @@ final class WebSearchService {
     /// so the pure parser owns all filtering (and is tested for it).
     private static let anchorExtractionJS = """
     (function() {
-        var anchors = Array.prototype.slice.call(document.querySelectorAll('a.result__a'));
-        if (anchors.length === 0) {
-            anchors = Array.prototype.slice.call(document.querySelectorAll('a[href*="uddg="]'));
-        }
-        return anchors.map(function(a) {
+        // Walk result containers so each title anchor can be paired with its
+        // own `.result__snippet` summary (DuckDuckGo's per-result text).
+        var out = [];
+        var containers = Array.prototype.slice.call(document.querySelectorAll('.result, .web-result, .results_links'));
+        containers.forEach(function(c) {
+            var a = c.querySelector('a.result__a') || c.querySelector('a[href*="uddg="]');
+            if (!a) return;
             var isAd = false;
-            try { isAd = !!a.closest('.result--ad, .result--ad--small, [data-nrn="ad"]'); } catch (e) {}
-            return { href: a.href || '', text: (a.innerText || '').trim(), isAd: isAd };
+            try { isAd = !!c.closest('.result--ad, .result--ad--small, [data-nrn="ad"]'); } catch (e) {}
+            var snip = c.querySelector('.result__snippet');
+            out.push({
+                href: a.href || '',
+                text: (a.innerText || '').trim(),
+                snippet: (snip ? (snip.innerText || snip.textContent || '') : '').trim(),
+                isAd: isAd
+            });
         });
+        // Fallback if the container layout changed: bare anchors, no snippets.
+        if (out.length === 0) {
+            var anchors = Array.prototype.slice.call(document.querySelectorAll('a.result__a'));
+            if (anchors.length === 0) {
+                anchors = Array.prototype.slice.call(document.querySelectorAll('a[href*="uddg="]'));
+            }
+            anchors.forEach(function(a) {
+                var isAd = false;
+                try { isAd = !!a.closest('.result--ad, .result--ad--small, [data-nrn="ad"]'); } catch (e) {}
+                out.push({ href: a.href || '', text: (a.innerText || '').trim(), snippet: '', isAd: isAd });
+            });
+        }
+        return out;
     })();
     """
 
@@ -111,6 +137,7 @@ final class WebSearchService {
             WebSearchAnchor(
                 href: entry["href"] as? String ?? "",
                 text: entry["text"] as? String ?? "",
+                snippet: entry["snippet"] as? String ?? "",
                 isAd: entry["isAd"] as? Bool ?? false
             )
         }
@@ -143,7 +170,11 @@ extension WebSearchService {
             guard !seenKeys.contains(key) else { continue }
             seenKeys.insert(key)
             let title = anchor.text.trimmingCharacters(in: .whitespacesAndNewlines)
-            results.append(WebSearchResult(url: url, title: title.isEmpty ? (url.host() ?? url.absoluteString) : title))
+            results.append(WebSearchResult(
+                url: url,
+                title: title.isEmpty ? (url.host() ?? url.absoluteString) : title,
+                snippet: anchor.snippet.trimmingCharacters(in: .whitespacesAndNewlines)
+            ))
         }
         return results
     }

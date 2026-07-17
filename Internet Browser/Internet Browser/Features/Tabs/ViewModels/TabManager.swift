@@ -201,11 +201,14 @@ final class TabManager {
     /// matter once the user is looking at the tab and are skipped, exactly
     /// like adopted popups skip them.
     @discardableResult
-    func openBackgroundResearchTab(url: URL, title: String) -> Tab {
+    func openBackgroundResearchTab(url: URL, title: String, snippet: String = "") -> Tab {
         let tab = newTab(url: url, switchTo: false)
         // Mark it as agent-opened so the research indexer applies the web
         // agent's per-tab index budget to it (see `WebAgentIndexBudget`).
         tab.isWebResearchTab = true
+        // Keep the search snippet as a fallback source if the page itself
+        // can't be extracted (bot-gated/heavy result pages).
+        tab.webResearchSnippet = snippet.isEmpty ? nil : snippet
         // Seed the tab-bar title from the search result; the page's real
         // title takes over via KVO once the tab is selected and adopted.
         if !title.isEmpty {

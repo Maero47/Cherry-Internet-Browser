@@ -148,20 +148,39 @@ final class TabsResearchSession: ObservableObject {
         ) { group in
             for (slot, tab) in eligibleTabs.enumerated() {
                 group.addTask { @MainActor in
-                    guard let webView = tab.webView,
-                          let content = await PageAIService.extractPageText(from: webView),
-                          !content.text.isEmpty else {
+                    // Prefer the live page text.
+                    var pageText = ""
+                    var title = tab.title
+                    if let webView = tab.webView,
+                       let content = await PageAIService.extractPageText(from: webView),
+                       !content.text.isEmpty {
+                        pageText = content.text
+                        if !content.title.isEmpty { title = content.title }
+                    }
+
+                    let text: String
+                    if !pageText.isEmpty {
+                        // Agent-opened result tabs are indexed under the web
+                        // agent's per-tab budget so embedding stays a few
+                        // seconds; the user's own tabs are never capped.
+                        text = tab.isWebResearchTab
+                            ? WebAgentIndexBudget.cappedText(pageText)
+                            : pageText
+                    } else if let snippet = tab.webResearchSnippet?
+                        .trimmingCharacters(in: .whitespacesAndNewlines), !snippet.isEmpty {
+                        // The page couldn't be extracted (bot-gated/heavy
+                        // result pages that don't render text in a background
+                        // webview). Fall back to DuckDuckGo's own result
+                        // snippet so the result still contributes a citable
+                        // source instead of being silently skipped.
+                        text = "\(title)\n\(snippet)"
+                    } else {
                         return (slot, nil)
                     }
-                    // Agent-opened result tabs are indexed under the web
-                    // agent's per-tab budget so embedding stays a few seconds;
-                    // the user's own tabs are never capped.
-                    let text = tab.isWebResearchTab
-                        ? WebAgentIndexBudget.cappedText(content.text)
-                        : content.text
+
                     return (slot, ResearchTabInput(
                         tabID: tab.id,
-                        title: content.title.isEmpty ? tab.title : content.title,
+                        title: title,
                         url: tab.url,
                         text: text
                     ))

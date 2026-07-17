@@ -54,6 +54,12 @@ final class Tab: NSObject, Identifiable {
     /// state, not something the UI observes.
     @ObservationIgnored var isWebResearchTab: Bool = false
 
+    /// The search-result SNIPPET for an agent-opened result tab, if any. Used
+    /// as a fallback research source when the page itself can't be extracted
+    /// (bot-gated/heavy sites) so the result still contributes text to the
+    /// answer instead of being skipped. Plumbing state, not UI-observed.
+    @ObservationIgnored var webResearchSnippet: String?
+
     private(set) var createdAt: Date
 
     // Store URL before sleeping so we can reload

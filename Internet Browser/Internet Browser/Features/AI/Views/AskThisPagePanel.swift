@@ -1287,7 +1287,7 @@ struct AskThisPagePanel: View {
 
         webAgentPhase = .opening
         let openedTabs = results.map { result in
-            tabManager.openBackgroundResearchTab(url: result.url, title: result.title)
+            tabManager.openBackgroundResearchTab(url: result.url, title: result.title, snippet: result.snippet)
         }
         let openedIDs = Set(openedTabs.map(\.id))
         // From here the panel is simply in research mode over these tabs:
