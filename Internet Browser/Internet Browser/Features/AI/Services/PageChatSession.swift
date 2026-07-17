@@ -93,16 +93,27 @@ final class PageChatSession: ObservableObject {
     /// fresh chat is expected, same as switching pages.
     func configure(pageTitle: String, pageText: String, summary: PageSummaryResult?) {
         guard isGeneral || pageTitle != self.pageTitle || pageText != self.pageText else { return }
+        let comingFromGeneral = isGeneral
         isGeneral = false
         self.pageTitle = pageTitle
         self.pageText = pageText
         self.groundingSummary = summary
-        // A restored transcript survives grounding changes: continuing simply
-        // re-grounds on the CURRENT page (fresh lazy engine, seeded with a
-        // replay of the restored turns) while the transcript stays on screen.
         if hasRestoredTranscript {
+            // A restored transcript survives grounding changes: re-ground on the
+            // current page while the transcript stays on screen.
             invalidateEngineForRestoredConversation()
+        } else if !comingFromGeneral && (isResponding || !turns.isEmpty) {
+            // SAME-mode grounding drift: the page we're already chatting about
+            // finished loading or its extracted text changed (ads/SPA/dynamic
+            // re-extract). Never wipe the live conversation — re-ground for the
+            // NEXT turn, keeping the transcript AND any in-flight answer, exactly
+            // like the research path refreshes its index without touching turns.
+            // Keep the conversation's engine identity (see regroundForNextTurn).
+            regroundForNextTurn()
         } else {
+            // Fresh chat: an empty session, or a genuine general→page switch
+            // (the grounding fundamentally changed, so a fresh chat is expected,
+            // same as switching pages) — reset explicitly here.
             startNewChat()
         }
     }
@@ -151,6 +162,18 @@ final class PageChatSession: ObservableObject {
     private func invalidateEngineForRestoredConversation() {
         engine = nil
         conversationEngine = nil
+        needsRestoredEngine = true
+    }
+
+    /// Re-grounds a LIVE (non-restored) conversation for its next turn after
+    /// the same page's grounding drifted: drop the concrete engine so the next
+    /// `send` rebuilds it (with a replay of the current turns) on the updated
+    /// page text — but KEEP `conversationEngine`. This is the same conversation
+    /// on the same engine, so a context-overflow rebuild must stay on it
+    /// (`rebuildEngineForSlidingWindow` reads `conversationEngine ?? live`) and
+    /// the panel's mid-chat engine-switch hint must keep comparing against it.
+    private func regroundForNextTurn() {
+        engine = nil
         needsRestoredEngine = true
     }
 

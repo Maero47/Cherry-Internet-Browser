@@ -497,6 +497,17 @@ struct AskThisPagePanel: View {
         // The follow task was re-keyed (another switch or navigation) while
         // this extraction was in flight — the newer run owns the snapshot.
         guard !Task.isCancelled else { return }
+        // A TRANSIENT extraction failure (empty result) on the SAME page we're
+        // actively chatting about must not erase the grounding: clobbering
+        // pageText to "" flips the panel into general chat, which would wipe
+        // the live single-page conversation. Keep the last good snapshot and
+        // let a later successful re-extract update it. (A genuine navigation to
+        // a different/blank page still updates normally — this only guards the
+        // same-tab, still-have-a-conversation case.)
+        if text.isEmpty, tabID == snapshotTabID, !pageText.isEmpty,
+           chatSession.isResponding || !chatSession.turns.isEmpty {
+            return
+        }
         pageTitle = title
         pageText = text
         snapshotTabID = tabID
@@ -1254,6 +1265,11 @@ struct AskThisPagePanel: View {
     /// beyond opening the result URLs.
     @MainActor
     private func performWebResearch(question: String) async {
+        // Persist any live general/single-page conversation before the flow
+        // flips the selection into research mode (whose configure branch saves
+        // nothing) — otherwise a crash between here and the next save could
+        // drop it.
+        saveChatConversation()
         webAgentPhase = .searching
         // Whatever way this run exits, only "Answering…" may outlive it —
         // that phase is cleared by the isResponding onChange when the
