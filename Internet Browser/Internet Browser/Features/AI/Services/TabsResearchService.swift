@@ -195,8 +195,31 @@ actor TabsResearchService {
             fused = RetrievalMath.rrf(rankings: [denseRanking, bm25Ranking])
         }
 
-        let topPositions = Set(fused.prefix(topK))
-        return localChunks.indices.filter { topPositions.contains($0) }.map { localChunks[$0] }
+        // Source-aware selection: guarantee EACH indexed source's single best
+        // chunk is retrieved first, THEN fill the remaining slots by fused
+        // rank. Without this, a few long sources (many chunks each) crowd out
+        // short sources (a search-snippet source is a single chunk), so the
+        // answer could only ever cite a subset of the tabs. Best chunk per
+        // source, best-source first, up to `topK` sources; then fill to `topK`.
+        var bestChunkPerSource: [Int: Int] = [:]
+        var sourceOrderByBestRank: [Int] = []
+        for pos in fused {
+            let src = localChunks[pos].source.index
+            if bestChunkPerSource[src] == nil {
+                bestChunkPerSource[src] = pos
+                sourceOrderByBestRank.append(src)
+            }
+        }
+        var selected = Set<Int>()
+        for src in sourceOrderByBestRank {
+            if selected.count >= topK { break }
+            selected.insert(bestChunkPerSource[src]!)
+        }
+        for pos in fused {
+            if selected.count >= topK { break }
+            selected.insert(pos)
+        }
+        return localChunks.indices.filter { selected.contains($0) }.map { localChunks[$0] }
     }
 
     /// Drops the cached index, freeing the embeddings of a tab snapshot the

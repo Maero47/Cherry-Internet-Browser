@@ -475,7 +475,18 @@ struct AskThisPagePanel: View {
     /// flips for tabs in the curated selection.
     private var selectedTabsLoadingFingerprint: [UUID: Bool] {
         tabManager.tabs.reduce(into: [:]) { states, tab in
-            if selectedTabIDs.contains(tab.id) { states[tab.id] = tab.isLoading }
+            // EXCLUDE agent-opened result tabs. Heavy result pages keep
+            // toggling `isLoading` (ongoing subresource/XHR loads) forever, so
+            // including them made this fingerprint change on nearly every body
+            // pass → `onChange` bumped `researchRefreshCount` → the
+            // `.task(id:)` re-fired `prepare` (re-extract + re-embed ALL tabs)
+            // → more @Published churn → an infinite main-thread task-switch
+            // storm (beachball). The web agent indexes its result tabs ONCE via
+            // its own explicit prepare after the load-wait; their background
+            // load churn must never drive the content-staleness re-gather.
+            if selectedTabIDs.contains(tab.id) && !tab.isWebResearchTab {
+                states[tab.id] = tab.isLoading
+            }
         }
     }
 
@@ -1278,7 +1289,21 @@ struct AskThisPagePanel: View {
             if webAgentPhase != .answering { webAgentPhase = .idle }
         }
 
-        let results = await webSearchService.search(question)
+        // Contextualize a FOLLOW-UP search: in an ongoing research conversation
+        // a question like "who are its competitors?" is meaningless to a search
+        // engine on its own, so anchor it on the conversation's opening subject
+        // (the first user question). The answer synthesis still uses the raw
+        // follow-up (the research engine keeps the prior turns), so only the
+        // SEARCH query is enriched.
+        let priorUserQuestions = researchSession.turns
+            .filter { $0.role == .user }
+            .map { $0.text.trimmingCharacters(in: .whitespacesAndNewlines) }
+        let searchQuery: String = {
+            guard let subject = priorUserQuestions.first,
+                  !subject.isEmpty, subject != question else { return question }
+            return "\(subject) \(question)"
+        }()
+        let results = await webSearchService.search(searchQuery)
         guard !Task.isCancelled else { return }
         guard !results.isEmpty else {
             webAgentError = "Couldn't find web results for that."

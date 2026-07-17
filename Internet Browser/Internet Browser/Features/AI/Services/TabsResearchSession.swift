@@ -158,22 +158,30 @@ final class TabsResearchSession: ObservableObject {
                         if !content.title.isEmpty { title = content.title }
                     }
 
+                    let snippet = tab.webResearchSnippet?
+                        .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                    // Bot-gated/heavy result pages often render only a thin
+                    // shell in a background webview (a cookie/nav stub of a few
+                    // hundred chars that clears the extractor's floor). That
+                    // junk is WORSE than DuckDuckGo's own curated snippet, so
+                    // for agent result tabs prefer the snippet whenever the
+                    // extracted page is thin (or empty). Substantial pages
+                    // (and the user's own tabs) still use the full page text.
+                    let thinPageThreshold = 600
+                    let pageIsUsable = !pageText.isEmpty &&
+                        !(tab.isWebResearchTab && !snippet.isEmpty && pageText.count < thinPageThreshold)
+
                     let text: String
-                    if !pageText.isEmpty {
-                        // Agent-opened result tabs are indexed under the web
-                        // agent's per-tab budget so embedding stays a few
-                        // seconds; the user's own tabs are never capped.
+                    if pageIsUsable {
                         text = tab.isWebResearchTab
                             ? WebAgentIndexBudget.cappedText(pageText)
                             : pageText
-                    } else if let snippet = tab.webResearchSnippet?
-                        .trimmingCharacters(in: .whitespacesAndNewlines), !snippet.isEmpty {
-                        // The page couldn't be extracted (bot-gated/heavy
-                        // result pages that don't render text in a background
-                        // webview). Fall back to DuckDuckGo's own result
-                        // snippet so the result still contributes a citable
-                        // source instead of being silently skipped.
-                        text = "\(title)\n\(snippet)"
+                    } else if !snippet.isEmpty {
+                        // Use the search snippet as the source. If a thin page
+                        // stub also extracted, append it — never lose text.
+                        text = pageText.isEmpty ? "\(title)\n\(snippet)" : "\(title)\n\(snippet)\n\(pageText)"
+                    } else if !pageText.isEmpty {
+                        text = tab.isWebResearchTab ? WebAgentIndexBudget.cappedText(pageText) : pageText
                     } else {
                         return (slot, nil)
                     }

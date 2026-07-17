@@ -141,7 +141,8 @@ final class WebSearchService {
                 isAd: entry["isAd"] as? Bool ?? false
             )
         }
-        return Self.parseResults(from: anchors)
+        let results = Self.parseResults(from: anchors)
+        return results
     }
 }
 
