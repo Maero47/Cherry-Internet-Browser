@@ -337,6 +337,13 @@ final class TabManager {
         // Remove the tab
         tabs.remove(at: index)
 
+        // Closing a group's last tab dissolves the group, matching the
+        // empty-group rule `removeTabFromGroup` applies.
+        if let group = tab.group {
+            tab.group = nil
+            removeGroupIfEmpty(group)
+        }
+
         // Handle selection
         if tabs.isEmpty {
             // Close this manager's own window when its last tab is closed —
@@ -508,7 +515,7 @@ final class TabManager {
     }
 
     func addTabToNewGroup(_ tab: Tab) -> TabGroup {
-        let colors = TabGroupColor.allCases
+        let colors = TabGroupColor.userSelectable
         let usedColors = Set(tabGroups.map { $0.color })
         let availableColor = colors.first { !usedColors.contains($0) } ?? .blue
         let group = createGroup(name: "Group \(tabGroups.count + 1)", color: availableColor)
@@ -519,7 +526,13 @@ final class TabManager {
     func removeTabFromGroup(_ tab: Tab) {
         guard let group = tab.group else { return }
         tab.group = nil
-        // Remove group if empty
+        removeGroupIfEmpty(group)
+    }
+
+    /// Drops `group` once no remaining tab belongs to it — leaving it would
+    /// mean a ghost chip in the tab bar when collapsed and a stale entry in
+    /// "Add to Group" menus and saved sessions.
+    private func removeGroupIfEmpty(_ group: TabGroup) {
         let hasMembers = tabs.contains { $0.group?.id == group.id }
         if !hasMembers {
             tabGroups.removeAll { $0.id == group.id }
