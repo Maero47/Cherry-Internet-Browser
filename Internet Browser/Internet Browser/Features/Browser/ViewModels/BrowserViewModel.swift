@@ -265,7 +265,11 @@ final class BrowserViewModel {
     func goHome(for tab: Tab?) {
         guard let tab else { return }
         // Release the old page like closeTab does, so its audio/JS/timers stop
-        // instead of lingering invisibly behind the home page.
+        // instead of lingering invisibly behind the home page. End any
+        // background-load mirroring first so a mid-load research tab's KVO is
+        // invalidated (not left observing a released webview / writing
+        // about:blank state back onto the tab).
+        tab.endBackgroundLoadObservation()
         tab.webView?.stopLoading()
         tab.webView?.loadHTMLString("", baseURL: nil)
         tab.webView = nil
@@ -592,6 +596,10 @@ final class BrowserViewModel {
             // keeps its pre-toggle data store until the next navigation
             // replaces it.
             if tab.internalPage == nil {
+                // A mid-load background research tab may still be mirroring
+                // its webview — invalidate that KVO before dropping the
+                // webview so no stale isLoading/url writes land on the tab.
+                tab.endBackgroundLoadObservation()
                 tab.webView = nil
             }
         }

@@ -129,6 +129,77 @@ struct WebViewWrapper: NSViewRepresentable {
 
     func makeNSView(context: Context) -> WKWebView {
         let settings = SettingsManager.shared
+        // Ad blocker state — used for the fresh configuration below and for
+        // the coordinator's cosmetic-filter tracking on both paths.
+        let adBlockActive = settings.adBlockEnabled && !settings.isAdBlockPaused(for: tab.url)
+
+        // A tab that already has a webView keeps it (adopted popup or a
+        // background research tab); everything else gets a fresh
+        // CherryWebView (right-click Inspect support).
+        let isAdoptedWebView = tab.webView != nil
+
+        let webView: WKWebView
+        if isAdoptedWebView {
+            webView = tab.webView!
+            // A background research tab mirrored url/title/isLoading itself
+            // while it had no wrapper; from here the coordinator's KVO below
+            // owns those writes — never leave both observing.
+            tab.endBackgroundLoadObservation()
+            // Displaying an agent-opened result tab promotes it to a normal
+            // user tab: drop the web-agent index cap so a later deliberate
+            // research gather over it indexes the full page, not just the
+            // first budgeted slice.
+            tab.isWebResearchTab = false
+            // The adopted webview's own configuration (a research tab's seed
+            // config, a popup's opener-derived one) never went through the
+            // fresh-path setup below, so without this it would permanently
+            // lack DevTools capture, password autofill, and per-frame mute.
+            Self.installCoreUserContent(
+                into: webView.configuration.userContentController,
+                coordinator: context.coordinator,
+                isPrivate: tab.isPrivate,
+                isMuted: tab.isMuted
+            )
+        } else {
+            webView = makeFreshWebView(context: context, settings: settings, adBlockActive: adBlockActive)
+        }
+
+        webView.navigationDelegate = context.coordinator
+        webView.uiDelegate = context.coordinator
+
+        // Re-apply the tab's muted state to the freshly (re)created WebView —
+        // the JS-side mute state lives in the page's document, so it's lost
+        // on sleep/wake and any other webView recreation.
+        tab.applyMuteState()
+
+        // Enable Safari Web Inspector attachment (Develop > Show Web Inspector in menu bar)
+        if #available(macOS 13.3, *) {
+            webView.isInspectable = true
+        }
+
+        context.coordinator.webView = webView
+        context.coordinator.tab = tab
+        context.coordinator.cosmeticAdBlockEnabled = adBlockActive
+
+        context.coordinator.observeWebView(webView)
+
+        if !isAdoptedWebView {
+            if let url = tab.url {
+                if webView.url == nil {
+                    webView.load(URLRequest(url: url))
+                }
+                context.coordinator.lastLoadedURL = webView.url ?? url
+            }
+        } else {
+            context.coordinator.lastLoadedURL = webView.url
+        }
+
+        return webView
+    }
+
+    /// Builds, configures, and attaches a fresh `CherryWebView` for a tab
+    /// that has no webview yet.
+    private func makeFreshWebView(context: Context, settings: SettingsManager, adBlockActive: Bool) -> WKWebView {
         let configuration = WKWebViewConfiguration()
         // Extensions never run in private/incognito tabs in v1a — there's no
         // per-extension "allow in private browsing" opt-in yet, so leaving the
@@ -166,8 +237,7 @@ struct WebViewWrapper: NSViewRepresentable {
         }
 
         // Ad blocker: apply network-level blocking rules
-        // Only applied here in makeNSView — NOT in updateNSView to prevent reload loops
-        let adBlockActive = settings.adBlockEnabled && !settings.isAdBlockPaused(for: tab.url)
+        // Only applied at webview creation — NOT in updateNSView to prevent reload loops
         if adBlockActive {
             let adBlocker = AdBlockManager.shared
             if adBlocker.rulesReady {
@@ -177,121 +247,28 @@ struct WebViewWrapper: NSViewRepresentable {
             adBlocker.applyCosmeticRules(to: configuration)
         }
 
-        // Password auto-fill: inject form detection + capture scripts (skip in private mode)
-        if !tab.isPrivate {
-            let controller = configuration.userContentController
-            let detectScript = WKUserScript(
-                source: PasswordAutoFillScripts.formDetectionScript,
-                injectionTime: .atDocumentEnd,
-                forMainFrameOnly: true
-            )
-            let captureScript = WKUserScript(
-                source: PasswordAutoFillScripts.credentialCaptureScript,
-                injectionTime: .atDocumentEnd,
-                forMainFrameOnly: true
-            )
-            controller.addUserScript(detectScript)
-            controller.addUserScript(captureScript)
-            controller.add(context.coordinator, name: "cherryPasswordDetect")
-            controller.add(context.coordinator, name: "cherryPasswordCapture")
-        }
+        // Core page plumbing (password autofill, devtools bridges, per-frame
+        // mute) — shared with the adopted-webview path in makeNSView.
+        Self.installCoreUserContent(
+            into: configuration.userContentController,
+            coordinator: context.coordinator,
+            isPrivate: tab.isPrivate,
+            isMuted: tab.isMuted
+        )
 
-        // Developer Tools: inject console bridge + XHR/fetch network interceptor
-        // Also register a permissive TrustedTypePolicy so the Elements editor can
-        // apply HTML changes on TT-enforcing sites (Google, YouTube, etc.)
-        let devController = configuration.userContentController
-        devController.addUserScript(WKUserScript(
-            source: ConsoleScripts.devToolsPolicyScript,
-            injectionTime: .atDocumentStart,
-            forMainFrameOnly: false   // iframes too, so nested elements are inspectable
-        ))
-        devController.addUserScript(WKUserScript(
-            source: ConsoleScripts.consoleInterceptScript,
-            injectionTime: .atDocumentStart,
-            forMainFrameOnly: true
-        ))
-        devController.addUserScript(WKUserScript(
-            source: ConsoleScripts.networkInterceptScript,
-            injectionTime: .atDocumentStart,
-            forMainFrameOnly: true
-        ))
-        devController.add(context.coordinator, name: "cherryConsole")
-        devController.add(context.coordinator, name: "cherryNetwork")
-
-        // Tab mute: install the media-muting observer into every frame on each
-        // page load. The tab's current mute state is baked into the script so
-        // cross-origin iframes (which evaluateJavaScript cannot reach) mute
-        // themselves; the live main-frame value is also pushed via
-        // tab.applyMuteState() below and on every navigation (Coordinator.didCommit).
-        devController.addUserScript(WKUserScript(
-            source: MuteScripts.installScript(muted: tab.isMuted),
-            injectionTime: .atDocumentStart,
-            forMainFrameOnly: false
-        ))
-        devController.add(context.coordinator, name: "cherryMuteFrame")
-
-        // Check if the tab already has a webView (e.g. adopted popup)
-        let isAdoptedWebView = tab.webView != nil
-
-        // Use CherryWebView for new tabs (right-click Inspect support)
-        // For adopted popups keep the existing WKWebView as-is
-        let webView: WKWebView
-        if isAdoptedWebView {
-            webView = tab.webView!
-            // A background research tab mirrored url/title/isLoading itself
-            // while it had no wrapper; from here the coordinator's KVO below
-            // owns those writes — never leave both observing.
-            tab.endBackgroundLoadObservation()
-            // Displaying an agent-opened result tab promotes it to a normal
-            // user tab: drop the web-agent index cap so a later deliberate
-            // research gather over it indexes the full page, not just the
-            // first budgeted slice.
-            tab.isWebResearchTab = false
-        } else {
-            let cherry = CherryWebView(frame: .zero, configuration: configuration)
-            cherry.allowsBackForwardNavigationGestures = true
-            cherry.allowsMagnification = true
-            cherry.onFocused = onFocused
-            cherry.tabID = tab.id
-            tab.webView = cherry
-            webView = cherry
-        }
-
-        webView.navigationDelegate = context.coordinator
-        webView.uiDelegate = context.coordinator
-
-        // Re-apply the tab's muted state to the freshly (re)created WebView —
-        // the JS-side mute state lives in the page's document, so it's lost
-        // on sleep/wake and any other webView recreation.
-        tab.applyMuteState()
-
-        // Enable Safari Web Inspector attachment (Develop > Show Web Inspector in menu bar)
-        if #available(macOS 13.3, *) {
-            webView.isInspectable = true
-        }
-
-        context.coordinator.webView = webView
-        context.coordinator.tab = tab
-        context.coordinator.cosmeticAdBlockEnabled = adBlockActive
-
-        context.coordinator.observeWebView(webView)
-
-        if !isAdoptedWebView {
-            if let url = tab.url {
-                if webView.url == nil {
-                    webView.load(URLRequest(url: url))
-                }
-                context.coordinator.lastLoadedURL = webView.url ?? url
-            }
-        } else {
-            context.coordinator.lastLoadedURL = webView.url
-        }
-
-        return webView
+        let cherry = CherryWebView(frame: .zero, configuration: configuration)
+        cherry.allowsBackForwardNavigationGestures = true
+        cherry.allowsMagnification = true
+        cherry.onFocused = onFocused
+        cherry.tabID = tab.id
+        tab.webView = cherry
+        return cherry
     }
 
     func updateNSView(_ webView: WKWebView, context: Context) {
         context.coordinator.tab = tab
+        context.coordinator.viewModel = viewModel
+        context.coordinator.onNewTabWithWebView = onNewTabWithWebView
         // Re-sync every render — split view can be toggled on/off, which
         // changes onFocusPane from nil to a live closure (or back), and a
         // stale closure captured only at makeNSView-time would miss that.
@@ -315,13 +292,119 @@ struct WebViewWrapper: NSViewRepresentable {
         Coordinator(self)
     }
 
+    // MARK: - Core user scripts / message handlers
+
+    /// Handler names the core scripts post to — one list so registration and
+    /// the remove-before-add guard in `installCoreUserContent` can't drift.
+    private static let coreMessageHandlerNames = [
+        "cherryPasswordDetect", "cherryPasswordCapture",
+        "cherryConsole", "cherryNetwork", "cherryMuteFrame",
+    ]
+
+    /// Content controllers that already carry the core user scripts. Unlike
+    /// message handlers, user scripts can't be removed by name, so installing
+    /// onto a controller that already has them — a re-adopted webview, or a
+    /// popup whose configuration shares its opener's controller — would
+    /// inject every script twice into every page.
+    private static let coreScriptedControllers = NSHashTable<WKUserContentController>.weakObjects()
+
+    /// Installs the core user scripts + message handlers onto `controller`,
+    /// routing messages to `coordinator`. Shared by the fresh-configuration
+    /// path and webview adoption. Safe to call repeatedly: handlers are
+    /// remove-then-add (a duplicate `add` throws, and re-adoption must
+    /// re-route messages from a stale coordinator to the current one);
+    /// scripts are added once per controller.
+    static func installCoreUserContent(
+        into controller: WKUserContentController,
+        coordinator: Coordinator,
+        isPrivate: Bool,
+        isMuted: Bool
+    ) {
+        for name in coreMessageHandlerNames {
+            controller.removeScriptMessageHandler(forName: name)
+        }
+        // Password auto-fill is skipped in private mode (no capture, no save
+        // prompts on private pages), matching the scripts below.
+        if !isPrivate {
+            controller.add(coordinator, name: "cherryPasswordDetect")
+            controller.add(coordinator, name: "cherryPasswordCapture")
+        }
+        controller.add(coordinator, name: "cherryConsole")
+        controller.add(coordinator, name: "cherryNetwork")
+        controller.add(coordinator, name: "cherryMuteFrame")
+
+        if !coreScriptedControllers.contains(controller) {
+            coreScriptedControllers.add(controller)
+            addCoreUserScripts(to: controller, isPrivate: isPrivate, isMuted: isMuted)
+        }
+    }
+
+    /// Adds the always-on user scripts. Also used by the coordinator to
+    /// re-install after `removeAllUserScripts` (ad-block live toggle).
+    static func addCoreUserScripts(
+        to controller: WKUserContentController,
+        isPrivate: Bool,
+        isMuted: Bool
+    ) {
+        // Password auto-fill: form detection + capture (skip in private mode)
+        if !isPrivate {
+            controller.addUserScript(WKUserScript(
+                source: PasswordAutoFillScripts.formDetectionScript,
+                injectionTime: .atDocumentEnd,
+                forMainFrameOnly: true
+            ))
+            controller.addUserScript(WKUserScript(
+                source: PasswordAutoFillScripts.credentialCaptureScript,
+                injectionTime: .atDocumentEnd,
+                forMainFrameOnly: true
+            ))
+        }
+
+        // Developer Tools: console bridge + XHR/fetch network interceptor.
+        // Also a permissive TrustedTypePolicy so the Elements editor can
+        // apply HTML changes on TT-enforcing sites (Google, YouTube, etc.)
+        controller.addUserScript(WKUserScript(
+            source: ConsoleScripts.devToolsPolicyScript,
+            injectionTime: .atDocumentStart,
+            forMainFrameOnly: false   // iframes too, so nested elements are inspectable
+        ))
+        controller.addUserScript(WKUserScript(
+            source: ConsoleScripts.consoleInterceptScript,
+            injectionTime: .atDocumentStart,
+            forMainFrameOnly: true
+        ))
+        controller.addUserScript(WKUserScript(
+            source: ConsoleScripts.networkInterceptScript,
+            injectionTime: .atDocumentStart,
+            forMainFrameOnly: true
+        ))
+
+        // Tab mute: install the media-muting observer into every frame on
+        // each page load. The tab's current mute state is baked into the
+        // script so cross-origin iframes (which evaluateJavaScript cannot
+        // reach) mute themselves; the live main-frame value is also pushed
+        // via tab.applyMuteState() and on every navigation (didCommit).
+        controller.addUserScript(WKUserScript(
+            source: MuteScripts.installScript(muted: isMuted),
+            injectionTime: .atDocumentStart,
+            forMainFrameOnly: false
+        ))
+    }
+
     class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKDownloadDelegate, WKScriptMessageHandler {
-        var parent: WebViewWrapper
-        // Weak: the webView's userContentController retains this coordinator
-        // (script message handlers), so a strong reference here would create a
-        // retain cycle that keeps every closed tab's WKWebView alive forever.
+        // Every reference back toward the window's object graph is weak: the
+        // webView's userContentController retains this coordinator (script
+        // message handlers), and viewModel → tabManager → tab → webView closes
+        // the loop — so a strong reference to any of viewModel/tab/webView
+        // here would keep a closed window's entire tab/webview graph alive
+        // for the process lifetime (closing a window never nils tab.webView).
+        weak var viewModel: BrowserViewModel?
         weak var webView: WKWebView?
-        var tab: Tab?
+        weak var tab: Tab?
+        /// The wrapper's popup-adoption callback, stored directly instead of
+        /// the wrapper struct itself (whose stored properties are strong).
+        /// Its capture of the view model is weak on the BrowserView side.
+        var onNewTabWithWebView: ((WKWebView, URL?) -> Void)?
         var lastLoadedURL: URL?
         /// URL of the PDF currently rendered in the viewer (set after didFinish)
         var displayedPDFURL: URL?
@@ -334,8 +417,9 @@ struct WebViewWrapper: NSViewRepresentable {
         private var pendingNetworkKeys: [String: String] = [:]
 
         init(_ parent: WebViewWrapper) {
-            self.parent = parent
+            self.viewModel = parent.viewModel
             self.tab = parent.tab
+            self.onNewTabWithWebView = parent.onNewTabWithWebView
             super.init()
 
             // Observe ad block setting changes via NotificationCenter on UserDefaults
@@ -382,41 +466,15 @@ struct WebViewWrapper: NSViewRepresentable {
         }
 
         /// Re-adds the always-on user scripts (password autofill, devtools
-        /// bridges) after removeAllUserScripts wiped them. Message handlers
-        /// remain registered on the controller, only the scripts are gone.
+        /// bridges, mute) after removeAllUserScripts wiped them. Message
+        /// handlers remain registered on the controller, only the scripts
+        /// are gone.
         private func reinstallCoreUserScripts(on controller: WKUserContentController) {
-            if !(tab?.isPrivate ?? false) {
-                controller.addUserScript(WKUserScript(
-                    source: PasswordAutoFillScripts.formDetectionScript,
-                    injectionTime: .atDocumentEnd,
-                    forMainFrameOnly: true
-                ))
-                controller.addUserScript(WKUserScript(
-                    source: PasswordAutoFillScripts.credentialCaptureScript,
-                    injectionTime: .atDocumentEnd,
-                    forMainFrameOnly: true
-                ))
-            }
-            controller.addUserScript(WKUserScript(
-                source: ConsoleScripts.devToolsPolicyScript,
-                injectionTime: .atDocumentStart,
-                forMainFrameOnly: false
-            ))
-            controller.addUserScript(WKUserScript(
-                source: ConsoleScripts.consoleInterceptScript,
-                injectionTime: .atDocumentStart,
-                forMainFrameOnly: true
-            ))
-            controller.addUserScript(WKUserScript(
-                source: ConsoleScripts.networkInterceptScript,
-                injectionTime: .atDocumentStart,
-                forMainFrameOnly: true
-            ))
-            controller.addUserScript(WKUserScript(
-                source: MuteScripts.installScript(muted: tab?.isMuted ?? false),
-                injectionTime: .atDocumentStart,
-                forMainFrameOnly: false
-            ))
+            WebViewWrapper.addCoreUserScripts(
+                to: controller,
+                isPrivate: tab?.isPrivate ?? false,
+                isMuted: tab?.isMuted ?? false
+            )
         }
 
         func observeWebView(_ webView: WKWebView) {
@@ -507,15 +565,15 @@ struct WebViewWrapper: NSViewRepresentable {
                             guard let self else { return }
                             switch webView.fullscreenState {
                             case .enteringFullscreen:
-                                self.parent.viewModel?.isVideoFullscreen = true
+                                self.viewModel?.isVideoFullscreen = true
                             case .inFullscreen:
-                                self.parent.viewModel?.isVideoFullscreen = true
+                                self.viewModel?.isVideoFullscreen = true
                                 // Reparenting is complete — expand to fill the window now.
                                 self.expandViewsForVideoFullscreen(webView)
                             case .exitingFullscreen:
-                                self.parent.viewModel?.isVideoFullscreen = false
+                                self.viewModel?.isVideoFullscreen = false
                             case .notInFullscreen:
-                                self.parent.viewModel?.isVideoFullscreen = false
+                                self.viewModel?.isVideoFullscreen = false
                             @unknown default:
                                 break
                             }
@@ -552,7 +610,7 @@ struct WebViewWrapper: NSViewRepresentable {
             // Track if we're displaying a PDF so the save button can appear
             let isPDF = webView.url?.pathExtension.lowercased() == "pdf"
             DispatchQueue.main.async { [weak self] in
-                self?.parent.viewModel?.isViewingPDF = isPDF
+                self?.viewModel?.isViewingPDF = isPDF
             }
 
             // If cosmetic ad blocking was re-enabled after scripts were removed,
@@ -563,12 +621,15 @@ struct WebViewWrapper: NSViewRepresentable {
         }
 
         private func saveHistory(for webView: WKWebView) {
-            if let url = webView.url,
-               (url.scheme == "https" || url.scheme == "http"),
-               !(tab?.isPrivate ?? false) {
-                let title = webView.title ?? url.host ?? url.absoluteString
-                HistoryRepository.shared.addHistoryItem(url: url, title: title, favicon: tab?.favicon)
-            }
+            // Require a live, non-private tab. `tab` is weak now, so a nil tab
+            // (deallocated mid-load, e.g. window closed) must NOT default to
+            // "not private" — that would write a just-closed PRIVATE tab's URL
+            // to persistent history. When the tab is gone, skip the write.
+            guard let tab, !tab.isPrivate,
+                  let url = webView.url,
+                  url.scheme == "https" || url.scheme == "http" else { return }
+            let title = webView.title ?? url.host ?? url.absoluteString
+            HistoryRepository.shared.addHistoryItem(url: url, title: title, favicon: tab.favicon)
         }
 
         func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
@@ -778,7 +839,7 @@ struct WebViewWrapper: NSViewRepresentable {
 
         func webViewDidEnterFullscreen(_ webView: WKWebView) {
             Task { @MainActor in
-                self.parent.viewModel?.isVideoFullscreen = true
+                self.viewModel?.isVideoFullscreen = true
             }
             // WebKit places the WKWebView in a screen-covering window but does NOT
             // resize the WKWebView itself — it stays at the original browser-content
@@ -832,7 +893,7 @@ struct WebViewWrapper: NSViewRepresentable {
 
         func webViewDidExitFullscreen(_ webView: WKWebView) {
             Task { @MainActor in
-                self.parent.viewModel?.isVideoFullscreen = false
+                self.viewModel?.isVideoFullscreen = false
                 // Restore the browser window if we expanded it ourselves.
                 guard videoFullscreenSavedFrame != .zero else { return }
                 let saved = videoFullscreenSavedFrame
@@ -861,7 +922,7 @@ struct WebViewWrapper: NSViewRepresentable {
                 if !isUserInitiated {
                     if let url, isLikelyAdPopup(url) {
                         DispatchQueue.main.async { [weak self] in
-                            self?.parent.viewModel?.popupBlockedCount += 1
+                            self?.viewModel?.popupBlockedCount += 1
                         }
                         return nil
                     }
@@ -875,7 +936,7 @@ struct WebViewWrapper: NSViewRepresentable {
             popupWebView.uiDelegate = self
 
             DispatchQueue.main.async { [weak self] in
-                self?.parent.onNewTabWithWebView?(popupWebView, url)
+                self?.onNewTabWithWebView?(popupWebView, url)
             }
 
             return popupWebView
