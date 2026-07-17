@@ -13,8 +13,55 @@ private struct HomepageBackground: View {
     @State private var isDrifting = false
 
     private var settings: SettingsManager { SettingsManager.shared }
+    private var firefoxThemeHasHomepageBackground: Bool {
+        FirefoxThemeManager.shared.homepageBackground != nil
+    }
+
+    private var wallpaperName: String? {
+        guard settings.homepageMatchesAccent, !firefoxThemeHasHomepageBackground else {
+            return nil
+        }
+
+        switch settings.accentColorHex.uppercased() {
+        case "DB283C": return "HomepageWallpaperDB283C"
+        case "2563EB": return "HomepageWallpaper2563EB"
+        case "059669": return "HomepageWallpaper059669"
+        case "7C3AED": return "HomepageWallpaper7C3AED"
+        case "EA580C": return "HomepageWallpaperEA580C"
+        case "DB2777": return "HomepageWallpaperDB2777"
+        case "0D9488": return "HomepageWallpaper0D9488"
+        case "6B7280": return "HomepageWallpaper6B7280"
+        default: return nil
+        }
+    }
 
     var body: some View {
+        ZStack {
+            if let wallpaperName {
+                Image(wallpaperName)
+                    .resizable()
+                    .scaledToFill()
+                    .id(wallpaperName)
+                    .transition(.opacity)
+
+                wallpaperLegibilityScrim
+            } else {
+                fallbackGradient
+                    .transition(.opacity)
+            }
+        }
+        .clipped()
+        .animation(.easeInOut(duration: 0.4), value: wallpaperName)
+        .ignoresSafeArea()
+        .onAppear {
+            guard !reduceMotion else { return }
+            withAnimation(.easeInOut(duration: 12).repeatForever(autoreverses: true)) {
+                isDrifting.toggle()
+            }
+        }
+    }
+
+    private var fallbackGradient: some View {
         MeshGradient(
             width: 3,
             height: 3,
@@ -32,17 +79,28 @@ private struct HomepageBackground: View {
             // into soft, legible pastels in light mode without changing a theme's hue.
             // An imported Firefox theme's ntp_background is an absolute color
             // (not light/dark adaptive), so it gets no wash at all.
-            if FirefoxThemeManager.shared.homepageBackground == nil {
+            if !firefoxThemeHasHomepageBackground {
                 Color.white.opacity(colorScheme == .light ? 0.7 : 0.035)
             }
         }
-        .ignoresSafeArea()
-        .onAppear {
-            guard !reduceMotion else { return }
-            withAnimation(.easeInOut(duration: 12).repeatForever(autoreverses: true)) {
-                isDrifting.toggle()
-            }
+    }
+
+    private var wallpaperLegibilityScrim: some View {
+        ZStack {
+            (colorScheme == .light ? Color.white : Color.black)
+                .opacity(colorScheme == .light ? 0.32 : 0.28)
+
+            RadialGradient(
+                colors: [
+                    (colorScheme == .light ? Color.white : Color.black).opacity(0.22),
+                    .clear
+                ],
+                center: .center,
+                startRadius: 80,
+                endRadius: 720
+            )
         }
+        .allowsHitTesting(false)
     }
 }
 
