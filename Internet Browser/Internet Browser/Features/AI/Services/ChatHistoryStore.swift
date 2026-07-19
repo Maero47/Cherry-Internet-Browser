@@ -61,25 +61,10 @@ struct SavedSource: Codable, Equatable {
     let index: Int
     let title: String
     let tabID: UUID
+    // Optional, so it's backward-compatible for free: Swift's synthesized
+    // decoding uses `decodeIfPresent` for optional properties, so a chat saved
+    // before URLs were persisted (no `url` key) decodes with `url == nil`.
     var url: URL?
-
-    enum CodingKeys: String, CodingKey { case index, title, tabID, url }
-
-    init(index: Int, title: String, tabID: UUID, url: URL?) {
-        self.index = index
-        self.title = title
-        self.tabID = tabID
-        self.url = url
-    }
-
-    init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        index = try c.decode(Int.self, forKey: .index)
-        title = try c.decode(String.self, forKey: .title)
-        tabID = try c.decode(UUID.self, forKey: .tabID)
-        // Backward-compatible: chats saved before URLs were persisted decode nil.
-        url = try c.decodeIfPresent(URL.self, forKey: .url)
-    }
 }
 
 @Observable

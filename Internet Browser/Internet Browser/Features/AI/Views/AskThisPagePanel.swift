@@ -405,39 +405,83 @@ struct AskThisPagePanel: View {
             }
         case .research:
             researchSession.restore(id: saved.id, turns: turns)
-            // Re-open the chat's cited source pages so the reopened research has
-            // live context again — its original tabs are long gone. Dedupe by
-            // URL, open each as a background tab in a fresh "AI" group, select
-            // them, and re-index. These are agent-opened research tabs, so they
-            // stay out of the staleness fingerprint (no gather storm).
-            var seenSourceURLs = Set<URL>()
-            var sourcesToReopen: [(url: URL, title: String)] = []
-            for turn in turns {
-                for source in turn.sources {
-                    guard let url = source.url, seenSourceURLs.insert(url).inserted else { continue }
-                    sourcesToReopen.append((url, source.title))
-                }
-            }
-            if !sourcesToReopen.isEmpty {
-                let group = tabManager.createAIResearchGroup()
-                var openedIDs = Set<UUID>()
-                for item in sourcesToReopen {
-                    let tab = tabManager.openBackgroundResearchTab(url: item.url, title: item.title)
-                    tabManager.addTabToGroup(tab, group: group)
-                    openedIDs.insert(tab.id)
-                }
-                selectedTabIDs = openedIDs
-                if !isResearchSelection { researchRestoreOverride = true }
-                Task { await researchSession.prepare(tabManager: tabManager, includeTabIDs: openedIDs) }
+            let hasSavedSourceURLs = turns.contains { turn in turn.sources.contains { $0.url != nil } }
+            if hasSavedSourceURLs {
+                // New chats persist their source URLs — re-open the cited pages
+                // so the reopened research has live grounding again.
+                reopenResearchContext(from: turns)
             } else if !selectedTabIDs.isEmpty {
                 // Legacy chat (saved before source URLs were persisted) with a
                 // live selection: research over whatever is currently selected.
                 if !isResearchSelection { researchRestoreOverride = true }
                 Task { await researchSession.prepare(tabManager: tabManager, includeTabIDs: selectedTabIDs) }
             }
-            // else: legacy chat, no saved URLs and no live tabs — nothing safe
-            // to research over; the transcript reopens the next time the user
-            // runs a fresh search (new chats persist their source URLs).
+            // else: legacy chat, no saved URLs and no live tabs — the transcript
+            // reopens read-only; a fresh search re-establishes grounding.
+        }
+    }
+
+    /// Cap on how many source pages a reopened research chat re-opens, so a
+    /// long conversation (many turns × ~5 sources each) can't spawn dozens of
+    /// webviews at once. ~2 runs' worth (`WebSearchService.maxResults` is 5).
+    private static let reopenSourceCap = 12
+
+    /// Re-establishes live grounding for a reopened research chat whose original
+    /// source tabs are gone. Collects the chat's cited source URLs (unique,
+    /// newest-turn-first, capped), reuses any that are still open live instead
+    /// of duplicating them, opens the rest as background tabs in one fresh
+    /// locked "AI" group, then indexes the selection. Indexing waits for the
+    /// reopened pages to settle first: extraction on a still-loading page yields
+    /// nothing, and these agent tabs are excluded from the staleness
+    /// fingerprint, so they would otherwise never re-index on their own.
+    @MainActor
+    private func reopenResearchContext(from turns: [PageChatTurn]) {
+        // Unique source URLs, preferring the most recent turns, capped.
+        var seenURLs = Set<URL>()
+        var sources: [(url: URL, title: String, tabID: UUID)] = []
+        outer: for turn in turns.reversed() {
+            for source in turn.sources {
+                guard let url = source.url, seenURLs.insert(url).inserted else { continue }
+                sources.append((url, source.title, source.tabID))
+                if sources.count >= Self.reopenSourceCap { break outer }
+            }
+        }
+        guard !sources.isEmpty else { return }
+
+        // Reuse a source's tab if it's still live (its original id, else a URL
+        // match) so a repeated reopen never duplicates tabs; only open the rest.
+        var selection = Set<UUID>()
+        var toOpen: [(url: URL, title: String)] = []
+        for source in sources {
+            if let live = tabManager.tabs.first(where: { $0.id == source.tabID || $0.url == source.url }) {
+                selection.insert(live.id)
+            } else {
+                toOpen.append((source.url, source.title))
+            }
+        }
+
+        var openedTabs: [Tab] = []
+        if !toOpen.isEmpty {
+            // Cluster only the newly opened tabs into one fresh locked "AI" group.
+            let group = tabManager.createAIResearchGroup()
+            for item in toOpen {
+                let tab = tabManager.openBackgroundResearchTab(url: item.url, title: item.title)
+                tabManager.addTabToGroup(tab, group: group)
+                openedTabs.append(tab)
+                selection.insert(tab.id)
+            }
+        }
+
+        guard !selection.isEmpty else { return }
+        selectedTabIDs = selection
+        if !isResearchSelection { researchRestoreOverride = true }
+
+        let idsToIndex = selection
+        let tabsToSettle = openedTabs
+        Task { @MainActor in
+            if !tabsToSettle.isEmpty { await waitForResultLoads(of: tabsToSettle) }
+            guard !Task.isCancelled else { return }
+            await researchSession.prepare(tabManager: tabManager, includeTabIDs: idsToIndex)
         }
     }
 
