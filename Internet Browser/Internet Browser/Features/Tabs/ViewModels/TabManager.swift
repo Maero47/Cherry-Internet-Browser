@@ -518,6 +518,37 @@ final class TabManager {
         createGroup(name: "AI", color: .aiIndigo, isLocked: true)
     }
 
+    /// The single AI research group every AI path routes through: reuses the
+    /// existing `.aiIndigo` group when one is present, else creates it. If
+    /// several exist (possible only in sessions saved before creation was
+    /// unified here), their members fold into the first and the extras are
+    /// dropped, so the one-AI-group invariant self-heals.
+    @discardableResult
+    func ensureAIResearchGroup() -> TabGroup {
+        let aiGroups = tabGroups.filter { $0.color == .aiIndigo }
+        guard let primary = aiGroups.first else { return createAIResearchGroup() }
+        for extra in aiGroups.dropFirst() {
+            for tab in tabs where tab.group?.id == extra.id {
+                tab.group = primary
+            }
+            tabGroups.removeAll { $0.id == extra.id }
+        }
+        return primary
+    }
+
+    /// Pure membership diff for syncing the AI group with the research chat's
+    /// tab selection: which tabs must enter the group and which must leave for
+    /// its members to become exactly `selection`. Both sets empty when the two
+    /// already match — the callers' compare-before-write guard, which is what
+    /// lets the mirrored reconciliations (selection→group and group→selection)
+    /// converge instead of ping-ponging.
+    nonisolated static func reconcileAIGroupMembership(
+        selection: Set<UUID>, currentMembers: Set<UUID>
+    ) -> (toAdd: Set<UUID>, toRemove: Set<UUID>) {
+        (toAdd: selection.subtracting(currentMembers),
+         toRemove: currentMembers.subtracting(selection))
+    }
+
     /// Commits an inline rename. Whitespace is trimmed; an empty result or a
     /// locked group (the AI group must always read "AI") leaves the current
     /// name untouched.

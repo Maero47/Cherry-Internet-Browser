@@ -321,6 +321,26 @@ struct AskThisPagePanel: View {
             guard pruned != selectedTabIDs else { return }
             selectedTabIDs = pruned
         }
+        // Selection → AI group: while researching, the locked "AI" group in
+        // the tab bar mirrors the chat's grounding selection exactly; outside
+        // research the panel owns no AI group, so any members it has are
+        // ejected (emptying auto-removes the group). Diff-guarded — writes
+        // only what changed — and never calls prepare: the gather task keyed
+        // on the selection already reacts to selection changes.
+        .onChange(of: aiGroupSyncKey) { _, _ in
+            reconcileSelectionIntoAIGroup()
+        }
+        // AI group → selection: a tab-bar edit of the AI group (drag in/out,
+        // "Add to Group"/"Remove from Group", closing a member) re-grounds
+        // the chat on the group's new member set. Research mode only: outside
+        // it the panel itself empties the group (above), and mirroring that
+        // ejection would wipe a legitimate single-page selection to general
+        // chat. Compare-before-write: once members == selection neither this
+        // nor the handler above writes, so the two syncs can't ping-pong.
+        .onChange(of: aiGroupMemberIDs) { _, members in
+            guard isResearchSelection, members != selectedTabIDs else { return }
+            selectedTabIDs = members
+        }
         // The agent's last step hands off to the research session's normal
         // streaming; "Answering…" clears when that stream finishes (or is
         // stopped), returning the panel to its plain research mode. A reply
@@ -448,8 +468,8 @@ struct AskThisPagePanel: View {
     /// Re-establishes live grounding for a reopened research chat whose original
     /// source tabs are gone. Collects the chat's cited source URLs (unique,
     /// newest-turn-first, capped), reuses any that are still open live instead
-    /// of duplicating them, opens the rest as background tabs in one fresh
-    /// locked "AI" group, then indexes the selection. Indexing waits for the
+    /// of duplicating them, opens the rest as background tabs, gathers all of
+    /// them into the one locked "AI" group, then indexes the selection. Indexing waits for the
     /// reopened pages to settle first: extraction on a still-loading page yields
     /// nothing, and these agent tabs are excluded from the staleness
     /// fingerprint, so they would otherwise never re-index on their own.
@@ -490,16 +510,24 @@ struct AskThisPagePanel: View {
             }
         }
 
+        // One AI group for the reopened context — reused rather than created,
+        // so consecutive reopens can't pile up "AI" groups. Reused live tabs
+        // join it alongside the freshly opened ones: the sync invariant (AI
+        // group members == chat selection) holds from this same update pass,
+        // instead of the group→selection observer briefly seeing a group
+        // that's missing the reused tabs. Every source lands in `selection`
+        // (reused or opened), and sources is non-empty here, so the ensured
+        // group always gains at least one member — it can't linger empty.
         var openedTabs: [Tab] = []
-        if !toOpen.isEmpty {
-            // Cluster only the newly opened tabs into one fresh locked "AI" group.
-            let group = tabManager.createAIResearchGroup()
-            for item in toOpen {
-                let tab = tabManager.openBackgroundResearchTab(url: item.url, title: item.title)
-                tabManager.addTabToGroup(tab, group: group)
-                openedTabs.append(tab)
-                selection.insert(tab.id)
-            }
+        let group = tabManager.ensureAIResearchGroup()
+        for item in toOpen {
+            let tab = tabManager.openBackgroundResearchTab(url: item.url, title: item.title)
+            tabManager.addTabToGroup(tab, group: group)
+            openedTabs.append(tab)
+            selection.insert(tab.id)
+        }
+        for tab in tabManager.tabs where selection.contains(tab.id) && tab.group?.id != group.id {
+            tabManager.addTabToGroup(tab, group: group)
         }
 
         guard !selection.isEmpty else { return }
@@ -652,6 +680,60 @@ struct AskThisPagePanel: View {
 
     private var openTabIDs: Set<UUID> {
         Set(tabManager.tabs.map(\.id))
+    }
+
+    // MARK: - AI group ↔ selection sync
+
+    /// The tabs currently in the AI research group (any `.aiIndigo`-colored
+    /// group), as the fingerprint the group→selection sync observes. Reading
+    /// each tab's observable `group` during body evaluation is what makes
+    /// tab-bar group edits (drag in/out, context-menu add/remove, closing a
+    /// member) re-fire the `.onChange` — same pattern as
+    /// `selectedTabsLoadingFingerprint`.
+    private var aiGroupMemberIDs: Set<UUID> {
+        Set(tabManager.tabs.filter { $0.group?.color == .aiIndigo }.map(\.id))
+    }
+
+    /// Identity for the selection→group reconciliation: fires on selection
+    /// edits AND on research-mode flips whose selection didn't move (e.g.
+    /// switching the browser to the one selected tab turns research into
+    /// single-page — the AI group must dissolve even though the set is the
+    /// same). Only discrete user/agent actions change either field — nothing
+    /// continuous like `isLoading` feeds it — so it cannot re-fire in a storm.
+    private struct AIGroupSyncKey: Equatable {
+        let isResearch: Bool
+        let selection: Set<UUID>
+    }
+
+    private var aiGroupSyncKey: AIGroupSyncKey {
+        AIGroupSyncKey(isResearch: isResearchSelection, selection: selectedTabIDs)
+    }
+
+    /// Makes the AI group's members exactly `selectedTabIDs` while the panel
+    /// is researching, and empties the group (auto-removing it) otherwise.
+    /// Writes only the membership diffs — a no-op once the two sides match.
+    private func reconcileSelectionIntoAIGroup() {
+        if isResearchSelection && !selectedTabIDs.isEmpty {
+            let diff = TabManager.reconcileAIGroupMembership(
+                selection: selectedTabIDs, currentMembers: aiGroupMemberIDs
+            )
+            if !diff.toAdd.isEmpty {
+                let group = tabManager.ensureAIResearchGroup()
+                for tab in tabManager.tabs where diff.toAdd.contains(tab.id) {
+                    tabManager.addTabToGroup(tab, group: group)
+                }
+            }
+            for tab in tabManager.tabs where diff.toRemove.contains(tab.id) {
+                tabManager.removeTabFromGroup(tab)
+            }
+        } else {
+            // Not researching (or researching over nothing): the chat owns no
+            // AI group — eject every member so the empty-group rule drops it.
+            // Ejected tabs stay open; they only leave the group.
+            for tab in tabManager.tabs where tab.group?.color == .aiIndigo {
+                tabManager.removeTabFromGroup(tab)
+            }
+        }
     }
 
     // MARK: - Header
@@ -1425,12 +1507,14 @@ struct AskThisPagePanel: View {
         }
 
         webAgentPhase = .opening
-        // Cluster this run's result tabs into ONE fresh locked group named
-        // "AI" with the reserved color — so the run reads as a unit in the
-        // tab bar instead of ~5 loose tabs. A new run makes a new group;
-        // only agent-opened tabs go in, and the group dissolves through the
+        // Cluster this run's result tabs into THE locked group named "AI"
+        // with the reserved color — so the run reads as a unit in the tab
+        // bar instead of ~5 loose tabs. There is only ever one AI group: a
+        // new run reuses it, and setting the selection below lets the
+        // selection→group reconciliation eject a previous run's tabs (they
+        // stay open, just ungrouped). The group dissolves through the
         // normal empty-group rule once its tabs are closed.
-        let researchGroup = tabManager.createAIResearchGroup()
+        let researchGroup = tabManager.ensureAIResearchGroup()
         let openedTabs = results.map { result in
             let tab = tabManager.openBackgroundResearchTab(url: result.url, title: result.title, snippet: result.snippet)
             tabManager.addTabToGroup(tab, group: researchGroup)
