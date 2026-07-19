@@ -179,18 +179,14 @@ struct VerticalTabBarView: View {
                             .padding(.vertical, 4)
                     }
 
-                    // Group headers for collapsed groups
-                    ForEach(tabManager.tabGroups) { group in
-                        if group.isCollapsed {
-                            verticalCollapsedGroupHeader(group)
-                        }
-                    }
-
-                    // Regular tabs
-                    ForEach(tabManager.tabs.filter { !$0.isPinned }) { tab in
-                        if let group = tab.group, group.isCollapsed {
-                            EmptyView()
-                        } else {
+                    // Regular strip: every group's persistent header pill sits
+                    // immediately above that group's run of tabs; collapsed
+                    // groups contribute just the pill.
+                    ForEach(TabStripLayout.regularItems(for: tabManager.tabs)) { item in
+                        switch item {
+                        case .groupHeader(let group):
+                            verticalGroupHeaderPill(group)
+                        case .tab(let tab):
                             tabItem(for: tab)
                         }
                     }
@@ -199,6 +195,10 @@ struct VerticalTabBarView: View {
                 // Rows slide out of the way live while reordering — the same
                 // moving-slots feedback the horizontal bar gives.
                 .animation(.spring(response: 0.25, dampingFraction: 0.8), value: tabManager.tabs.map(\.id))
+                // Collapsing/expanding a group changes the rows without
+                // touching tab identity — key the same spring to it so the
+                // group's tabs hide/show with the familiar motion.
+                .animation(.spring(response: 0.25, dampingFraction: 0.8), value: tabManager.tabGroups.map(\.isCollapsed))
             }
             // Accept drops on the scroll area (for drops on empty space)
             .onDrop(of: [.cherryBrowserTab], isTargeted: nil) { providers in
@@ -468,15 +468,21 @@ struct VerticalTabBarView: View {
         ghostWindow = nil
     }
 
+    /// The group's persistent header row: a small tinted pill that sits above
+    /// the group's run of tabs whether the group is expanded or collapsed.
+    /// Clicking it toggles collapse (hide/show of the group's tabs);
+    /// double-click renames inline.
     @ViewBuilder
-    private func verticalCollapsedGroupHeader(_ group: TabGroup) -> some View {
+    private func verticalGroupHeaderPill(_ group: TabGroup) -> some View {
         let count = tabManager.tabs.filter { $0.group?.id == group.id }.count
         let isRenaming = renamingGroupID == group.id
 
         HStack(spacing: 6) {
+            // Disclosure state: points right when collapsed, down when open.
             Image(systemName: "chevron.right")
                 .font(.system(size: 8, weight: .bold))
                 .foregroundStyle(.secondary)
+                .rotationEffect(.degrees(group.isCollapsed ? 0 : 90))
             Circle()
                 .fill(group.swiftUIColor)
                 .frame(width: 8, height: 8)
@@ -495,6 +501,7 @@ struct VerticalTabBarView: View {
                     Text("\(group.name) (\(count))")
                         .font(.system(size: 11, weight: .medium))
                         .foregroundStyle(.secondary)
+                        .lineLimit(1)
                     Spacer()
                 }
             }
@@ -502,7 +509,12 @@ struct VerticalTabBarView: View {
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
         .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 6)
+                .fill(group.swiftUIColor.opacity(group.isCollapsed ? 0.22 : 0.14))
+        )
         .contentShape(Rectangle())
+        .help(group.isCollapsed ? "Show tabs in \(group.name)" : "Hide tabs in \(group.name)")
         // Double-click edits the name in place; single click keeps its
         // existing collapse/expand meaning (delayed only by double-click
         // disambiguation). Compact mode shows no name, so no edit there.
@@ -513,7 +525,7 @@ struct VerticalTabBarView: View {
             if !isRenaming { tabManager.toggleGroupCollapsed(group) }
         }
         .contextMenu {
-            Button("Expand Group") {
+            Button(group.isCollapsed ? "Expand Group" : "Collapse Group") {
                 tabManager.toggleGroupCollapsed(group)
             }
             if !group.isLocked {
@@ -525,15 +537,15 @@ struct VerticalTabBarView: View {
         }
         .onChange(of: focusedRenameGroupID) { oldFocus, newFocus in
             // Clicking away (blur) commits, matching Enter. The old-value
-            // guard keeps a *different* header's focus change — or an edit
+            // guard keeps a *different* pill's focus change — or an edit
             // already ended by Enter/Esc — from touching this group.
             if oldFocus == group.id, newFocus != group.id, renamingGroupID == group.id {
                 commitRename(of: group)
             }
         }
         .onDisappear {
-            // The header only exists while the group is collapsed — if it
-            // goes away mid-edit (Expand Group, delete, scrolled out of the
+            // The pill exists while the group has members — if it goes away
+            // mid-edit (delete, last member removed, scrolled out of the
             // lazy list), the blur observer above dies with it. Resolve the
             // edit here so the group can never reappear stuck in edit mode
             // with a stale draft.

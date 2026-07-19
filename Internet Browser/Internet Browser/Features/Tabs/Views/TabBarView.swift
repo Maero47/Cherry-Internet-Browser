@@ -41,6 +41,10 @@ struct TabBarView: View {
     private let leadingPadding: CGFloat = 76
     private let leadingPaddingFullScreen: CGFloat = 8
     private let newTabButtonWidth: CGFloat = 44
+    /// Rough width reserved per group header pill when dividing the remaining
+    /// space among regular tabs — the pill hugs its text, so this is only an
+    /// estimate that keeps tabs shrinking instead of pushing "+" off-screen.
+    private let groupPillEstimatedWidth: CGFloat = 84
 
     private var pinnedTabs: [Tab] {
         tabManager.tabs.filter { tab in
@@ -58,10 +62,15 @@ struct TabBarView: View {
         GeometryReader { geometry in
             let pinned = pinnedTabs
             let regular = regularTabs
+            let stripItems = TabStripLayout.regularItems(for: tabManager.tabs)
+            let pillCount = stripItems.filter {
+                if case .groupHeader = $0 { return true } else { return false }
+            }.count
             let leading = isFullScreen ? leadingPaddingFullScreen : leadingPadding
             let pinnedSpace = CGFloat(pinned.count) * (pinnedTabWidth + tabSpacing)
+            let pillSpace = CGFloat(pillCount) * (groupPillEstimatedWidth + tabSpacing)
             let minTabWidth: CGFloat = 52
-            let availableForRegular = geometry.size.width - leading - pinnedSpace - newTabButtonWidth - CGFloat(max(0, regular.count - 1)) * tabSpacing
+            let availableForRegular = geometry.size.width - leading - pinnedSpace - pillSpace - newTabButtonWidth - CGFloat(max(0, regular.count - 1)) * tabSpacing
             let regularTabWidth = regular.count > 0
                 ? min(AppConstants.UI.maxTabWidth, max(minTabWidth, availableForRegular / CGFloat(regular.count)))
                 : AppConstants.UI.maxTabWidth
@@ -75,17 +84,23 @@ struct TabBarView: View {
                         tabItem(for: tab, width: pinnedTabWidth)
                     }
 
-                    ForEach(tabManager.tabGroups) { group in
-                        if group.isCollapsed {
-                            collapsedGroupChip(group)
+                    // Regular strip: every group's persistent header pill sits
+                    // immediately before that group's run of tabs; collapsed
+                    // groups contribute just the pill.
+                    ForEach(stripItems) { item in
+                        switch item {
+                        case .groupHeader(let group):
+                            groupHeaderPill(group)
+                        case .tab(let tab):
+                            tabItem(for: tab, width: regularTabWidth)
                         }
-                    }
-
-                    ForEach(regular) { tab in
-                        tabItem(for: tab, width: regularTabWidth)
                     }
                 }
                 .animation(.spring(response: 0.25, dampingFraction: 0.8), value: tabManager.tabs.map(\.id))
+                // Collapsing/expanding a group changes the items without
+                // touching tab identity — key the same spring to it so the
+                // group's tabs hide/show with the familiar motion.
+                .animation(.spring(response: 0.25, dampingFraction: 0.8), value: tabManager.tabGroups.map(\.isCollapsed))
 
                 Button(action: onNewTab) {
                     Image(systemName: "plus")
@@ -374,10 +389,14 @@ struct TabBarView: View {
         ghostWindow = nil
     }
 
-    // MARK: - Collapsed Groups
+    // MARK: - Group Header Pill
 
+    /// The group's persistent header: a small tinted pill that leads the
+    /// group's run of tabs whether the group is expanded or collapsed.
+    /// Clicking it toggles collapse (hide/show of the group's tabs);
+    /// double-click renames inline.
     @ViewBuilder
-    private func collapsedGroupChip(_ group: TabGroup) -> some View {
+    private func groupHeaderPill(_ group: TabGroup) -> some View {
         let count = tabManager.tabs.filter { $0.group?.id == group.id }.count
         let isRenaming = renamingGroupID == group.id
         HStack(spacing: 4) {
@@ -399,13 +418,15 @@ struct TabBarView: View {
                 Text("\(group.name) (\(count))")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
-        .background(Color.gray.opacity(0.15))
+        .background(group.swiftUIColor.opacity(group.isCollapsed ? 0.22 : 0.14))
         .clipShape(RoundedRectangle(cornerRadius: 6))
         .contentShape(Rectangle())
+        .help(group.isCollapsed ? "Show tabs in \(group.name)" : "Hide tabs in \(group.name)")
         // Double-click edits the name in place; single click keeps its
         // existing collapse/expand meaning (delayed only by double-click
         // disambiguation).
@@ -414,7 +435,7 @@ struct TabBarView: View {
             if !isRenaming { tabManager.toggleGroupCollapsed(group) }
         }
         .contextMenu {
-            Button("Expand Group") {
+            Button(group.isCollapsed ? "Expand Group" : "Collapse Group") {
                 tabManager.toggleGroupCollapsed(group)
             }
             if !group.isLocked {
@@ -426,15 +447,15 @@ struct TabBarView: View {
         }
         .onChange(of: focusedRenameGroupID) { oldFocus, newFocus in
             // Clicking away (blur) commits, matching Enter. The old-value
-            // guard keeps a *different* chip's focus change — or an edit
+            // guard keeps a *different* pill's focus change — or an edit
             // already ended by Enter/Esc — from touching this group.
             if oldFocus == group.id, newFocus != group.id, renamingGroupID == group.id {
                 commitRename(of: group)
             }
         }
         .onDisappear {
-            // The chip only exists while the group is collapsed — if it goes
-            // away mid-edit (Expand Group, delete), the blur observer above
+            // The pill exists while the group has members — if it goes away
+            // mid-edit (delete, last member removed), the blur observer above
             // dies with it. Resolve the edit here so the group can never
             // reappear stuck in edit mode with a stale draft.
             if renamingGroupID == group.id {
