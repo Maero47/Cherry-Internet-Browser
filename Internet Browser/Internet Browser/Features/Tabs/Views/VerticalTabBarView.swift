@@ -531,15 +531,28 @@ struct VerticalTabBarView: View {
                 commitRename(of: group)
             }
         }
+        .onDisappear {
+            // The header only exists while the group is collapsed — if it
+            // goes away mid-edit (Expand Group, delete, scrolled out of the
+            // lazy list), the blur observer above dies with it. Resolve the
+            // edit here so the group can never reappear stuck in edit mode
+            // with a stale draft.
+            if renamingGroupID == group.id {
+                commitRename(of: group)
+            }
+        }
         .padding(.horizontal, 4)
     }
 
     // MARK: - Inline Group Rename
 
     /// Double-click (or the context menu) turns the header's name label into
-    /// a text field. Locked groups (the AI group) never enter edit mode.
+    /// a text field. Locked groups (the AI group) never enter edit mode, and
+    /// a group already being edited is left alone — the double-tap gesture
+    /// also covers the text field itself, so select-a-word inside it must not
+    /// reset the draft and wipe what the user typed.
     private func beginRename(of group: TabGroup) {
-        guard !group.isLocked else { return }
+        guard !group.isLocked, renamingGroupID != group.id else { return }
         renameDraft = group.name
         renamingGroupID = group.id
     }
