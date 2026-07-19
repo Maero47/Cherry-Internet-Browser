@@ -690,7 +690,13 @@ struct AskThisPagePanel: View {
             .popover(isPresented: $showHistory, arrowEdge: .bottom) {
                 ChatHistoryList(store: ChatHistoryStore.shared) { saved in
                     showHistory = false
-                    reopen(saved)
+                    // Reopen on the next main-actor turn, not inside the popover's
+                    // dismissal transaction: state changed while a popover is
+                    // being torn down can be dropped by the presenting view, so
+                    // the restored transcript wouldn't render until the next
+                    // interaction (e.g. the user typing). Deferring gives reopen
+                    // its own clean transaction so it renders immediately.
+                    Task { @MainActor in reopen(saved) }
                 }
             }
 
