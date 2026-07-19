@@ -504,10 +504,28 @@ final class TabManager {
     // MARK: - Tab Groups
 
     @discardableResult
-    func createGroup(name: String = "New Group", color: TabGroupColor = .blue) -> TabGroup {
-        let group = TabGroup(name: name, color: color)
+    func createGroup(name: String = "New Group", color: TabGroupColor = .blue, isLocked: Bool = false) -> TabGroup {
+        let group = TabGroup(name: name, color: color, isLocked: isLocked)
         tabGroups.append(group)
         return group
+    }
+
+    /// The group an AI research run's tabs are clustered into: always named
+    /// "AI" (never the query), reserved color, and locked so it can't be
+    /// renamed.
+    @discardableResult
+    func createAIResearchGroup() -> TabGroup {
+        createGroup(name: "AI", color: .aiIndigo, isLocked: true)
+    }
+
+    /// Commits an inline rename. Whitespace is trimmed; an empty result or a
+    /// locked group (the AI group must always read "AI") leaves the current
+    /// name untouched.
+    func renameGroup(_ group: TabGroup, to newName: String) {
+        guard !group.isLocked else { return }
+        let trimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        group.name = trimmed
     }
 
     func addTabToGroup(_ tab: Tab, group: TabGroup) {
@@ -553,8 +571,8 @@ final class TabManager {
     /// Recreates a group with a caller-specified id, preserving identity so
     /// restored tabs can be matched back to it. Used by session restore.
     @discardableResult
-    func restoreGroup(id: UUID, name: String, color: TabGroupColor, isCollapsed: Bool) -> TabGroup {
-        let group = TabGroup(id: id, name: name, color: color, isCollapsed: isCollapsed)
+    func restoreGroup(id: UUID, name: String, color: TabGroupColor, isCollapsed: Bool, isLocked: Bool = false) -> TabGroup {
+        let group = TabGroup(id: id, name: name, color: color, isCollapsed: isCollapsed, isLocked: isLocked)
         tabGroups.append(group)
         return group
     }

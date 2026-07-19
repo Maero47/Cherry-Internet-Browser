@@ -46,40 +46,28 @@ final class TabGroup: Identifiable {
     var name: String
     var color: TabGroupColor
     var isCollapsed: Bool
+    /// A locked group keeps its name forever — rename is rejected and the UI
+    /// never offers an edit field. Used for AI research groups, which must
+    /// always read "AI". An explicit flag (not `color == .aiIndigo`) so the
+    /// rule survives session restore and any future color changes.
+    let isLocked: Bool
 
     init(
         id: UUID = UUID(),
         name: String = "New Group",
         color: TabGroupColor = .blue,
-        isCollapsed: Bool = false
+        isCollapsed: Bool = false,
+        isLocked: Bool = false
     ) {
         self.id = id
         self.name = name
         self.color = color
         self.isCollapsed = isCollapsed
+        self.isLocked = isLocked
     }
 
     var swiftUIColor: Color {
         color.color
-    }
-}
-
-extension TabGroup {
-    /// Derives an AI research group's name from the search query: whitespace
-    /// collapsed, capped at `maxLength` characters — cut on a word boundary
-    /// where one exists — with an ellipsis marking the cut.
-    static func aiResearchName(for query: String, maxLength: Int = 24) -> String {
-        let collapsed = query
-            .components(separatedBy: .whitespacesAndNewlines)
-            .filter { !$0.isEmpty }
-            .joined(separator: " ")
-        guard !collapsed.isEmpty else { return "AI Research" }
-        guard collapsed.count > maxLength else { return collapsed }
-        var cut = String(collapsed.prefix(maxLength))
-        if let lastSpace = cut.lastIndex(of: " "), lastSpace != cut.startIndex {
-            cut = String(cut[..<lastSpace])
-        }
-        return cut + "…"
     }
 }
 

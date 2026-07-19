@@ -32,6 +32,11 @@ struct VerticalTabBarView: View {
     /// Lives outside the SwiftUI view hierarchy so it isn't clipped to the window bounds.
     @State private var ghostWindow: GhostTabWindow? = nil
 
+    /// Inline group rename: the header whose name is currently an edit field.
+    @State private var renamingGroupID: UUID? = nil
+    @State private var renameDraft: String = ""
+    @FocusState private var focusedRenameGroupID: UUID?
+
     /// One tab row's layout stride (row height 26 + list spacing 2) — the
     /// vertical counterpart of the horizontal bar's tab-width reorder step.
     private let rowStride: CGFloat = 28
@@ -466,30 +471,90 @@ struct VerticalTabBarView: View {
     @ViewBuilder
     private func verticalCollapsedGroupHeader(_ group: TabGroup) -> some View {
         let count = tabManager.tabs.filter { $0.group?.id == group.id }.count
+        let isRenaming = renamingGroupID == group.id
 
-        Button {
-            tabManager.toggleGroupCollapsed(group)
-        } label: {
-            HStack(spacing: 6) {
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 8, weight: .bold))
-                    .foregroundStyle(.secondary)
-                Circle()
-                    .fill(group.swiftUIColor)
-                    .frame(width: 8, height: 8)
-                if !isCompact {
+        HStack(spacing: 6) {
+            Image(systemName: "chevron.right")
+                .font(.system(size: 8, weight: .bold))
+                .foregroundStyle(.secondary)
+            Circle()
+                .fill(group.swiftUIColor)
+                .frame(width: 8, height: 8)
+            if !isCompact {
+                if isRenaming {
+                    TextField("Group name", text: $renameDraft)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 11, weight: .medium))
+                        .focused($focusedRenameGroupID, equals: group.id)
+                        .onAppear {
+                            DispatchQueue.main.async { focusedRenameGroupID = group.id }
+                        }
+                        .onSubmit { commitRename(of: group) }
+                        .onExitCommand { cancelRename() }
+                } else {
                     Text("\(group.name) (\(count))")
                         .font(.system(size: 11, weight: .medium))
                         .foregroundStyle(.secondary)
                     Spacer()
                 }
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
-            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .buttonStyle(.plain)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
+        // Double-click edits the name in place; single click keeps its
+        // existing collapse/expand meaning (delayed only by double-click
+        // disambiguation). Compact mode shows no name, so no edit there.
+        .onTapGesture(count: 2) {
+            if !isCompact { beginRename(of: group) }
+        }
+        .onTapGesture {
+            if !isRenaming { tabManager.toggleGroupCollapsed(group) }
+        }
+        .contextMenu {
+            Button("Expand Group") {
+                tabManager.toggleGroupCollapsed(group)
+            }
+            if !group.isLocked {
+                Button("Rename Group") { beginRename(of: group) }
+            }
+            Button("Delete Group") {
+                tabManager.deleteGroup(group)
+            }
+        }
+        .onChange(of: focusedRenameGroupID) { oldFocus, newFocus in
+            // Clicking away (blur) commits, matching Enter. The old-value
+            // guard keeps a *different* header's focus change — or an edit
+            // already ended by Enter/Esc — from touching this group.
+            if oldFocus == group.id, newFocus != group.id, renamingGroupID == group.id {
+                commitRename(of: group)
+            }
+        }
         .padding(.horizontal, 4)
+    }
+
+    // MARK: - Inline Group Rename
+
+    /// Double-click (or the context menu) turns the header's name label into
+    /// a text field. Locked groups (the AI group) never enter edit mode.
+    private func beginRename(of group: TabGroup) {
+        guard !group.isLocked else { return }
+        renameDraft = group.name
+        renamingGroupID = group.id
+    }
+
+    /// Commits on Enter or blur — an empty/whitespace draft is rejected by
+    /// `renameGroup`, so the previous name survives.
+    private func commitRename(of group: TabGroup) {
+        guard renamingGroupID == group.id else { return }
+        tabManager.renameGroup(group, to: renameDraft)
+        cancelRename()
+    }
+
+    private func cancelRename() {
+        renamingGroupID = nil
+        focusedRenameGroupID = nil
     }
 
 }

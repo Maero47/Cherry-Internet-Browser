@@ -13,12 +13,32 @@ struct SavedTabEntry: Codable {
     var groupID: UUID? = nil
 }
 
-/// One saved tab group — enough to recreate it (name, color, collapsed state) on restore.
+/// One saved tab group — enough to recreate it (name, color, collapsed state,
+/// rename lock) on restore.
 struct SavedTabGroup: Codable {
     let id: UUID
     let name: String
     let colorRawValue: String
     let isCollapsed: Bool
+    /// Decoded leniently so sessions saved before the lock existed still load.
+    var isLocked: Bool = false
+
+    init(id: UUID, name: String, colorRawValue: String, isCollapsed: Bool, isLocked: Bool = false) {
+        self.id = id
+        self.name = name
+        self.colorRawValue = colorRawValue
+        self.isCollapsed = isCollapsed
+        self.isLocked = isLocked
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        colorRawValue = try container.decode(String.self, forKey: .colorRawValue)
+        isCollapsed = try container.decode(Bool.self, forKey: .isCollapsed)
+        isLocked = try container.decodeIfPresent(Bool.self, forKey: .isLocked) ?? false
+    }
 }
 
 /// Persists and restores the browser session using UserDefaults (JSON blob).
@@ -59,7 +79,7 @@ final class SessionRestoreManager {
         let referencedGroupIDs = Set(entries.compactMap { $0.groupID })
         let savedGroups = groups
             .filter { referencedGroupIDs.contains($0.id) }
-            .map { SavedTabGroup(id: $0.id, name: $0.name, colorRawValue: $0.color.rawValue, isCollapsed: $0.isCollapsed) }
+            .map { SavedTabGroup(id: $0.id, name: $0.name, colorRawValue: $0.color.rawValue, isCollapsed: $0.isCollapsed, isLocked: $0.isLocked) }
 
         if let data = try? JSONEncoder().encode(entries) {
             UserDefaults.standard.set(data, forKey: tabsKey)

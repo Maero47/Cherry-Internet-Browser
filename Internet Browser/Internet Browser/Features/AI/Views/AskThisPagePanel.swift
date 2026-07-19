@@ -1311,15 +1311,12 @@ struct AskThisPagePanel: View {
         }
 
         webAgentPhase = .opening
-        // Cluster this run's result tabs into ONE fresh group with the
-        // reserved AI color, named after the question — so the run reads as
-        // a unit in the tab bar instead of ~5 loose tabs. A new run makes a
-        // new group; only agent-opened tabs go in, and the group dissolves
-        // through the normal empty-group rule once its tabs are closed.
-        let researchGroup = tabManager.createGroup(
-            name: TabGroup.aiResearchName(for: question),
-            color: .aiIndigo
-        )
+        // Cluster this run's result tabs into ONE fresh locked group named
+        // "AI" with the reserved color — so the run reads as a unit in the
+        // tab bar instead of ~5 loose tabs. A new run makes a new group;
+        // only agent-opened tabs go in, and the group dissolves through the
+        // normal empty-group rule once its tabs are closed.
+        let researchGroup = tabManager.createAIResearchGroup()
         let openedTabs = results.map { result in
             let tab = tabManager.openBackgroundResearchTab(url: result.url, title: result.title, snippet: result.snippet)
             tabManager.addTabToGroup(tab, group: researchGroup)

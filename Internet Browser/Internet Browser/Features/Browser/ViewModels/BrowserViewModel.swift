@@ -1322,7 +1322,8 @@ final class BrowserViewModel {
                 id: savedGroup.id,
                 name: savedGroup.name,
                 color: color,
-                isCollapsed: savedGroup.isCollapsed
+                isCollapsed: savedGroup.isCollapsed,
+                isLocked: savedGroup.isLocked
             )
         }
 

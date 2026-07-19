@@ -3,10 +3,10 @@
 //  Internet BrowserTests
 //
 //  Locks the AI research tab-group rules: the reserved aiIndigo color stays
-//  out of the user palette, group names derive from the search query with a
-//  word-boundary cap, and closing a group's last tab dissolves the group —
-//  the path a research run's tabs actually take (the tab-bar ✕, not
-//  "Remove from Group").
+//  out of the user palette, the group is always named "AI" and created
+//  locked (non-renameable), and closing a group's last tab dissolves the
+//  group — the path a research run's tabs actually take (the tab-bar ✕,
+//  not "Remove from Group").
 //
 
 import XCTest
@@ -38,29 +38,23 @@ final class AIResearchGroupTests: XCTestCase {
         }
     }
 
-    // MARK: - Group naming
+    // MARK: - AI group creation
 
-    func testShortQueryIsUsedVerbatim() {
-        XCTAssertEqual(TabGroup.aiResearchName(for: "swift concurrency"), "swift concurrency")
+    func testAIResearchGroupIsNamedAIAndLocked() {
+        let manager = TabManager(createDefaultTab: false)
+        let group = manager.createAIResearchGroup()
+        XCTAssertEqual(group.name, "AI")
+        XCTAssertEqual(group.color, .aiIndigo)
+        XCTAssertTrue(group.isLocked)
+        XCTAssertEqual(manager.tabGroups, [group])
     }
 
-    func testWhitespaceIsTrimmedAndCollapsed() {
-        XCTAssertEqual(TabGroup.aiResearchName(for: "  what is\n WKWebView?  "), "what is WKWebView?")
-    }
-
-    func testEmptyQueryFallsBack() {
-        XCTAssertEqual(TabGroup.aiResearchName(for: "   \n  "), "AI Research")
-    }
-
-    func testLongQueryIsCappedOnWordBoundaryWithEllipsis() {
-        let name = TabGroup.aiResearchName(for: "how do tab groups work in modern macOS browsers")
-        XCTAssertEqual(name, "how do tab groups work…")
-        XCTAssertLessThanOrEqual(name.count, 25)
-    }
-
-    func testLongSingleWordIsHardCapped() {
-        let name = TabGroup.aiResearchName(for: String(repeating: "a", count: 40))
-        XCTAssertEqual(name, String(repeating: "a", count: 24) + "…")
+    func testUserCreatedGroupsAreNotLocked() {
+        let manager = TabManager(createDefaultTab: false)
+        XCTAssertFalse(manager.createGroup(name: "Work").isLocked)
+        let tab = Tab()
+        manager.tabs = [tab]
+        XCTAssertFalse(manager.addTabToNewGroup(tab).isLocked)
     }
 
     // MARK: - Lifecycle

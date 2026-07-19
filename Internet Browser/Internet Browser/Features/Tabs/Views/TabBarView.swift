@@ -31,6 +31,11 @@ struct TabBarView: View {
     /// Lives outside the SwiftUI view hierarchy so it isn't clipped to the window bounds.
     @State private var ghostWindow: GhostTabWindow? = nil
 
+    /// Inline group rename: the chip whose name is currently an edit field.
+    @State private var renamingGroupID: UUID? = nil
+    @State private var renameDraft: String = ""
+    @FocusState private var focusedRenameGroupID: UUID?
+
     private let pinnedTabWidth: CGFloat = 40
     private let tabSpacing: CGFloat = 2
     private let leadingPadding: CGFloat = 76
@@ -374,31 +379,82 @@ struct TabBarView: View {
     @ViewBuilder
     private func collapsedGroupChip(_ group: TabGroup) -> some View {
         let count = tabManager.tabs.filter { $0.group?.id == group.id }.count
-        Button {
-            tabManager.toggleGroupCollapsed(group)
-        } label: {
-            HStack(spacing: 4) {
-                Circle()
-                    .fill(group.swiftUIColor)
-                    .frame(width: 8, height: 8)
+        let isRenaming = renamingGroupID == group.id
+        HStack(spacing: 4) {
+            Circle()
+                .fill(group.swiftUIColor)
+                .frame(width: 8, height: 8)
+            if isRenaming {
+                TextField("Group name", text: $renameDraft)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 11))
+                    .frame(width: 100)
+                    .focused($focusedRenameGroupID, equals: group.id)
+                    .onAppear {
+                        DispatchQueue.main.async { focusedRenameGroupID = group.id }
+                    }
+                    .onSubmit { commitRename(of: group) }
+                    .onExitCommand { cancelRename() }
+            } else {
                 Text("\(group.name) (\(count))")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
-            .background(Color.gray.opacity(0.15))
-            .clipShape(RoundedRectangle(cornerRadius: 6))
         }
-        .buttonStyle(.plain)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(Color.gray.opacity(0.15))
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .contentShape(Rectangle())
+        // Double-click edits the name in place; single click keeps its
+        // existing collapse/expand meaning (delayed only by double-click
+        // disambiguation).
+        .onTapGesture(count: 2) { beginRename(of: group) }
+        .onTapGesture {
+            if !isRenaming { tabManager.toggleGroupCollapsed(group) }
+        }
         .contextMenu {
             Button("Expand Group") {
                 tabManager.toggleGroupCollapsed(group)
+            }
+            if !group.isLocked {
+                Button("Rename Group") { beginRename(of: group) }
             }
             Button("Delete Group") {
                 tabManager.deleteGroup(group)
             }
         }
+        .onChange(of: focusedRenameGroupID) { oldFocus, newFocus in
+            // Clicking away (blur) commits, matching Enter. The old-value
+            // guard keeps a *different* chip's focus change — or an edit
+            // already ended by Enter/Esc — from touching this group.
+            if oldFocus == group.id, newFocus != group.id, renamingGroupID == group.id {
+                commitRename(of: group)
+            }
+        }
+    }
+
+    // MARK: - Inline Group Rename
+
+    /// Double-click (or the context menu) turns the chip's name label into a
+    /// text field. Locked groups (the AI group) never enter edit mode.
+    private func beginRename(of group: TabGroup) {
+        guard !group.isLocked else { return }
+        renameDraft = group.name
+        renamingGroupID = group.id
+    }
+
+    /// Commits on Enter or blur — an empty/whitespace draft is rejected by
+    /// `renameGroup`, so the previous name survives.
+    private func commitRename(of group: TabGroup) {
+        guard renamingGroupID == group.id else { return }
+        tabManager.renameGroup(group, to: renameDraft)
+        cancelRename()
+    }
+
+    private func cancelRename() {
+        renamingGroupID = nil
+        focusedRenameGroupID = nil
     }
 
     @ViewBuilder

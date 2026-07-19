@@ -59,6 +59,30 @@ final class SessionRestoreGroupTests: XCTestCase {
         XCTAssertEqual(loadedGroups[0].name, "Work")
         XCTAssertEqual(loadedGroups[0].colorRawValue, TabGroupColor.purple.rawValue)
         XCTAssertTrue(loadedGroups[0].isCollapsed)
+        XCTAssertFalse(loadedGroups[0].isLocked)
+    }
+
+    func testSavedTabGroupDecodesMissingIsLockedAsFalse() throws {
+        // Sessions saved before the rename lock existed have no "isLocked" key.
+        let json = """
+        [{"id":"\(UUID().uuidString)","name":"Work","colorRawValue":"blue","isCollapsed":false}]
+        """
+        let groups = try JSONDecoder().decode([SavedTabGroup].self, from: Data(json.utf8))
+        XCTAssertEqual(groups.count, 1)
+        XCTAssertFalse(groups[0].isLocked)
+    }
+
+    func testLockedGroupRoundTripsThroughSave() {
+        let group = TabGroup(name: "AI", color: .aiIndigo, isLocked: true)
+        let tab = Tab(url: URL(string: "https://result.example")!)
+        tab.group = group
+
+        SessionRestoreManager.shared.saveSession(tabs: [tab], groups: [group], selectedIndex: 0)
+
+        let loadedGroups = SessionRestoreManager.shared.loadSavedGroups()
+        XCTAssertEqual(loadedGroups.count, 1)
+        XCTAssertEqual(loadedGroups[0].name, "AI")
+        XCTAssertTrue(loadedGroups[0].isLocked)
     }
 
     func testEmptyGroupIsNotPersisted() {
