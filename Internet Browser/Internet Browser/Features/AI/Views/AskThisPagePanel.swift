@@ -478,6 +478,7 @@ struct AskThisPagePanel: View {
         for source in sources {
             let reusable = tabManager.tabs.first { tab in
                 tab.url == source.url
+                    && tab.webView != nil   // a sleeping tab indexes to nothing; open fresh instead
                     && !tab.isPrivate
                     && tab.internalPage == nil
                     && !tab.showHomePage
