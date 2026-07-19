@@ -104,18 +104,27 @@ final class TabsResearchSession: ObservableObject {
             while let task = prepareTask { await task.value }
             return
         }
-        // Owner: run gathers back-to-back as long as changes keep arriving.
+        // Owner: run gathers back-to-back as long as the REQUESTED SET keeps
+        // changing. Only re-gathering when `requestedIncludeTabIDs` actually
+        // differs from what we just gathered is essential: a `.task(id:)` can
+        // re-fire `prepare` with the SAME selection many times in a row (e.g.
+        // on history reopen, or a churning-isLoading tab), each setting
+        // `regatherRequested = true`; gating the loop on a real change turns
+        // that into a single gather instead of an unbounded, instant-returning
+        // re-gather loop that pins the main thread (beachball).
+        var include = requestedIncludeTabIDs
         repeat {
             regatherRequested = false
-            let include = requestedIncludeTabIDs
+            include = requestedIncludeTabIDs
+            let captured = include
             let task = Task { @MainActor [weak self] in
                 guard let self else { return }
-                await self.performPrepare(tabManager: tabManager, includeTabIDs: include)
+                await self.performPrepare(tabManager: tabManager, includeTabIDs: captured)
             }
             prepareTask = task
             await task.value
             prepareTask = nil
-        } while regatherRequested
+        } while regatherRequested && requestedIncludeTabIDs != include
     }
 
     private func performPrepare(tabManager: TabManager, includeTabIDs: Set<UUID>?) async {
