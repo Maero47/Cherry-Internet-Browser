@@ -419,6 +419,11 @@ struct TabBarView: View {
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
+                    .truncationMode(.tail)
+                    // Cap the name width so a long group name can't grow the
+                    // pill past its width reservation and push the "+" button
+                    // off-screen; it truncates instead.
+                    .frame(maxWidth: 120)
             }
         }
         .padding(.horizontal, 8)
