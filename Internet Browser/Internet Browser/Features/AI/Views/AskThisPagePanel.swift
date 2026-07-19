@@ -68,6 +68,16 @@ struct AskThisPagePanel: View {
     /// selection — from then on the selection's own shape routes again.
     @State private var researchRestoreOverride = false
 
+    /// Set for the single programmatic `selectedTabIDs` change made while
+    /// reopening a saved research chat, so the `.onChange` that normally clears
+    /// `researchRestoreOverride` on a user edit skips that one restore change.
+    @State private var suppressOverrideReset = false
+
+    /// The reopen path's settle-then-index task, retained so a subsequent
+    /// reopen (or panel dismissal) can cancel it — otherwise a stale run could
+    /// index the previous chat's tabs after the new one is shown.
+    @State private var researchReopenTask: Task<Void, Never>?
+
     // MARK: Web research agent state
 
     /// The single-shot web research agent's progress through its four steps.
@@ -333,11 +343,17 @@ struct AskThisPagePanel: View {
         }
         // The user edited the tab selection — its shape routes again, and a
         // reopened research conversation stops pinning the panel to research.
+        // The one programmatic change made by a research reopen is exempt.
         .onChange(of: selectedTabIDs) { _, _ in
+            if suppressOverrideReset {
+                suppressOverrideReset = false
+                return
+            }
             researchRestoreOverride = false
         }
         .onDisappear {
             webAgentTask?.cancel()
+            researchReopenTask?.cancel()
             saveChatConversation()
             saveResearchConversation()
         }
@@ -384,6 +400,9 @@ struct AskThisPagePanel: View {
         // Persist whatever is on screen before it's replaced.
         saveChatConversation()
         saveResearchConversation()
+        // Cancel a still-running reopen so its late index can't ground the new
+        // conversation on the previous chat's tabs.
+        researchReopenTask?.cancel()
 
         let turns = saved.turns.map { $0.asChatTurn() }
         switch saved.kind {
@@ -448,13 +467,23 @@ struct AskThisPagePanel: View {
         }
         guard !sources.isEmpty else { return }
 
-        // Reuse a source's tab if it's still live (its original id, else a URL
-        // match) so a repeated reopen never duplicates tabs; only open the rest.
+        // Reuse a source's tab only if it's still live AND still showing that
+        // source page — an eligible (non-private, real web page) tab whose URL
+        // still matches. This avoids duplicating an already-open source, while
+        // never grounding on a private tab (which `performPrepare` filters out
+        // anyway) or a tab that has since navigated elsewhere. Everything else
+        // gets a fresh tab.
         var selection = Set<UUID>()
         var toOpen: [(url: URL, title: String)] = []
         for source in sources {
-            if let live = tabManager.tabs.first(where: { $0.id == source.tabID || $0.url == source.url }) {
-                selection.insert(live.id)
+            let reusable = tabManager.tabs.first { tab in
+                tab.url == source.url
+                    && !tab.isPrivate
+                    && tab.internalPage == nil
+                    && !tab.showHomePage
+            }
+            if let reusable {
+                selection.insert(reusable.id)
             } else {
                 toOpen.append((source.url, source.title))
             }
@@ -473,13 +502,21 @@ struct AskThisPagePanel: View {
         }
 
         guard !selection.isEmpty else { return }
+        // Pin research mode past the `.onChange(of: selectedTabIDs)` that would
+        // otherwise clear the override on this programmatic selection change —
+        // needed for the edge case where the sources collapse to a single tab
+        // that reads as single-page (so the restored transcript still shows).
+        if selectedTabIDs != selection { suppressOverrideReset = true }
         selectedTabIDs = selection
         if !isResearchSelection { researchRestoreOverride = true }
 
         let idsToIndex = selection
         let tabsToSettle = openedTabs
-        Task { @MainActor in
-            if !tabsToSettle.isEmpty { await waitForResultLoads(of: tabsToSettle) }
+        researchReopenTask?.cancel()
+        researchReopenTask = Task { @MainActor in
+            // reportsPhase: false — this isn't a web-agent run, so it must not
+            // touch webAgentPhase (which would strand the search UI in .reading).
+            if !tabsToSettle.isEmpty { await waitForResultLoads(of: tabsToSettle, reportsPhase: false) }
             guard !Task.isCancelled else { return }
             await researchSession.prepare(tabManager: tabManager, includeTabIDs: idsToIndex)
         }
@@ -1454,9 +1491,11 @@ struct AskThisPagePanel: View {
     /// the hard `maxWait` cap regardless — a page that never stops loading
     /// must never hold up the answer. Updates the `.reading` phase with the
     /// live settled count so the status shows real progress, not a frozen
-    /// "Reading results…".
+    /// "Reading results…". Pass `reportsPhase: false` when the caller isn't the
+    /// web-agent run (e.g. re-opening a saved chat's source tabs) so it doesn't
+    /// leave the panel stuck in `.reading` / disable the search buttons.
     @MainActor
-    private func waitForResultLoads(of tabs: [Tab]) async {
+    private func waitForResultLoads(of tabs: [Tab], reportsPhase: Bool = true) async {
         let total = tabs.count
         guard total > 0 else { return }
         let start = ContinuousClock.now
@@ -1466,7 +1505,7 @@ struct AskThisPagePanel: View {
             try? await Task.sleep(for: WebAgentLoadWait.pollInterval)
             guard !Task.isCancelled else { return }
             let settled = tabs.filter { $0.webView?.isLoading != true }.count
-            webAgentPhase = .reading(settled: settled, total: total)
+            if reportsPhase { webAgentPhase = .reading(settled: settled, total: total) }
             if WebAgentLoadWait.shouldProceed(settled: settled, total: total, elapsed: ContinuousClock.now - start) {
                 // Small settle so late JS-rendered content (SPAs) has a
                 // chance to land before extraction reads innerText.
