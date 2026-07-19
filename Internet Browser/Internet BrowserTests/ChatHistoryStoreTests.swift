@@ -43,7 +43,7 @@ final class ChatHistoryStoreTests: XCTestCase {
                     role: .assistant,
                     text: "It compares hybrid retrieval strategies. [1]",
                     reasoning: "The user wants a summary; the intro paragraph covers it.",
-                    sources: [SavedSource(index: 1, title: "Hybrid RAG explained", tabID: UUID())]
+                    sources: [SavedSource(index: 1, title: "Hybrid RAG explained", tabID: UUID(), url: URL(string: "https://example.com/rag"))]
                 ),
             ]
         )
@@ -236,7 +236,7 @@ final class ChatHistoryStoreTests: XCTestCase {
             role: .assistant,
             text: "Answer [1]",
             reasoning: "chain of thought",
-            sources: [SavedSource(index: 1, title: "Source Tab", tabID: tabID)]
+            sources: [SavedSource(index: 1, title: "Source Tab", tabID: tabID, url: URL(string: "https://example.com/a"))]
         )
         let live = saved.asChatTurn()
         XCTAssertEqual(live.role, .assistant)
@@ -244,6 +244,29 @@ final class ChatHistoryStoreTests: XCTestCase {
         XCTAssertEqual(live.reasoning, "chain of thought")
         XCTAssertEqual(live.sources.map(\.tabID), [tabID])
         XCTAssertEqual(live.sources.map(\.index), [1])
+        XCTAssertEqual(live.sources.map(\.url), [URL(string: "https://example.com/a")])
         XCTAssertFalse(live.isStreaming)
+    }
+
+    /// A chat saved before source URLs were persisted (no `url` key in the
+    /// JSON) must still decode — its sources just carry a nil URL.
+    func testSavedSourceDecodesLegacyJSONWithoutURL() throws {
+        let legacyJSON = """
+        {"index":2,"title":"Old Source","tabID":"\(UUID().uuidString)"}
+        """.data(using: .utf8)!
+        let decoder = JSONDecoder()
+        let source = try decoder.decode(SavedSource.self, from: legacyJSON)
+        XCTAssertEqual(source.index, 2)
+        XCTAssertEqual(source.title, "Old Source")
+        XCTAssertNil(source.url)
+    }
+
+    /// A source URL survives a full encode → decode round-trip through the store.
+    func testSavedSourceURLPersistsThroughEncodeDecode() throws {
+        let url = URL(string: "https://example.com/persisted")
+        let original = SavedSource(index: 3, title: "Live Source", tabID: UUID(), url: url)
+        let data = try JSONEncoder().encode(original)
+        let decoded = try JSONDecoder().decode(SavedSource.self, from: data)
+        XCTAssertEqual(decoded.url, url)
     }
 }

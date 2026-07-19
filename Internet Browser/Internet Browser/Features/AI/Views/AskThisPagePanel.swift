@@ -405,17 +405,39 @@ struct AskThisPagePanel: View {
             }
         case .research:
             researchSession.restore(id: saved.id, turns: turns)
-            // Only pin research mode + kick off a gather when there are live
-            // tabs to research over. Doing it with an empty/mismatched current
-            // selection (e.g. the reopened chat's original tabs are gone) both
-            // gives nothing to index AND could spin the gather coalescer — so
-            // just show the restored transcript read-only in that case.
-            if !selectedTabIDs.isEmpty {
-                if !isResearchSelection {
-                    researchRestoreOverride = true
+            // Re-open the chat's cited source pages so the reopened research has
+            // live context again — its original tabs are long gone. Dedupe by
+            // URL, open each as a background tab in a fresh "AI" group, select
+            // them, and re-index. These are agent-opened research tabs, so they
+            // stay out of the staleness fingerprint (no gather storm).
+            var seenSourceURLs = Set<URL>()
+            var sourcesToReopen: [(url: URL, title: String)] = []
+            for turn in turns {
+                for source in turn.sources {
+                    guard let url = source.url, seenSourceURLs.insert(url).inserted else { continue }
+                    sourcesToReopen.append((url, source.title))
                 }
+            }
+            if !sourcesToReopen.isEmpty {
+                let group = tabManager.createAIResearchGroup()
+                var openedIDs = Set<UUID>()
+                for item in sourcesToReopen {
+                    let tab = tabManager.openBackgroundResearchTab(url: item.url, title: item.title)
+                    tabManager.addTabToGroup(tab, group: group)
+                    openedIDs.insert(tab.id)
+                }
+                selectedTabIDs = openedIDs
+                if !isResearchSelection { researchRestoreOverride = true }
+                Task { await researchSession.prepare(tabManager: tabManager, includeTabIDs: openedIDs) }
+            } else if !selectedTabIDs.isEmpty {
+                // Legacy chat (saved before source URLs were persisted) with a
+                // live selection: research over whatever is currently selected.
+                if !isResearchSelection { researchRestoreOverride = true }
                 Task { await researchSession.prepare(tabManager: tabManager, includeTabIDs: selectedTabIDs) }
             }
+            // else: legacy chat, no saved URLs and no live tabs — nothing safe
+            // to research over; the transcript reopens the next time the user
+            // runs a fresh search (new chats persist their source URLs).
         }
     }
 

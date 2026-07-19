@@ -52,13 +52,34 @@ struct SavedTurn: Codable, Equatable {
     let sources: [SavedSource]
 }
 
-/// Codable projection of a cited `ResearchSource`: just what the transcript
-/// needs to display `[N] Title`. The `tabID` is kept so a still-open source
-/// tab can be focused; a stale id simply doesn't resolve to a live tab.
+/// Codable projection of a cited `ResearchSource`: what the transcript needs
+/// to display `[N] Title`, plus the source page `url` so reopening a research
+/// chat from history can re-open its source tabs (its original tabs are long
+/// gone). The `tabID` is kept so a still-open source tab can be focused; a
+/// stale id simply doesn't resolve to a live tab.
 struct SavedSource: Codable, Equatable {
     let index: Int
     let title: String
     let tabID: UUID
+    var url: URL?
+
+    enum CodingKeys: String, CodingKey { case index, title, tabID, url }
+
+    init(index: Int, title: String, tabID: UUID, url: URL?) {
+        self.index = index
+        self.title = title
+        self.tabID = tabID
+        self.url = url
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        index = try c.decode(Int.self, forKey: .index)
+        title = try c.decode(String.self, forKey: .title)
+        tabID = try c.decode(UUID.self, forKey: .tabID)
+        // Backward-compatible: chats saved before URLs were persisted decode nil.
+        url = try c.decodeIfPresent(URL.self, forKey: .url)
+    }
 }
 
 @Observable
@@ -179,7 +200,7 @@ extension SavedTurn {
         }
         text = turn.text
         reasoning = turn.reasoning
-        sources = turn.sources.map { SavedSource(index: $0.index, title: $0.title, tabID: $0.tabID) }
+        sources = turn.sources.map { SavedSource(index: $0.index, title: $0.title, tabID: $0.tabID, url: $0.url) }
     }
 
     /// The display-side inverse: a live turn carrying the persisted text,
@@ -190,7 +211,7 @@ extension SavedTurn {
             role: role == .user ? .user : .assistant,
             text: text,
             reasoning: reasoning,
-            sources: sources.map { ResearchSource(index: $0.index, tabID: $0.tabID, title: $0.title, url: nil) }
+            sources: sources.map { ResearchSource(index: $0.index, tabID: $0.tabID, title: $0.title, url: $0.url) }
         )
     }
 }
