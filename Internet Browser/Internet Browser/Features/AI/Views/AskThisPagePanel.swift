@@ -405,13 +405,17 @@ struct AskThisPagePanel: View {
             }
         case .research:
             researchSession.restore(id: saved.id, turns: turns)
-            if !isResearchSelection {
-                researchRestoreOverride = true
+            // Only pin research mode + kick off a gather when there are live
+            // tabs to research over. Doing it with an empty/mismatched current
+            // selection (e.g. the reopened chat's original tabs are gone) both
+            // gives nothing to index AND could spin the gather coalescer — so
+            // just show the restored transcript read-only in that case.
+            if !selectedTabIDs.isEmpty {
+                if !isResearchSelection {
+                    researchRestoreOverride = true
+                }
+                Task { await researchSession.prepare(tabManager: tabManager, includeTabIDs: selectedTabIDs) }
             }
-            // Re-ground on the current selection right away (restore dropped
-            // the index): an empty/ineligible selection leaves the chat
-            // read-only via the existing unavailable states.
-            Task { await researchSession.prepare(tabManager: tabManager, includeTabIDs: selectedTabIDs) }
         }
     }
 
