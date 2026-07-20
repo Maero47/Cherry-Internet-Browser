@@ -102,6 +102,39 @@ final class EnsureAIResearchGroupTests: XCTestCase {
         XCTAssertTrue(tabs.allSatisfy { $0.group?.id == first.id })
     }
 
+    /// The programmatic paths' contract (repeat web search / reopen): reusing
+    /// the AI group for a new tab set must end with members == exactly that
+    /// set — the previous run's tabs are ejected (staying open, ungrouped),
+    /// never left as a stale superset for the observers to untangle.
+    func testReusedGroupSyncsToNewSelectionEjectingStaleMembers() {
+        let manager = TabManager(createDefaultTab: false)
+        let oldTabs = (0..<2).map { _ in Tab() }
+        let newTabs = (0..<2).map { _ in Tab() }
+        manager.tabs = oldTabs + newTabs
+
+        let firstRun = manager.ensureAIResearchGroup()
+        for tab in oldTabs {
+            manager.addTabToGroup(tab, group: firstRun)
+        }
+
+        // Second run: reuse the group, add the new set, eject the stale rest.
+        let secondRun = manager.ensureAIResearchGroup()
+        XCTAssertEqual(secondRun.id, firstRun.id)
+        let selection = Set(newTabs.map(\.id))
+        for tab in newTabs {
+            manager.addTabToGroup(tab, group: secondRun)
+        }
+        for tab in manager.tabs where tab.group?.color == .aiIndigo && !selection.contains(tab.id) {
+            manager.removeTabFromGroup(tab)
+        }
+
+        let members = Set(manager.tabs.filter { $0.group?.color == .aiIndigo }.map(\.id))
+        XCTAssertEqual(members, selection)
+        XCTAssertEqual(manager.tabGroups, [firstRun], "The reused group survives with the new members")
+        XCTAssertTrue(oldTabs.allSatisfy { $0.group == nil }, "Stale tabs are ungrouped, not closed")
+        XCTAssertEqual(manager.tabs.count, 4, "Ejection never closes tabs")
+    }
+
     /// The reconciliation's write path: applying an add/remove diff through
     /// the normal membership APIs keeps the single AI group until the last
     /// member leaves, at which point the group auto-removes.

@@ -529,6 +529,14 @@ struct AskThisPagePanel: View {
         for tab in tabManager.tabs where selection.contains(tab.id) && tab.group?.id != group.id {
             tabManager.addTabToGroup(tab, group: group)
         }
+        // Keep group == selection within this synchronous block: a reused
+        // group may still hold a previous run's tabs — eject them now (they
+        // stay open, just ungrouped) so the group→selection mirror, which
+        // fires with the member set captured for the update pass, can't
+        // re-select them into the reopened chat.
+        for tab in tabManager.tabs where tab.group?.color == .aiIndigo && !selection.contains(tab.id) {
+            tabManager.removeTabFromGroup(tab)
+        }
 
         guard !selection.isEmpty else { return }
         // Pin research mode past the `.onChange(of: selectedTabIDs)` that would
@@ -1510,10 +1518,8 @@ struct AskThisPagePanel: View {
         // Cluster this run's result tabs into THE locked group named "AI"
         // with the reserved color — so the run reads as a unit in the tab
         // bar instead of ~5 loose tabs. There is only ever one AI group: a
-        // new run reuses it, and setting the selection below lets the
-        // selection→group reconciliation eject a previous run's tabs (they
-        // stay open, just ungrouped). The group dissolves through the
-        // normal empty-group rule once its tabs are closed.
+        // new run reuses it. The group dissolves through the normal
+        // empty-group rule once its tabs are closed.
         let researchGroup = tabManager.ensureAIResearchGroup()
         let openedTabs = results.map { result in
             let tab = tabManager.openBackgroundResearchTab(url: result.url, title: result.title, snippet: result.snippet)
@@ -1521,6 +1527,15 @@ struct AskThisPagePanel: View {
             return tab
         }
         let openedIDs = Set(openedTabs.map(\.id))
+        // Keep group == selection within this synchronous block: eject the
+        // reused group's previous-run tabs NOW (they stay open, just
+        // ungrouped) rather than leaving the transient superset to observer
+        // ordering — the group→selection mirror fires with the member set
+        // captured for the update pass, so a lingering old+new group would
+        // re-select the previous run's tabs.
+        for tab in tabManager.tabs where tab.group?.color == .aiIndigo && !openedIDs.contains(tab.id) {
+            tabManager.removeTabFromGroup(tab)
+        }
         // From here the panel is simply in research mode over these tabs:
         // chips appear, follow-ups hit the same index, and the user closes
         // the tabs (or edits the selection) whenever they like.
