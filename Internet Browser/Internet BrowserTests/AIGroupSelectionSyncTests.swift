@@ -102,6 +102,37 @@ final class EnsureAIResearchGroupTests: XCTestCase {
         XCTAssertTrue(tabs.allSatisfy { $0.group?.id == first.id })
     }
 
+    /// The sync moves tabs between groups programmatically (chip-selecting a
+    /// user-grouped tab pulls it into the AI group), so `addTabToGroup` must
+    /// clean up the vacated group: moving out the sole member drops the old
+    /// group, while a group with remaining members survives losing one.
+    func testMovingTabBetweenGroupsDropsVacatedEmptyGroup() {
+        let manager = TabManager(createDefaultTab: false)
+        let solo = Tab()
+        let pair = (0..<2).map { _ in Tab() }
+        manager.tabs = [solo] + pair
+
+        let soloGroup = manager.createGroup(name: "Solo", color: .blue)
+        manager.addTabToGroup(solo, group: soloGroup)
+        let pairGroup = manager.createGroup(name: "Pair", color: .green)
+        for tab in pair {
+            manager.addTabToGroup(tab, group: pairGroup)
+        }
+
+        let ai = manager.ensureAIResearchGroup()
+        manager.addTabToGroup(solo, group: ai)
+        XCTAssertFalse(manager.tabGroups.contains(soloGroup), "Vacated empty group must be dropped")
+        XCTAssertEqual(solo.group?.id, ai.id)
+
+        manager.addTabToGroup(pair[0], group: ai)
+        XCTAssertTrue(manager.tabGroups.contains(pairGroup), "A group with remaining members survives")
+        XCTAssertEqual(pair[1].group?.id, pairGroup.id)
+
+        // Re-adding a tab to the group it's already in must not drop that group.
+        manager.addTabToGroup(pair[0], group: ai)
+        XCTAssertTrue(manager.tabGroups.contains(ai))
+    }
+
     /// The programmatic paths' contract (repeat web search / reopen): reusing
     /// the AI group for a new tab set must end with members == exactly that
     /// set — the previous run's tabs are ejected (staying open, ungrouped),

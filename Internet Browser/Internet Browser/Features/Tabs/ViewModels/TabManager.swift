@@ -560,7 +560,14 @@ final class TabManager {
     }
 
     func addTabToGroup(_ tab: Tab, group: TabGroup) {
+        let previous = tab.group
         tab.group = group
+        // Moving a tab between groups vacates its old one — drop that group
+        // if the move emptied it, same as `removeTabFromGroup` would, so no
+        // ghost group lingers in the tab bar / "Add to Group" menus.
+        if let previous, previous.id != group.id {
+            removeGroupIfEmpty(previous)
+        }
     }
 
     func addTabToNewGroup(_ tab: Tab) -> TabGroup {
