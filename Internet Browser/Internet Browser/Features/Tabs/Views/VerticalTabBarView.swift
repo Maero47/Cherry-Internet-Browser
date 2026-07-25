@@ -611,12 +611,12 @@ private struct VerticalTabItemView: View {
     var onDetachTab: ((Tab) -> Void)? = nil
 
     @State private var isHovering = false
-    /// True while the pointer sits on one of the row's small buttons (close,
-    /// unmute) — those own their click, so the row's own click handling stands
-    /// down and a press on the X can never also select the tab. Tracked per
-    /// button so moving between them can't leave a stale flag behind.
-    @State private var isPointerOnClose = false
-    @State private var isPointerOnMute = false
+    /// Hit rectangles of the row's small buttons, in global space, kept current
+    /// by `.onGeometryChange`. A press that starts inside one belongs to that
+    /// button — see `TabInteraction.pressIsOnControl` for why arbitration is by
+    /// location rather than by remembered hover.
+    @State private var closeControlFrame: CGRect = .zero
+    @State private var muteControlFrame: CGRect = .zero
     /// Set by whichever of the two click paths resolves the current press
     /// first, so a single click selects exactly once.
     @State private var didHandleClick = false
@@ -625,11 +625,18 @@ private struct VerticalTabItemView: View {
         tabManager.selectedTabID == tab.id
     }
 
-    /// Whether the close button is currently shown — and therefore clickable.
+    /// Whether the close button is currently drawn — and so whether a press on
+    /// it can have been aimed at it.
     private var isCloseButtonActive: Bool { isHovering || isSelected }
 
-    /// The pointer is on a control that owns its own click.
-    private var isPointerOnControl: Bool { isPointerOnClose || isPointerOnMute }
+    /// Hit rects of the controls that are currently on screen. Both live inside
+    /// the `!isCompact` branch, so a collapsed sidebar has none.
+    private var activeControlFrames: [CGRect] {
+        guard !isCompact else { return [] }
+        var frames = [closeControlFrame]
+        if tab.isMuted { frames.append(muteControlFrame) }
+        return frames
+    }
 
     /// True when this tab is one of the two tabs currently shown in split
     /// view — mirrors the same check in `TabBarView`'s horizontal tab item.
@@ -702,7 +709,7 @@ private struct VerticalTabItemView: View {
                 // Mute indicator — click to unmute
                 if tab.isMuted {
                     Button {
-                        tab.isMuted = false
+                        handleMutePress()
                     } label: {
                         Image(systemName: "speaker.slash.fill")
                             .font(.system(size: 9))
@@ -715,13 +722,15 @@ private struct VerticalTabItemView: View {
                             )
                     }
                     .buttonStyle(.plain)
-                    .onHover { isPointerOnMute = $0 }
+                    .onGeometryChange(for: CGRect.self) { proxy in
+                        TabInteraction.hitRect(for: proxy.frame(in: .global), visualSize: 12)
+                    } action: { muteControlFrame = $0 }
                     .help("Unmute Tab")
                 }
 
                 // Close button (always in layout, opacity-controlled)
                 Button {
-                    tabManager.closeTab(tab)
+                    handleClosePress()
                 } label: {
                     Image(systemName: "xmark")
                         .font(.system(size: 8, weight: .bold))
@@ -737,13 +746,15 @@ private struct VerticalTabItemView: View {
                 }
                 .buttonStyle(.plain)
                 .opacity(isCloseButtonActive ? 1 : 0)
-                // A SwiftUI view at `.opacity(0)` is still hit-testable: while
-                // invisible, the X silently swallowed clicks aimed at the
-                // trailing end of an unselected row, so that tab never got
-                // selected. Invisible now means untouchable.
-                .allowsHitTesting(isCloseButtonActive)
+                // Deliberately still hit-testable while invisible — that keeps
+                // closing row after row working when the row under a stationary
+                // pointer changes before its hover state catches up. What made
+                // the invisible X a click EATER was its action, and that is what
+                // changed: see `handleClosePress`.
                 .animation(.easeInOut(duration: 0.1), value: isHovering)
-                .onHover { isPointerOnClose = $0 }
+                .onGeometryChange(for: CGRect.self) { proxy in
+                    TabInteraction.hitRect(for: proxy.frame(in: .global), visualSize: 14)
+                } action: { closeControlFrame = $0 }
             }
         }
         .padding(.horizontal, 8)
@@ -759,27 +770,28 @@ private struct VerticalTabItemView: View {
         .animation(.easeInOut(duration: 0.12), value: isSelected)
         .opacity(tab.isSleeping ? 0.6 : 1.0)
         .contentShape(Rectangle())
-        .onTapGesture {
-            handleClick()
+        .onTapGesture(coordinateSpace: .global) { location in
+            handleClick(at: location)
         }
-        // Belt-and-braces click path — see the identical comment in
-        // `TabItemView`: a `TapGesture` can be failed by the sidebar's
-        // simultaneous reorder `DragGesture`, a `DragGesture` never is, so this
-        // guarantees the click resolves. `simultaneousGesture` keeps it out of
-        // the close/unmute buttons' way.
+        // Belt-and-braces click path — see the fuller comment in `TabItemView`:
+        // a `TapGesture` can be failed by the sidebar's simultaneous reorder
+        // `DragGesture`, a `DragGesture` never is, so this guarantees the click
+        // resolves. `.global` matches both the reorder gesture's threshold and
+        // the control frames above; in `.local` space a finished reorder (the
+        // row jumps a full `rowStride` per step) could read as a click.
         .simultaneousGesture(
-            DragGesture(minimumDistance: 0)
+            DragGesture(minimumDistance: 0, coordinateSpace: .global)
+                .onChanged { _ in
+                    // A new press begins: re-arm the latch deterministically.
+                    if didHandleClick { didHandleClick = false }
+                }
                 .onEnded { value in
                     guard TabInteraction.isClick(translation: value.translation) else { return }
-                    handleClick()
+                    handleClick(at: value.startLocation)
                 }
         )
         .onHover { hovering in
             isHovering = hovering
-            if !hovering {
-                isPointerOnClose = false
-                isPointerOnMute = false
-            }
         }
         .padding(.horizontal, 4)
         .contextMenu {
@@ -852,16 +864,47 @@ private struct VerticalTabItemView: View {
     }
 
     /// Selects the tab, at most once per press. Both click paths funnel through
-    /// here; whichever resolves first wins and the other becomes a no-op.
-    private func handleClick() {
-        guard !isPointerOnControl, !didHandleClick else { return }
-        didHandleClick = true
+    /// here; whichever resolves first wins and the other becomes a no-op. A
+    /// press that started on one of the row's controls belongs to that control
+    /// and is ignored here, so one press can never both close and select.
+    private func handleClick(at point: CGPoint?) {
+        if let point,
+           TabInteraction.pressIsOnControl(at: point, controlFrames: activeControlFrames) {
+            return
+        }
+        guard claimPress() else { return }
         tabManager.selectTab(tab)
-        // Re-arm for the next click. Deferring by one main-queue hop lets the
-        // second of the two paths see the flag and skip.
+    }
+
+    /// The close button is clickable even while invisible, so that closing row
+    /// after row keeps working when the row under a stationary pointer changes
+    /// and its hover state hasn't caught up. While it is invisible the press
+    /// cannot have been aimed at it, so it means what a press on the row means:
+    /// select.
+    private func handleClosePress() {
+        guard claimPress() else { return }
+        if isCloseButtonActive {
+            tabManager.closeTab(tab)
+        } else {
+            tabManager.selectTab(tab)
+        }
+    }
+
+    private func handleMutePress() {
+        guard claimPress() else { return }
+        tab.isMuted = false
+    }
+
+    /// Takes ownership of the current press, or returns false if some other
+    /// path already handled it. Re-arms asynchronously so the latch can never
+    /// stick, on top of the deterministic reset at the start of the next press.
+    private func claimPress() -> Bool {
+        guard !didHandleClick else { return false }
+        didHandleClick = true
         DispatchQueue.main.async {
             didHandleClick = false
         }
+        return true
     }
 }
 

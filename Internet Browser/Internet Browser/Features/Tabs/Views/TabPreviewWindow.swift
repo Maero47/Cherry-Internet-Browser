@@ -106,7 +106,20 @@ final class TabPreviewPresenter {
     /// the preview of the tab it just entered.
     private var ownerID: UUID?
 
-    private init() {}
+    private init() {
+        // `hidesOnDeactivate` parks the window when the app loses focus, but
+        // AppKit brings it back on reactivation — so ⌘-Tab away from a visible
+        // preview and back would redisplay a chip with no pointer on the tab
+        // and nothing left to dismiss it. Dropping the window on deactivation
+        // means there is nothing to come back.
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.didResignActiveNotification,
+            object: nil,
+            queue: .main
+        ) { _ in
+            MainActor.assumeIsolated { TabPreviewPresenter.shared.hide() }
+        }
+    }
 
     func show(for tab: Tab, at screenPoint: NSPoint) {
         hide()

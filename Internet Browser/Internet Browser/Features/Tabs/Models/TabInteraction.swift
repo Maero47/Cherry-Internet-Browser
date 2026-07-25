@@ -4,6 +4,7 @@
 //
 
 import Foundation
+import CoreGraphics
 
 /// Pointer thresholds shared by both tab bars and their tab items, so that a
 /// press on a tab is unambiguously EITHER a click or a drag — never both, and
@@ -43,7 +44,37 @@ enum TabInteraction {
     /// True when a press whose pointer moved by `translation` should still be
     /// treated as a click on the tab. Anything larger is a drag, and the bars'
     /// reorder/tear-off gesture owns it.
+    ///
+    /// `translation` MUST be measured in the global coordinate space, the same
+    /// space the bars' reorder gesture uses. In local space the number means
+    /// something else entirely — the tab view itself jumps a whole slot on each
+    /// reorder step, so local translation is the residual `pointer − view` and
+    /// a finished reorder can look like a click.
     static func isClick(translation: CGSize) -> Bool {
         hypot(translation.width, translation.height) <= dragActivationDistance
+    }
+
+    /// Grows a control's reported frame to its real hit target, so press
+    /// arbitration uses the same region hit-testing does.
+    static func hitRect(for frame: CGRect, visualSize: CGFloat) -> CGRect {
+        let inset = hitTargetInset(forVisualSize: visualSize)
+        return frame.insetBy(dx: inset, dy: inset)
+    }
+
+    /// True when a press at `point` belongs to one of the row's controls
+    /// (close, unmute) rather than to the tab body — which is how one press is
+    /// kept from both closing and selecting a tab.
+    ///
+    /// Arbitration is by press LOCATION on purpose. The obvious alternative —
+    /// remembering which control the pointer last hovered — goes stale the
+    /// moment a control leaves the hierarchy while the pointer is still on it
+    /// (click unmute and the button vanishes under the cursor, so its hover-exit
+    /// never arrives), and a stuck flag would silently swallow every later click
+    /// on that tab. A location has no memory to get stuck.
+    ///
+    /// Only frames of controls that are actually on screen may be passed in;
+    /// callers gate each frame on the same condition that renders it.
+    static func pressIsOnControl(at point: CGPoint, controlFrames: [CGRect]) -> Bool {
+        controlFrames.contains { !$0.isEmpty && $0.contains(point) }
     }
 }

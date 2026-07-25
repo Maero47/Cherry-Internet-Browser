@@ -31,12 +31,13 @@ struct TabItemView: View {
 
     @State private var isHovering = false
     @State private var previewTask: Task<Void, Never>?
-    /// True while the pointer sits on one of the row's small buttons (close,
-    /// unmute). Those buttons own the click; the tab's own click handling steps
-    /// aside so a press on the X can never also select the tab. Tracked per
-    /// button so moving between them can't leave a stale flag behind.
-    @State private var isPointerOnClose = false
-    @State private var isPointerOnMute = false
+    /// Hit rectangles of the row's small buttons, in global space, kept current
+    /// by `.onGeometryChange`. A press that starts inside one belongs to that
+    /// button, so the tab's own click handling stands down — see
+    /// `TabInteraction.pressIsOnControl` for why this is a location and not a
+    /// remembered hover.
+    @State private var closeControlFrame: CGRect = .zero
+    @State private var muteControlFrame: CGRect = .zero
     /// Set by whichever of the two click paths (`onTapGesture` or the
     /// press-release fallback) resolves the current press first, so a single
     /// click selects exactly once.
@@ -77,9 +78,9 @@ struct TabItemView: View {
             }
 
             // Mute indicator — click to unmute
-            if tab.isMuted && !tab.isPinned && (fixedWidth ?? 999) > 100 {
+            if showsMuteButton {
                 Button {
-                    tab.isMuted = false
+                    handleMutePress()
                 } label: {
                     Image(systemName: "speaker.slash.fill")
                         .font(.system(size: 10))
@@ -92,13 +93,15 @@ struct TabItemView: View {
                         )
                 }
                 .buttonStyle(.plain)
-                .onHover { isPointerOnMute = $0 }
+                .onGeometryChange(for: CGRect.self) { proxy in
+                    TabInteraction.hitRect(for: proxy.frame(in: .global), visualSize: 14)
+                } action: { muteControlFrame = $0 }
                 .help("Unmute Tab")
             }
 
             // Close button (always in layout to prevent jumps, opacity-controlled)
             if !tab.isPinned {
-                Button(action: onClose) {
+                Button(action: handleClosePress) {
                     Image(systemName: "xmark")
                         .font(.system(size: 9, weight: .bold))
                         .foregroundStyle(.secondary)
@@ -120,13 +123,17 @@ struct TabItemView: View {
                 }
                 .buttonStyle(.plain)
                 .opacity(isCloseButtonActive ? 1 : 0)
-                // A SwiftUI view at `.opacity(0)` is still hit-testable: while
-                // the X was invisible it silently swallowed clicks aimed at the
-                // trailing end of an unselected tab, so that tab never got
-                // selected. Invisible now means untouchable.
-                .allowsHitTesting(isCloseButtonActive)
+                // Deliberately still hit-testable while invisible — that is what
+                // keeps spam-closing tabs working, because the tab that slides
+                // under a stationary pointer starts out un-hovered. What used to
+                // make the invisible X a click EATER was its action: it closed
+                // nothing and selected nothing. Now an invisible X can't have
+                // been aimed at, so a press there means what a press on the tab
+                // body means (see `handleClosePress`).
                 .animation(.easeInOut(duration: 0.1), value: isHovering)
-                .onHover { isPointerOnClose = $0 }
+                .onGeometryChange(for: CGRect.self) { proxy in
+                    TabInteraction.hitRect(for: proxy.frame(in: .global), visualSize: 16)
+                } action: { closeControlFrame = $0 }
                 .help("Close Tab (Cmd+W)")
             }
         }
@@ -158,13 +165,11 @@ struct TabItemView: View {
                     TabPreviewPresenter.shared.show(for: tab, at: NSEvent.mouseLocation)
                 }
             } else {
-                isPointerOnClose = false
-                isPointerOnMute = false
                 hidePreview()
             }
         }
-        .onTapGesture {
-            handleClick()
+        .onTapGesture(coordinateSpace: .global) { location in
+            handleClick(at: location)
         }
         // Belt-and-braces click path. `onTapGesture` above is a `TapGesture`,
         // and SwiftUI is free to fail a tap once the tab bar's simultaneous
@@ -172,11 +177,21 @@ struct TabItemView: View {
         // could vanish. A `DragGesture` never fails: `onEnded` fires on every
         // mouse-up, so we classify the press ourselves and select the tab if
         // the tap didn't. It is `simultaneousGesture`, so it never competes
-        // with the close/unmute buttons for their own clicks (and those are
-        // additionally excluded via `isPointerOnControl`).
+        // with the close/unmute buttons for their own clicks (those presses are
+        // excluded by location, below).
+        //
+        // `.global` is required, not incidental: it is the space the bar's
+        // reorder gesture measures its 8 pt threshold in, and the space the
+        // control frames above are captured in. In the default `.local` space
+        // the translation would be pointer travel MINUS the tab's own travel —
+        // and the tab jumps a whole slot per reorder step — so a finished
+        // reorder could read as a click and select the tab it just moved.
         .simultaneousGesture(
-            DragGesture(minimumDistance: 0)
+            DragGesture(minimumDistance: 0, coordinateSpace: .global)
                 .onChanged { _ in
+                    // A new press begins: re-arm the latch deterministically
+                    // rather than relying on the async reset in `handleClick`.
+                    if didHandleClick { didHandleClick = false }
                     // Pressing the tab dismisses the preview immediately, so
                     // nothing is on screen while the click resolves. Guarded so
                     // a drag doesn't touch state on every mouse-moved event.
@@ -184,7 +199,7 @@ struct TabItemView: View {
                 }
                 .onEnded { value in
                     guard TabInteraction.isClick(translation: value.translation) else { return }
-                    handleClick()
+                    handleClick(at: value.startLocation)
                 }
         )
         .contextMenu {
@@ -195,26 +210,68 @@ struct TabItemView: View {
         }
     }
 
-    /// Whether the close button is currently shown — and therefore clickable.
+    /// Whether the close button is currently drawn — and so whether a press on
+    /// it can have been aimed at it.
     private var isCloseButtonActive: Bool { isHovering || isSelected }
 
-    /// The pointer is on a control that owns its own click.
-    private var isPointerOnControl: Bool { isPointerOnClose || isPointerOnMute }
+    /// Mirrors the condition that renders the unmute button, so its frame is
+    /// only ever consulted while it is actually on screen.
+    private var showsMuteButton: Bool {
+        tab.isMuted && !tab.isPinned && (fixedWidth ?? 999) > 100
+    }
+
+    /// Hit rects of the controls that are currently on screen.
+    private var activeControlFrames: [CGRect] {
+        var frames: [CGRect] = []
+        if !tab.isPinned { frames.append(closeControlFrame) }
+        if showsMuteButton { frames.append(muteControlFrame) }
+        return frames
+    }
 
     /// Selects the tab, at most once per press. Both click paths funnel through
-    /// here; whichever resolves first wins and the other becomes a no-op.
-    /// `didHandleClick` is cleared on the next press by the tap gesture itself
-    /// (SwiftUI delivers `onEnded` for a press before the next press begins).
-    private func handleClick() {
-        guard !isPointerOnControl, !didHandleClick else { return }
-        didHandleClick = true
+    /// here; whichever resolves first wins and the other becomes a no-op. A
+    /// press that started on one of the row's controls belongs to that control
+    /// and is ignored here, so one press can never both close and select.
+    private func handleClick(at point: CGPoint?) {
+        if let point,
+           TabInteraction.pressIsOnControl(at: point, controlFrames: activeControlFrames) {
+            return
+        }
+        guard claimPress() else { return }
         hidePreview()
         onSelect()
-        // Re-arm for the next click. Deferring by one main-queue hop lets the
-        // second of the two paths see the flag and skip.
+    }
+
+    /// The close button is clickable even while invisible, so that closing tab
+    /// after tab keeps working when the tab under a stationary pointer changes
+    /// and its hover state hasn't caught up. While it is invisible the press
+    /// cannot have been aimed at it, so it means what a press on the tab body
+    /// means: select.
+    private func handleClosePress() {
+        guard claimPress() else { return }
+        hidePreview()
+        if isCloseButtonActive {
+            onClose()
+        } else {
+            onSelect()
+        }
+    }
+
+    private func handleMutePress() {
+        guard claimPress() else { return }
+        tab.isMuted = false
+    }
+
+    /// Takes ownership of the current press, or returns false if some other
+    /// path already handled it. Re-arms asynchronously so the latch can never
+    /// stick, on top of the deterministic reset at the start of the next press.
+    private func claimPress() -> Bool {
+        guard !didHandleClick else { return false }
+        didHandleClick = true
         DispatchQueue.main.async {
             didHandleClick = false
         }
+        return true
     }
 
     private func hidePreview() {

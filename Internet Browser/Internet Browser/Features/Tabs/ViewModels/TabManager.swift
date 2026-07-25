@@ -78,37 +78,50 @@ final class TabManager {
 
     // MARK: - App Termination
 
-    /// The three facts about an `NSWindow` that decide whether it should keep
-    /// the app running. Split out from `NSWindow` so the policy below is pure
-    /// and testable.
+    /// The facts about an `NSWindow` that decide whether it should keep the app
+    /// running. Split out from `NSWindow` so the policy below is pure and
+    /// testable.
     struct WindowLiveness: Equatable {
         /// `NSWindow.isVisible` — on screen, even if obscured. FALSE for a
         /// window the user minimised to the Dock, and false once closed.
         let isVisible: Bool
         /// `NSWindow.isMiniaturized` — sitting in the Dock, tabs and all.
         let isMiniaturized: Bool
-        /// `NSWindow.canBecomeMain` — true for real browser windows, false for
-        /// the app's helper windows (tear-off ghost, hover preview, off-screen
-        /// research host) and for system panels/popovers.
-        let canBecomeMain: Bool
+        /// Has a title bar. Together with `isPanel` this is how a real
+        /// user-facing window is told apart from the app's helper windows —
+        /// the tear-off ghost, the hover preview and the off-screen research
+        /// host are all `.borderless`, so none of them are titled.
+        ///
+        /// Deliberately NOT `canBecomeMain`: AppKit's default implementation
+        /// returns true only while the window is VISIBLE, and a minimised
+        /// window is not visible — that is the entire premise of the bug — so
+        /// any window that doesn't override it (notably the app's first window,
+        /// which comes from the SwiftUI `WindowGroup`) would report false and
+        /// be treated as gone.
+        let isTitled: Bool
+        /// Panels (save/print/alert/system popovers) are never the user's
+        /// browsing windows and must not hold the app open on their own.
+        let isPanel: Bool
 
-        init(isVisible: Bool, isMiniaturized: Bool, canBecomeMain: Bool) {
+        init(isVisible: Bool, isMiniaturized: Bool, isTitled: Bool, isPanel: Bool) {
             self.isVisible = isVisible
             self.isMiniaturized = isMiniaturized
-            self.canBecomeMain = canBecomeMain
+            self.isTitled = isTitled
+            self.isPanel = isPanel
         }
 
         init(_ window: NSWindow) {
             self.init(
                 isVisible: window.isVisible,
                 isMiniaturized: window.isMiniaturized,
-                canBecomeMain: window.canBecomeMain
+                isTitled: window.styleMask.contains(.titled),
+                isPanel: window is NSPanel
             )
         }
 
         /// A real user-facing window that still holds the user's tabs, whether
         /// it is on screen or minimised in the Dock.
-        var keepsAppAlive: Bool { canBecomeMain && (isVisible || isMiniaturized) }
+        var keepsAppAlive: Bool { isTitled && !isPanel && (isVisible || isMiniaturized) }
     }
 
     /// Whether closing a window should also quit the app.
@@ -116,8 +129,9 @@ final class TabManager {
     /// The old check was `NSApp.windows.filter(\.isVisible).isEmpty`, and
     /// `isVisible` is FALSE for a minimised window — so closing the last tab of
     /// window A terminated the app while window B sat in the Dock with open
-    /// tabs, losing them. Minimised windows now count, and only genuine browser
-    /// windows are counted at all, so closing the truly last window still quits.
+    /// tabs, losing them. Minimised windows now count, and only real windows
+    /// (titled, not a panel) are counted at all, so closing the truly last
+    /// window still quits.
     nonisolated static func shouldTerminateApp(windows: [WindowLiveness]) -> Bool {
         !windows.contains { $0.keepsAppAlive }
     }
