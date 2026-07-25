@@ -22,7 +22,9 @@ private struct HomepageBackground: View {
             return nil
         }
 
-        switch settings.accentColorHex.uppercased() {
+        // Locale-independent: an identifier, not prose. (Hex digits happen to
+        // dodge the Turkish I/ı mapping today, but only by accident.)
+        switch settings.accentColorHex.uppercased(with: Locale(identifier: "en_US_POSIX")) {
         case "DB283C": return "HomepageWallpaperDB283C"
         case "2563EB": return "HomepageWallpaper2563EB"
         case "059669": return "HomepageWallpaper059669"

@@ -38,7 +38,7 @@ final class AdBlockManager {
         return dir
     }
 
-    nonisolated private static let lastUpdateKey = "adblock_lastFilterUpdate_v12"
+    nonisolated private static let lastUpdateKey = "adblock_lastFilterUpdate_v13"
 
     private init() {
         compileRulesFromScratch()
@@ -75,8 +75,10 @@ final class AdBlockManager {
         for id in ["CherryAdBlocker", "CherryAdBlockerV2", "CherryAdBlockerV3",
                     "CherryAdBlockerV4", "CherryAdBlockerV5", "CherrySupplementaryV1",
                     "CherrySupp_V2", "CherrySupp_V4", "CherrySupp_V5", "CherrySupp_V6",
+                    "CherrySupp_V7",
                     "CherryEasyDomains_V6", "CherryEasyDomains_V7",
                     "CherryEasyDomains_V9", "CherryEasyDomains_V10", "CherryEasyDomains_V11",
+                    "CherryEasyDomains_V12",
                     "CherryEasyCSS_V6", "CherryEasyCSS_V7", "CherryEasyCSS_V8",
                     "CherryEasyCSS_V9", "CherryEasyCSS_V10"] {
             WKContentRuleListStore.default().removeContentRuleList(forIdentifier: id) { _ in }
@@ -85,14 +87,15 @@ final class AdBlockManager {
         try? FileManager.default.removeItem(at: Self.cacheDir.appendingPathComponent("easylist_domains_v9.json"))
         try? FileManager.default.removeItem(at: Self.cacheDir.appendingPathComponent("easylist_domains_v10.json"))
         try? FileManager.default.removeItem(at: Self.cacheDir.appendingPathComponent("easylist_domains_v11.json"))
+        try? FileManager.default.removeItem(at: Self.cacheDir.appendingPathComponent("easylist_domains_v12.json"))
 
         // 1) Compile supplementary rules (hardcoded, guaranteed to work)
-        compileList(name: "supplementary", identifier: "CherrySupp_V7", json: Self.buildSupplementaryJSON())
+        compileList(name: "supplementary", identifier: "CherrySupp_V8", json: Self.buildSupplementaryJSON())
 
         // 2) Try loading cached EasyList domain rules
-        let domainCacheURL = Self.cacheDir.appendingPathComponent("easylist_domains_v12.json")
+        let domainCacheURL = Self.cacheDir.appendingPathComponent("easylist_domains_v13.json")
 
-        WKContentRuleListStore.default().lookUpContentRuleList(forIdentifier: "CherryEasyDomains_V12") { [weak self] cached, _ in
+        WKContentRuleListStore.default().lookUpContentRuleList(forIdentifier: "CherryEasyDomains_V13") { [weak self] cached, _ in
             Task { @MainActor in
                 guard let self else { return }
                 if let cached {
@@ -104,7 +107,7 @@ final class AdBlockManager {
                 } else if FileManager.default.fileExists(atPath: domainCacheURL.path),
                           let json = try? String(contentsOf: domainCacheURL, encoding: .utf8), json.count > 100 {
                     print("[AdBlocker] Compiling EasyList domains from local cache...")
-                    self.compileList(name: "easyDomains", identifier: "CherryEasyDomains_V12", json: json)
+                    self.compileList(name: "easyDomains", identifier: "CherryEasyDomains_V13", json: json)
                     self.isCompiling = false
                     self.notifyWaiters()
                 } else {
@@ -128,7 +131,7 @@ final class AdBlockManager {
             let result = await Self.downloadAndExtract()
             await MainActor.run {
                 if let result {
-                    self.compileList(name: "easyDomains", identifier: "CherryEasyDomains_V12", json: result.domainJSON)
+                    self.compileList(name: "easyDomains", identifier: "CherryEasyDomains_V13", json: result.domainJSON)
                 } else {
                     print("[AdBlocker] ⚠️ Download failed, supplementary rules only")
                 }
@@ -142,7 +145,7 @@ final class AdBlockManager {
         let result = await Self.downloadAndExtract()
         if let result {
             await MainActor.run {
-                self.compileList(name: "easyDomains", identifier: "CherryEasyDomains_V12", json: result.domainJSON)
+                self.compileList(name: "easyDomains", identifier: "CherryEasyDomains_V13", json: result.domainJSON)
             }
         }
     }
@@ -179,15 +182,18 @@ final class AdBlockManager {
         for id in ["CherryAdBlocker", "CherryAdBlockerV2", "CherryAdBlockerV3",
                     "CherryAdBlockerV4", "CherryAdBlockerV5", "CherrySupplementaryV1",
                     "CherrySupp_V2", "CherrySupp_V4", "CherrySupp_V6", "CherrySupp_V7",
+                    "CherrySupp_V8",
                     "CherryEasyDomains_V6", "CherryEasyDomains_V7",
                     "CherryEasyDomains_V9", "CherryEasyDomains_V11", "CherryEasyDomains_V12",
+                    "CherryEasyDomains_V13",
                     "CherryEasyCSS_V6", "CherryEasyCSS_V7", "CherryEasyCSS_V8",
                     "CherryEasyCSS_V9", "CherryEasyCSS_V10"] {
             WKContentRuleListStore.default().removeContentRuleList(forIdentifier: id) { _ in }
         }
         // Clean up all cached JSON files
         for name in ["easylist_domains_v9.json", "easylist_domains_v10.json",
-                     "easylist_domains_v11.json", "easylist_domains_v12.json"] {
+                     "easylist_domains_v11.json", "easylist_domains_v12.json",
+                     "easylist_domains_v13.json"] {
             try? FileManager.default.removeItem(at: Self.cacheDir.appendingPathComponent(name))
         }
         UserDefaults.standard.removeObject(forKey: Self.lastUpdateKey)
@@ -338,60 +344,21 @@ final class AdBlockManager {
 
         var domainRules: [[String: Any]] = []
         for domain in domains.sorted() {
-            let escaped = domain.replacingOccurrences(of: ".", with: "\\.")
-            // Anchor to the host portion of the URL to prevent false matches in paths/query strings
-            let pattern = "^https?://([^/]+\\.)?" + escaped + "[/:]"
-            domainRules.append([
-                "trigger": [
-                    "url-filter": pattern,
-                    "url-filter-is-case-insensitive": true,
-                    // CRITICAL: Only block these domains as third-party requests.
-                    // When the user navigates directly to a site, all its own
-                    // resources (CSS, JS, images) must load normally. We only want
-                    // to block these domains when they appear as embedded trackers
-                    // on OTHER sites.
-                    "load-type": ["third-party"]
-                ],
-                "action": ["type": "block"]
-            ])
+            domainRules.append(AdBlockRuleBuilder.blockRule(for: domain))
             if domainRules.count >= 45000 { break }
         }
 
-        // Consent platform + Cloudflare + CDN exceptions (ignore-previous-rules)
-        let consentExceptionDomains = [
-            "sp-prod\\.net", "sourcepoint\\.com", "privacy-mgmt\\.com",
-            "onetrust\\.com", "cookielaw\\.org", "cookiepro\\.com",
-            "optanon\\.blob\\.core\\.windows\\.net",
-            "trustarc\\.com", "cookiebot\\.com", "iubenda\\.com",
-            "quantcast\\.com", "consensu\\.org", "didomi\\.io",
-            "osano\\.com", "usercentrics\\.eu", "consentmanager\\.net",
-            "privacymanager\\.io", "transcend\\.io", "termly\\.io",
-            "recaptcha\\.net", "hcaptcha\\.com",
-            // Additional consent platforms
-            "summerhamster\\.com", "tagcommander\\.com",
-            "rlcdn\\.com", "admiral\\.com", "ketchcdn\\.com",
-            // Cloudflare — challenges, beacon, insights (MUST NOT be blocked)
-            "cloudflare\\.com", "cloudflareinsights\\.com",
-            "challenges\\.cloudflare\\.com",
-            // Major CDNs — never block these
-            "cloudfront\\.net", "akamaihd\\.net", "akamaized\\.net",
-            "fastly\\.net",
-            "bootstrapcdn\\.com", "jsdelivr\\.net",
-        ]
-        for pattern in consentExceptionDomains {
-            domainRules.append([
-                "trigger": ["url-filter": pattern],
-                "action": ["type": "ignore-previous-rules"]
-            ])
+        // Consent platform + Cloudflare + CDN exceptions (ignore-previous-rules).
+        // Host-anchored — see AdBlockRuleBuilder: an unanchored substring here
+        // let any tracker cancel the whole blocklist for its own request.
+        for domain in AdBlockRuleBuilder.alwaysAllowedDomains {
+            domainRules.append(AdBlockRuleBuilder.exceptionRule(for: domain))
         }
 
         // Never block Cloudflare internal paths (/cdn-cgi/) — these serve challenge
         // scripts, turnstile captchas, and other essential Cloudflare functionality
         // from the SITE'S OWN domain
-        domainRules.append([
-            "trigger": ["url-filter": "/cdn-cgi/"],
-            "action": ["type": "ignore-previous-rules"]
-        ])
+        domainRules.append(AdBlockRuleBuilder.cdnCGIExceptionRule())
 
         print("[AdBlocker] Domain rules: \(domainRules.count)")
 
@@ -403,7 +370,7 @@ final class AdBlockManager {
             domainJSON = "[]"
         }
 
-        try? domainJSON.write(to: cacheDir.appendingPathComponent("easylist_domains_v12.json"), atomically: true, encoding: .utf8)
+        try? domainJSON.write(to: cacheDir.appendingPathComponent("easylist_domains_v13.json"), atomically: true, encoding: .utf8)
         UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: lastUpdateKey)
 
         return ExtractedLists(domainJSON: domainJSON)
@@ -837,62 +804,21 @@ final class AdBlockManager {
 
         var rules: [[String: Any]] = []
         for domain in exactDomains {
-            let escaped = domain.replacingOccurrences(of: ".", with: "\\.")
-            // Anchor to host portion of URL to avoid false matches in paths
-            let pattern = "^https?://([^/]+\\.)?" + escaped + "[/:]"
-            rules.append([
-                "trigger": [
-                    "url-filter": pattern,
-                    "url-filter-is-case-insensitive": true,
-                    // Only block as third-party — never block when user visits the domain directly
-                    "load-type": ["third-party"]
-                ],
-                "action": ["type": "block"]
-            ])
+            rules.append(AdBlockRuleBuilder.blockRule(for: domain))
         }
 
         // Block common ad script filenames (catches first-party served ad scripts)
-        for pattern in ["/ads\\.js", "/pagead\\.js", "/pagead2\\.js",
-                        "/adsbygoogle\\.js", "/show_ads\\.js", "/widget/ads\\.js"] {
-            rules.append([
-                "trigger": ["url-filter": pattern, "resource-type": ["script"]],
-                "action": ["type": "block"]
-            ])
+        for filename in AdBlockRuleBuilder.blockedScriptFilenames {
+            rules.append(AdBlockRuleBuilder.scriptPathBlockRule(for: filename))
         }
 
         // Exception rules: NEVER block requests to consent management platforms,
         // Cloudflare, or major CDNs. Must come LAST to override all block rules.
-        let consentExceptions = [
-            "sp-prod\\.net", "sourcepoint\\.com", "privacy-mgmt\\.com",
-            "onetrust\\.com", "cookielaw\\.org", "cookiepro\\.com",
-            "optanon\\.blob\\.core\\.windows\\.net",
-            "trustarc\\.com", "cookiebot\\.com", "iubenda\\.com",
-            "quantcast\\.com", "consensu\\.org", "didomi\\.io",
-            "osano\\.com", "usercentrics\\.eu", "consentmanager\\.net",
-            "privacymanager\\.io", "transcend\\.io", "termly\\.io",
-            "recaptcha\\.net", "hcaptcha\\.com",
-            // Additional consent platforms
-            "summerhamster\\.com", "tagcommander\\.com",
-            "rlcdn\\.com", "admiral\\.com", "ketchcdn\\.com",
-            // Cloudflare — challenges, beacon, insights
-            "cloudflare\\.com", "cloudflareinsights\\.com",
-            "challenges\\.cloudflare\\.com",
-            // Major CDNs
-            "cloudfront\\.net", "akamaihd\\.net", "akamaized\\.net",
-            "fastly\\.net",
-            "bootstrapcdn\\.com", "jsdelivr\\.net",
-        ]
-        for pattern in consentExceptions {
-            rules.append([
-                "trigger": ["url-filter": pattern],
-                "action": ["type": "ignore-previous-rules"]
-            ])
+        for domain in AdBlockRuleBuilder.alwaysAllowedDomains {
+            rules.append(AdBlockRuleBuilder.exceptionRule(for: domain))
         }
         // Never block Cloudflare internal paths (/cdn-cgi/)
-        rules.append([
-            "trigger": ["url-filter": "/cdn-cgi/"],
-            "action": ["type": "ignore-previous-rules"]
-        ])
+        rules.append(AdBlockRuleBuilder.cdnCGIExceptionRule())
 
         guard let data = try? JSONSerialization.data(withJSONObject: rules, options: []),
               let json = String(data: data, encoding: .utf8) else {

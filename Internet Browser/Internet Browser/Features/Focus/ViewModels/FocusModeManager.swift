@@ -111,17 +111,17 @@ final class FocusModeManager {
 
     func isDomainBlocked(_ host: String) -> Bool {
         guard focusModeEnabled else { return false }
-        let lowerHost = host.lowercased()
+        let lowerHost = HostNormalizer.foldedASCII(host)
         let now = Date()
         overrideExpiries = overrideExpiries.filter { $0.value > now }
         // Check temporary override (matches exact host or any subdomain)
         for (overrideDomain, expiry) in overrideExpiries {
-            if expiry > now && (lowerHost == overrideDomain || lowerHost.hasSuffix(".\(overrideDomain)")) {
+            if expiry > now && HostNormalizer.hostMatches(lowerHost, rule: overrideDomain) {
                 return false
             }
         }
         return blockedDomains.contains { blocked in
-            lowerHost == blocked || lowerHost.hasSuffix(".\(blocked)")
+            HostNormalizer.hostMatches(lowerHost, rule: blocked)
         }
     }
 
@@ -131,17 +131,11 @@ final class FocusModeManager {
         overrideExpiries[base] = Date().addingTimeInterval(Double(minutes) * 60)
     }
 
+    /// Turns whatever the user typed (or a live host) into the bare host the
+    /// blocklist stores. Delegates to the shared normalizer so Focus Mode,
+    /// the ad-block whitelist, and saved-password matching agree on what a
+    /// host is — and so none of them fold case with the user's locale.
     func cleanDomain(_ input: String) -> String {
-        var domain = input.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        if let range = domain.range(of: "://") {
-            domain = String(domain[range.upperBound...])
-        }
-        if let slashIdx = domain.firstIndex(of: "/") {
-            domain = String(domain[..<slashIdx])
-        }
-        if domain.hasPrefix("www.") {
-            domain = String(domain.dropFirst(4))
-        }
-        return domain
+        HostNormalizer.normalizedHost(input)
     }
 }

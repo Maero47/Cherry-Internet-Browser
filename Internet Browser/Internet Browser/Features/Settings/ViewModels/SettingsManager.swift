@@ -13,6 +13,16 @@ enum CookieBlockingLevel: String, CaseIterable, Identifiable {
     case all = "Block All"
 
     var id: String { rawValue }
+
+    /// What the picker shows. Separate from `rawValue`, which is the
+    /// persisted key and must not change.
+    var displayName: String {
+        switch self {
+        case .none: "Allow All Cookies"
+        case .thirdParty: "Block Third-Party Cookies"
+        case .all: "Block All Cookies"
+        }
+    }
 }
 
 enum AppearanceMode: String, CaseIterable, Identifiable {
@@ -269,19 +279,29 @@ final class SettingsManager {
     }
 
     func isAdBlockPaused(for url: URL?) -> Bool {
-        guard let host = url?.host?.lowercased() else { return false }
-        // Check both the full host and the base domain (e.g. www.example.com → example.com)
-        let baseDomain = host.components(separatedBy: ".").suffix(2).joined(separator: ".")
-        return adBlockWhitelistedDomains.contains(host) || adBlockWhitelistedDomains.contains(baseDomain)
+        guard let rawHost = url?.host else { return false }
+        let host = HostNormalizer.normalizedHost(rawHost)
+        guard !host.isEmpty else { return false }
+        // A whitelist entry covers itself and its subdomains, on a dot
+        // boundary. Never a "last two labels" base domain — for hosts under a
+        // multi-label public suffix that base is `co.uk`, which used to switch
+        // the blocker off for every UK site at once.
+        return adBlockWhitelistedDomains.contains { HostNormalizer.hostMatches(host, rule: $0) }
     }
 
     func toggleAdBlockPause(for url: URL?) {
-        guard let host = url?.host?.lowercased() else { return }
-        let baseDomain = host.components(separatedBy: ".").suffix(2).joined(separator: ".")
-        if adBlockWhitelistedDomains.contains(baseDomain) {
-            adBlockWhitelistedDomains.remove(baseDomain)
+        guard let rawHost = url?.host else { return }
+        let host = HostNormalizer.normalizedHost(rawHost)
+        guard !host.isEmpty else { return }
+
+        let matching = adBlockWhitelistedDomains.filter { HostNormalizer.hostMatches(host, rule: $0) }
+        if !matching.isEmpty {
+            // Un-pausing drops every entry that covers this host, including a
+            // too-broad one left behind by an older build.
+            adBlockWhitelistedDomains.subtract(matching)
         } else {
-            adBlockWhitelistedDomains.insert(baseDomain)
+            let base = HostNormalizer.baseDomain(host)
+            adBlockWhitelistedDomains.insert(HostNormalizer.isRegistrable(base) ? base : host)
         }
     }
 
@@ -296,8 +316,11 @@ final class SettingsManager {
         didSet { UserDefaults.standard.set(httpsOnlyMode, forKey: Keys.httpsOnlyMode) }
     }
 
-    var sendDoNotTrack: Bool {
-        didSet { UserDefaults.standard.set(sendDoNotTrack, forKey: Keys.sendDoNotTrack) }
+    /// Exposes `navigator.globalPrivacyControl` (and a truthful
+    /// `navigator.doNotTrack`) to every page. Replaces a "Send Do Not Track
+    /// Header" switch that nothing read — see `PrivacySignalScripts`.
+    var sendGlobalPrivacyControl: Bool {
+        didSet { UserDefaults.standard.set(sendGlobalPrivacyControl, forKey: Keys.sendGlobalPrivacyControl) }
     }
 
     var enableJavaScript: Bool {
@@ -384,7 +407,15 @@ final class SettingsManager {
         // Privacy
         self.adBlockEnabled = defaults.object(forKey: Keys.adBlockEnabled) as? Bool ?? true
         let savedDomains = defaults.stringArray(forKey: Keys.adBlockWhitelistedDomains) ?? []
-        self.adBlockWhitelistedDomains = Set(savedDomains)
+        // Drop entries that aren't registrable domains. Older builds derived
+        // the entry with "last two labels", so a user who paused the blocker
+        // on bbc.co.uk has `co.uk` stored — which silently disables blocking
+        // on every .co.uk site until it's removed.
+        self.adBlockWhitelistedDomains = Set(
+            savedDomains
+                .map(HostNormalizer.normalizedHost)
+                .filter(HostNormalizer.isRegistrable)
+        )
 
         if let cookieRaw = defaults.string(forKey: Keys.blockCookies),
            let level = CookieBlockingLevel(rawValue: cookieRaw) {
@@ -394,7 +425,10 @@ final class SettingsManager {
         }
 
         self.httpsOnlyMode = defaults.bool(forKey: Keys.httpsOnlyMode)
-        self.sendDoNotTrack = defaults.bool(forKey: Keys.sendDoNotTrack)
+        // Carry over whatever the user chose for the old (inert) Do Not Track
+        // switch rather than silently turning the replacement signal off.
+        self.sendGlobalPrivacyControl = defaults.object(forKey: Keys.sendGlobalPrivacyControl) as? Bool
+            ?? defaults.bool(forKey: Keys.legacySendDoNotTrack)
         self.enableJavaScript = defaults.object(forKey: Keys.enableJavaScript) as? Bool ?? true
         self.blockPopups = defaults.object(forKey: Keys.blockPopups) as? Bool ?? true
 
@@ -407,19 +441,32 @@ final class SettingsManager {
         self.tabSleepEnabled = defaults.object(forKey: Keys.tabSleepEnabled) as? Bool ?? true
         self.tabSleepTimeout = defaults.object(forKey: Keys.tabSleepTimeout) as? Int ?? 30
         self.restorePreviousSession = defaults.object(forKey: Keys.restorePreviousSession) as? Bool ?? true
+
+        // Re-apply the persisted cookie policy at launch. It used to run only
+        // from `blockCookies.didSet`, so a policy chosen in an earlier session
+        // was never in force again until the user re-picked it.
+        applyCookiePolicy()
     }
 
     // MARK: - Cookie Policy
 
     func applyCookiePolicy() {
+        // The part that actually reaches page loads: a WKContentRuleList with
+        // a block-cookies action. `HTTPCookieStorage` below is NOT that — it
+        // governs the app's own URLSession traffic (favicon fetches, filter
+        // list downloads, search suggestions) and is ignored by WKWebView.
+        let level = blockCookies
+        Task { @MainActor in
+            CookiePolicyManager.shared.updatePolicy(level)
+        }
+
         let policy: HTTPCookie.AcceptPolicy
-        switch blockCookies {
+        switch level {
         case .none: policy = .always
         case .thirdParty: policy = .onlyFromMainDocumentDomain
         case .all: policy = .never
         }
         HTTPCookieStorage.shared.cookieAcceptPolicy = policy
-        WKWebsiteDataStore.default().httpCookieStore.getAllCookies { _ in }
     }
 
     // MARK: - Clear Data
@@ -435,16 +482,27 @@ final class SettingsManager {
             }
         }
 
+        // Split every type WebKit knows about between the two switches, rather
+        // than naming a handful by hand. The old list left behind exactly the
+        // stores that survive longest and identify a user best: IndexedDB,
+        // Service Worker registrations, WebSQL and the fetch cache.
+        let allTypes = WKWebsiteDataStore.allWebsiteDataTypes()
+        let cacheTypes: Set<String> = allTypes.intersection([
+            WKWebsiteDataTypeDiskCache,
+            WKWebsiteDataTypeMemoryCache,
+            WKWebsiteDataTypeOfflineWebApplicationCache,
+            WKWebsiteDataTypeFetchCache,
+        ])
+
         var dataTypes: Set<String> = []
         if cookies {
-            dataTypes.insert(WKWebsiteDataTypeCookies)
-            dataTypes.insert(WKWebsiteDataTypeLocalStorage)
-            dataTypes.insert(WKWebsiteDataTypeSessionStorage)
+            // Everything that isn't a cache is site data: cookies, local and
+            // session storage, IndexedDB, WebSQL, service workers, and any
+            // type a future WebKit adds.
+            dataTypes.formUnion(allTypes.subtracting(cacheTypes))
         }
         if cache {
-            dataTypes.insert(WKWebsiteDataTypeDiskCache)
-            dataTypes.insert(WKWebsiteDataTypeMemoryCache)
-            dataTypes.insert(WKWebsiteDataTypeOfflineWebApplicationCache)
+            dataTypes.formUnion(cacheTypes)
         }
 
         if !dataTypes.isEmpty {
@@ -467,7 +525,10 @@ final class SettingsManager {
         static let verticalTabBarCollapsed = "verticalTabBarCollapsed"
         static let blockCookies = "blockCookies"
         static let httpsOnlyMode = "httpsOnlyMode"
-        static let sendDoNotTrack = "sendDoNotTrack"
+        static let sendGlobalPrivacyControl = "sendGlobalPrivacyControl"
+        /// The old, never-implemented Do Not Track switch; read once to seed
+        /// `sendGlobalPrivacyControl`.
+        static let legacySendDoNotTrack = "sendDoNotTrack"
         static let enableJavaScript = "enableJavaScript"
         static let blockPopups = "blockPopups"
         static let tabSleepEnabled = "tabSleepEnabled"

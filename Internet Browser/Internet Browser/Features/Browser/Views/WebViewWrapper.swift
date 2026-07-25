@@ -247,6 +247,10 @@ struct WebViewWrapper: NSViewRepresentable {
             adBlocker.applyCosmeticRules(to: configuration)
         }
 
+        // Cookie policy: a block-cookies content rule list, the only cookie
+        // control WKWebView actually honours.
+        CookiePolicyManager.shared.apply(to: configuration)
+
         // Core page plumbing (password autofill, devtools bridges, per-frame
         // mute) — shared with the adopted-webview path in makeNSView.
         Self.installCoreUserContent(
@@ -379,6 +383,16 @@ struct WebViewWrapper: NSViewRepresentable {
             forMainFrameOnly: true
         ))
 
+        // Global Privacy Control: a document-start property on `navigator`,
+        // in every frame, so third-party scripts see the signal too.
+        if SettingsManager.shared.sendGlobalPrivacyControl {
+            controller.addUserScript(WKUserScript(
+                source: PrivacySignalScripts.globalPrivacyControlScript,
+                injectionTime: .atDocumentStart,
+                forMainFrameOnly: false
+            ))
+        }
+
         // Tab mute: install the media-muting observer into every frame on
         // each page load. The tab's current mute state is baked into the
         // script so cross-origin iframes (which evaluateJavaScript cannot
@@ -410,6 +424,9 @@ struct WebViewWrapper: NSViewRepresentable {
         var displayedPDFURL: URL?
         /// Tracks whether cosmetic ad blocking is currently active for this web view
         var cosmeticAdBlockEnabled: Bool = false
+        /// Cookie policy this web view's rule lists were built for, so a change
+        /// in Settings can be detected and re-applied to a live tab.
+        var appliedCookiePolicy: CookieBlockingLevel = SettingsManager.shared.blockCookies
         private var observations: [NSKeyValueObservation] = []
         private var progressThrottleTask: Task<Void, Never>?
         private var settingsObservation: (any NSObjectProtocol)?
@@ -438,31 +455,54 @@ struct WebViewWrapper: NSViewRepresentable {
             }
         }
 
-        /// Called when UserDefaults change — check if ad block state differs and toggle cosmetic filtering
+        /// Called when UserDefaults change — re-apply the privacy settings that
+        /// have to reach web views that already exist.
         private func checkAdBlockStateChanged() {
             guard let webView else { return }
             let settings = SettingsManager.shared
             let shouldBeEnabled = settings.adBlockEnabled && !settings.isAdBlockPaused(for: tab?.url)
+            let cookiePolicy = settings.blockCookies
 
-            if shouldBeEnabled != cosmeticAdBlockEnabled {
-                cosmeticAdBlockEnabled = shouldBeEnabled
-                if shouldBeEnabled {
-                    // Re-enable: inject CSS + JS on the current page
-                    webView.evaluateJavaScript(AdBlockManager.cosmeticEnableJS(), completionHandler: nil)
-                    // Add scripts back to the controller for future navigations
-                    AdBlockManager.shared.applyCosmeticRules(to: webView.configuration)
-                } else {
-                    // Disable: remove style tag, disconnect observer, unhide elements on current page
-                    webView.evaluateJavaScript(AdBlockManager.cosmeticDisableJS(), completionHandler: nil)
-                    // Remove all user scripts so future navigations don't re-inject.
-                    // WKUserContentController can only remove scripts wholesale,
-                    // which also wipes the password autofill and devtools scripts —
-                    // reinstall those or they stay broken until the tab is recreated.
-                    let controller = webView.configuration.userContentController
-                    controller.removeAllUserScripts()
-                    reinstallCoreUserScripts(on: controller)
-                }
+            let adBlockChanged = shouldBeEnabled != cosmeticAdBlockEnabled
+            let cookiePolicyChanged = cookiePolicy != appliedCookiePolicy
+            guard adBlockChanged || cookiePolicyChanged else { return }
+
+            cosmeticAdBlockEnabled = shouldBeEnabled
+            appliedCookiePolicy = cookiePolicy
+
+            // Network-level rules. Turning "Block Ads & Trackers" off used to
+            // toggle only the cosmetic CSS/JS, leaving the compiled block
+            // rules attached — the switch said off while the blocker kept
+            // blocking. Rule lists can only be removed wholesale, so rebuild
+            // the full set, exactly as the per-site pause does.
+            let controller = webView.configuration.userContentController
+            controller.removeAllContentRuleLists()
+            if shouldBeEnabled, AdBlockManager.shared.rulesReady {
+                AdBlockManager.shared.applyRules(to: webView.configuration)
             }
+            CookiePolicyManager.shared.apply(to: webView.configuration)
+
+            guard adBlockChanged else { return }
+
+            if shouldBeEnabled {
+                // Re-enable: inject CSS + JS on the current page
+                webView.evaluateJavaScript(AdBlockManager.cosmeticEnableJS(), completionHandler: nil)
+                // Add scripts back to the controller for future navigations
+                AdBlockManager.shared.applyCosmeticRules(to: webView.configuration)
+            } else {
+                // Disable: remove style tag, disconnect observer, unhide elements on current page
+                webView.evaluateJavaScript(AdBlockManager.cosmeticDisableJS(), completionHandler: nil)
+                // Remove all user scripts so future navigations don't re-inject.
+                // WKUserContentController can only remove scripts wholesale,
+                // which also wipes the password autofill and devtools scripts —
+                // reinstall those or they stay broken until the tab is recreated.
+                controller.removeAllUserScripts()
+                reinstallCoreUserScripts(on: controller)
+            }
+
+            // The page in front of the user was loaded under the old rules;
+            // reload so what it shows matches what the switch now says.
+            Task { @MainActor in self.tab?.reload() }
         }
 
         /// Re-adds the always-on user scripts (password autofill, devtools
@@ -640,6 +680,20 @@ struct WebViewWrapper: NSViewRepresentable {
             tab?.isLoading = false
         }
 
+        /// WebKit prefers this overload when it exists, which is the point: it
+        /// is the only hook that can push the "Enable JavaScript" setting into
+        /// a web view that already exists. Read at construction time only, the
+        /// setting silently kept its old value in every open tab.
+        func webView(
+            _ webView: WKWebView,
+            decidePolicyFor navigationAction: WKNavigationAction,
+            preferences: WKWebpagePreferences
+        ) async -> (WKNavigationActionPolicy, WKWebpagePreferences) {
+            preferences.allowsContentJavaScript = SettingsManager.shared.enableJavaScript
+            let policy = await self.webView(webView, decidePolicyFor: navigationAction)
+            return (policy, preferences)
+        }
+
         func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction) async -> WKNavigationActionPolicy {
             guard let url = navigationAction.request.url else { return .allow }
 
@@ -763,6 +817,10 @@ struct WebViewWrapper: NSViewRepresentable {
         private static var saveDestinations: [Int: URL] = [:]
 
         func download(_ download: WKDownload, decideDestinationUsing response: URLResponse, suggestedFilename: String, completionHandler: @escaping (URL?) -> Void) {
+            // Read the tab's private flag now, not inside the panel callback:
+            // `tab` is weak and the tab can be gone by the time the user picks
+            // a location, and a nil tab must never default to "not private".
+            let isPrivate = tab?.isPrivate ?? true
             let panel = NSSavePanel()
             panel.nameFieldStringValue = suggestedFilename
             panel.directoryURL = SettingsManager.shared.downloadDirectoryURL
@@ -777,7 +835,12 @@ struct WebViewWrapper: NSViewRepresentable {
 
                 let manager = DownloadManager.shared
                 let sourceURL = download.originalRequest?.url ?? response.url
-                manager.startDownload(download, suggestedFilename: saveURL.lastPathComponent, sourceURL: sourceURL)
+                manager.startDownload(
+                    download,
+                    suggestedFilename: saveURL.lastPathComponent,
+                    sourceURL: sourceURL,
+                    isPrivate: isPrivate
+                )
 
                 let tempDir = FileManager.default.temporaryDirectory
                 let tempFile = tempDir.appendingPathComponent(UUID().uuidString + "_" + saveURL.lastPathComponent)
@@ -799,6 +862,7 @@ struct WebViewWrapper: NSViewRepresentable {
                             try FileManager.default.removeItem(at: saveURL)
                         }
                         try FileManager.default.moveItem(at: tempFile, to: saveURL)
+                        DownloadQuarantine.apply(to: saveURL, sourceURL: download.originalRequest?.url)
                         DownloadRepository.shared.completeDownload(id: itemID, filePath: saveURL.path)
                         manager.downloadDidCleanup(id: itemID)
                     } catch {
@@ -1049,23 +1113,40 @@ struct WebViewWrapper: NSViewRepresentable {
 
             guard let body = message.body as? [String: Any] else { return }
 
+            // Everything below is main-frame-only. `forMainFrameOnly: true` on
+            // the injected scripts does NOT restrict the handlers: a
+            // WKUserContentController message handler is reachable from every
+            // frame in the page, including a cross-origin ad iframe, which can
+            // post whatever it likes to `cherryPasswordDetect`.
+            guard message.frameInfo.isMainFrame else { return }
+
             switch message.name {
             case "cherryPasswordDetect":
+                // The origin comes from WebKit's own record of the frame, never
+                // from `body["url"]` — that value is written by page script, so
+                // a page could claim to be accounts.google.com and be offered
+                // (one click from filling) the real Google credentials.
                 if body["type"] as? String == "loginFormDetected",
-                   let urlString = body["url"] as? String,
-                   let url = URL(string: urlString) {
+                   let url = Self.trustedOrigin(of: message) {
                     Task { @MainActor in
                         PasswordManager.shared.onLoginFormDetected(url: url)
                     }
                 }
             case "cherryPasswordCapture":
+                // Same rule for capture: a page-supplied origin here would
+                // file a credential the user typed on evil.com under a domain
+                // evil.com doesn't own, poisoning later autofill.
                 if body["type"] as? String == "credentialsCaptured",
                    let username = body["username"] as? String,
                    let password = body["password"] as? String,
-                   let url = body["url"] as? String,
+                   let url = Self.trustedOrigin(of: message),
                    !(self.tab?.isPrivate ?? false) {
                     Task { @MainActor in
-                        PasswordManager.shared.onCredentialsCaptured(url: url, username: username, password: password)
+                        PasswordManager.shared.onCredentialsCaptured(
+                            url: url.absoluteString,
+                            username: username,
+                            password: password
+                        )
                     }
                 }
             case "cherryConsole":
@@ -1099,6 +1180,29 @@ struct WebViewWrapper: NSViewRepresentable {
             default:
                 break
             }
+        }
+
+        /// The origin of the frame that sent `message`, taken from state only
+        /// WebKit can set: the frame's security origin, falling back to the
+        /// web view's committed URL. Returns `nil` for anything that isn't a
+        /// normal http(s) page (about:blank, data:, a sandboxed frame with an
+        /// opaque origin), so no credential is ever attributed to it.
+        private static func trustedOrigin(of message: WKScriptMessage) -> URL? {
+            let origin = message.frameInfo.securityOrigin
+            let scheme = HostNormalizer.foldedASCII(origin.protocol)
+            if scheme == "https" || scheme == "http", !origin.host.isEmpty {
+                var components = URLComponents()
+                components.scheme = scheme
+                components.host = origin.host
+                // WKSecurityOrigin reports 0 for the scheme's default port.
+                if origin.port != 0 { components.port = Int(origin.port) }
+                if let url = components.url { return url }
+            }
+            guard let pageURL = message.webView?.url,
+                  let pageScheme = pageURL.scheme.map(HostNormalizer.foldedASCII),
+                  pageScheme == "https" || pageScheme == "http",
+                  pageURL.host?.isEmpty == false else { return nil }
+            return pageURL
         }
 
         // MARK: - Helpers

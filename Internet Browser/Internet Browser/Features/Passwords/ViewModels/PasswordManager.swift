@@ -3,6 +3,7 @@
 //  Cherry Browser
 //
 
+import AppKit
 import Foundation
 import LocalAuthentication
 import Observation
@@ -37,36 +38,76 @@ final class PasswordManager {
         return pendingSaveURL ?? ""
     }
 
-    // Authentication session: once authenticated, stays valid for the entire app session
-    private var isAuthSessionValid: Bool = false
+    /// How long one successful authentication covers further access. A single
+    /// Touch ID at launch used to unlock reveal/copy/edit/autofill for the
+    /// whole process lifetime — `invalidateAuthSession()` had no caller.
+    private static let authSessionDuration: TimeInterval = 5 * 60
 
-    private init() {}
+    /// When the current authentication expires. `nil` means locked.
+    private var authSessionExpiry: Date?
+
+    private var isAuthSessionValid: Bool {
+        guard let expiry = authSessionExpiry else { return false }
+        return expiry > Date()
+    }
+
+    private init() {
+        // Leaving the app, or the machine going to sleep, re-locks the vault:
+        // an unattended Mac must not still be one click from revealing a
+        // secret because someone authenticated ten minutes ago.
+        let center = NotificationCenter.default
+        for name in [NSApplication.didResignActiveNotification, NSApplication.willTerminateNotification] {
+            center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                self?.invalidateAuthSession()
+            }
+        }
+        let workspaceCenter = NSWorkspace.shared.notificationCenter
+        for name in [NSWorkspace.willSleepNotification, NSWorkspace.screensDidSleepNotification,
+                     NSWorkspace.sessionDidResignActiveNotification] {
+            workspaceCenter.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                self?.invalidateAuthSession()
+            }
+        }
+    }
 
     // MARK: - Touch ID
 
-    func authenticateWithTouchID(reason: String, completion: @escaping (Bool) -> Void) {
-        // If recently authenticated, skip the prompt
-        if isAuthSessionValid {
+    /// - Parameter requireFresh: pass `true` for anything that hands the
+    ///   plaintext secret to the user (reveal, copy, edit) — those always
+    ///   prompt, never ride an existing session.
+    func authenticateWithTouchID(
+        reason: String,
+        requireFresh: Bool = false,
+        completion: @escaping (Bool) -> Void
+    ) {
+        if !requireFresh, isAuthSessionValid {
             completion(true)
             return
         }
 
         let context = LAContext()
         context.localizedFallbackTitle = "Use Password"
+        // Never let a prompt satisfy itself from macOS's own recent-auth grace
+        // period when the caller asked for a fresh check.
+        if requireFresh { context.touchIDAuthenticationAllowableReuseDuration = 0 }
         var error: NSError?
 
         // Use deviceOwnerAuthentication which tries Touch ID first, then falls back
-        // to system password if Touch ID fails or is unavailable
+        // to the system password if Touch ID fails or is unavailable.
         guard context.canEvaluatePolicy(.deviceOwnerAuthentication, error: &error) else {
-            // No authentication available at all, allow access
-            completion(true)
+            // FAIL CLOSED. `.deviceOwnerAuthentication` already includes the
+            // device-password fallback, so reaching here means the machine
+            // offers no way to prove who is sitting at it — which is not a
+            // reason to hand over the password vault.
+            print("Password authentication unavailable: \(error?.localizedDescription ?? "unknown reason")")
+            completion(false)
             return
         }
 
         context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: reason) { success, _ in
             DispatchQueue.main.async { [self] in
                 if success {
-                    isAuthSessionValid = true
+                    authSessionExpiry = Date().addingTimeInterval(Self.authSessionDuration)
                 }
                 completion(success)
             }
@@ -75,15 +116,20 @@ final class PasswordManager {
 
     /// Clears the authentication session so next access requires re-authentication
     func invalidateAuthSession() {
-        isAuthSessionValid = false
+        authSessionExpiry = nil
     }
 
     // MARK: - Auto-Fill
 
     func fillCredentials(_ credential: PasswordItem, in webView: WKWebView?) {
         guard let webView else { return }
+        guard Self.credential(credential, matchesLivePageOf: webView) else { return }
 
         let doFill = { [self] in
+            // Re-checked here, not just above: the Touch ID prompt is async and
+            // the page can navigate (or be navigated, by script) while it is up.
+            // This is the last instruction before the secret enters the page.
+            guard Self.credential(credential, matchesLivePageOf: webView) else { return }
             guard let password = repository.fetchPassword(for: credential.id) else { return }
             let js = PasswordAutoFillScripts.autoFillScript(username: credential.username, password: password)
             webView.evaluateJavaScript(js) { _, error in
@@ -101,6 +147,19 @@ final class PasswordManager {
         } else {
             doFill()
         }
+    }
+
+    /// True when the page currently loaded in `webView` really belongs to the
+    /// site the credential was saved for. `webView.url` is WebKit's committed
+    /// main-frame URL — it cannot be forged by page script, unlike the origin
+    /// the detection message used to carry.
+    private static func credential(_ credential: PasswordItem, matchesLivePageOf webView: WKWebView) -> Bool {
+        guard let liveHost = webView.url?.host, !liveHost.isEmpty else { return false }
+        guard let scheme = webView.url?.scheme.map(HostNormalizer.foldedASCII),
+              scheme == "https" || scheme == "http" else { return false }
+        let credentialHost = URL(string: credential.url)?.host ?? credential.url
+        guard !credentialHost.isEmpty else { return false }
+        return HostNormalizer.hostsAreRelated(liveHost, credentialHost)
     }
 
     // MARK: - Page Events

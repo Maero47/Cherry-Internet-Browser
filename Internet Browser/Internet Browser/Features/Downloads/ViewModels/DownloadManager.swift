@@ -63,9 +63,16 @@ final class DownloadManager: NSObject {
 
     // MARK: - Start Download
 
-    func startDownload(_ download: WKDownload, suggestedFilename: String, sourceURL: URL?) {
+    /// - Parameter isPrivate: the download was started from a private window.
+    ///   Its source URL is then never written to Core Data — history already
+    ///   guards private tabs this way, downloads did not, which quietly left a
+    ///   permanent record of every private-window download on disk. The item
+    ///   still shows up in the sidebar and the toast for this session.
+    func startDownload(_ download: WKDownload, suggestedFilename: String, sourceURL: URL?, isPrivate: Bool) {
         let url = sourceURL ?? URL(string: "about:blank")!
-        let item = repository.addDownload(url: url, filename: suggestedFilename)
+        let item = isPrivate
+            ? repository.addEphemeralDownload(url: url, filename: suggestedFilename)
+            : repository.addDownload(url: url, filename: suggestedFilename)
 
         activeDownloads[item.id] = download
         progressMap[item.id] = (0, 0)
@@ -134,6 +141,23 @@ final class DownloadManager: NSObject {
         guard let item = repository.downloads.first(where: { $0.id == id }),
               let filePath = item.filePath else { return }
         let url = URL(fileURLWithPath: filePath)
+
+        // An installer or executable is one double-click away in the downloads
+        // sidebar. Confirm before handing it to LaunchServices — Gatekeeper's
+        // own prompt doesn't cover every one of these types.
+        if DownloadQuarantine.isRisky(url) {
+            let alert = NSAlert()
+            alert.messageText = "Open “\(item.filename)”?"
+            alert.informativeText = """
+            This file can run programs on your Mac. It was downloaded from \
+            \(item.url.host ?? item.url.absoluteString). Only open it if you trust that source.
+            """
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: "Open")
+            alert.addButton(withTitle: "Cancel")
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+        }
+
         NSWorkspace.shared.open(url)
     }
 
@@ -164,9 +188,11 @@ final class DownloadManager: NSObject {
 
     func downloadDidFinish(id: UUID, at location: URL, finalFilename: String) {
         let destination = uniqueDestination(for: finalFilename)
+        let sourceURL = repository.downloads.first(where: { $0.id == id })?.url
 
         do {
             try FileManager.default.moveItem(at: location, to: destination)
+            DownloadQuarantine.apply(to: destination, sourceURL: sourceURL)
             repository.completeDownload(id: id, filePath: destination.path)
         } catch {
             print("Failed to move downloaded file: \(error)")

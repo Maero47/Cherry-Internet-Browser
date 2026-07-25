@@ -44,13 +44,17 @@ struct PrivacySettingsView: View {
             }
 
             SettingsCard(icon: "globe", title: "Web Content") {
-                SettingsToggleRow(title: "Enable JavaScript", isOn: $settings.enableJavaScript)
+                SettingsToggleRow(
+                    title: "Enable JavaScript",
+                    subtitle: "Open pages keep running their scripts until you reload them.",
+                    isOn: $settings.enableJavaScript
+                )
 
                 Divider()
 
                 SettingsToggleRow(
-                    title: "HTTPS-Only Mode",
-                    subtitle: "Automatically upgrades connections to HTTPS when available.",
+                    title: "Upgrade Known Sites to HTTPS",
+                    subtitle: "Uses WebKit's list of HTTPS-capable sites to upgrade http:// links to those sites. Other http:// addresses still load unencrypted.",
                     isOn: $settings.httpsOnlyMode
                 )
 
@@ -63,11 +67,15 @@ struct PrivacySettingsView: View {
                 )
             }
 
-            SettingsCard(icon: "cylinder.split.1x2", title: "Cookies") {
+            SettingsCard(
+                icon: "cylinder.split.1x2",
+                title: "Cookies",
+                subtitle: "Cookies are stripped from network requests. A page's own scripts can still keep cookies for as long as that page is open. Applies to pages loaded after the change."
+            ) {
                 SettingsLabeledRow(title: "Cookie Policy") {
                     Picker("", selection: $settings.blockCookies) {
                         ForEach(CookieBlockingLevel.allCases) { level in
-                            Text(level.rawValue).tag(level)
+                            Text(level.displayName).tag(level)
                         }
                     }
                     .labelsHidden()
@@ -78,16 +86,16 @@ struct PrivacySettingsView: View {
 
             SettingsCard(icon: "eye.slash", title: "Tracking") {
                 SettingsToggleRow(
-                    title: "Send Do Not Track Header",
-                    subtitle: "Requests that websites do not track your browsing activity. Websites may choose to ignore this.",
-                    isOn: $settings.sendDoNotTrack
+                    title: "Send Global Privacy Control Signal",
+                    subtitle: "Tells every site you do not consent to having your data sold or shared, via navigator.globalPrivacyControl. Legally binding on sites covered by the CCPA and similar laws; others may ignore it. Applies to pages loaded after the change.",
+                    isOn: $settings.sendGlobalPrivacyControl
                 )
             }
 
             SettingsCard(icon: "trash", title: "Data") {
                 SettingsLabeledRow(
                     title: "Browsing Data",
-                    subtitle: "Remove history, cookies, and caches."
+                    subtitle: "Remove history, cookies, site storage (including IndexedDB and service workers), and caches."
                 ) {
                     Button("Clear Browsing Data...") {
                         showClearData = true
