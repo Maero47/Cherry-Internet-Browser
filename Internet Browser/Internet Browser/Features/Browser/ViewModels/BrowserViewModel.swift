@@ -98,6 +98,16 @@ final class BrowserViewModel {
     var askThisPageTitle: String = ""
     var askThisPageText: String = ""
 
+    // MARK: - Address Bar Focus
+    /// Bumped by the "Focus Address Bar" (⌘L) command. `BrowserContentView`
+    /// watches it and forwards to its omnibox only when its pane is focused,
+    /// so exactly one address bar takes focus in split view.
+    private(set) var focusAddressBarTrigger: Int = 0
+
+    func focusAddressBar() {
+        focusAddressBarTrigger &+= 1
+    }
+
     // Keep strong references to detached windows and their delegates
     static var detachedWindows: [NSWindow] = []
     static var detachedWindowDelegates: [DetachedWindowDelegate] = []
@@ -246,6 +256,32 @@ final class BrowserViewModel {
         tab.reload()
     }
 
+    // MARK: - Zoom
+
+    /// The zoom steps ⌘+ / ⌘- walk through, matching Chrome's ladder.
+    /// `PageZoom.step(from:direction:)` owns the arithmetic so it can be
+    /// unit-tested without a web view.
+    func zoomIn(for tab: Tab?) {
+        applyZoom(PageZoom.step(from: currentZoom(for: tab), direction: 1), to: tab)
+    }
+
+    func zoomOut(for tab: Tab?) {
+        applyZoom(PageZoom.step(from: currentZoom(for: tab), direction: -1), to: tab)
+    }
+
+    func resetZoom(for tab: Tab?) {
+        applyZoom(PageZoom.defaultLevel, to: tab)
+    }
+
+    private func currentZoom(for tab: Tab?) -> Double {
+        guard let webView = tab?.webView else { return PageZoom.defaultLevel }
+        return webView.pageZoom
+    }
+
+    private func applyZoom(_ level: Double, to tab: Tab?) {
+        tab?.webView?.pageZoom = level
+    }
+
     func stopLoading() {
         currentTab?.stopLoading()
     }
@@ -258,10 +294,13 @@ final class BrowserViewModel {
         goHome(for: tabManager.focusedTab)
     }
 
-    /// Takes a specific pane's tab to the home page IN PLACE (like `goBack(for:)`
-    /// acts on that tab), rather than spawning a new primary tab — so clicking
-    /// Home in the secondary split pane returns THAT pane to the home page
-    /// instead of creating an unrelated tab in the primary pane.
+    /// Takes a specific pane's tab home IN PLACE (like `goBack(for:)` acts on
+    /// that tab), rather than spawning a new primary tab — so clicking Home in
+    /// the secondary split pane returns THAT pane home instead of creating an
+    /// unrelated tab in the primary pane.
+    ///
+    /// "Home" is Cherry's new-tab page by default; setting a custom homepage in
+    /// General settings (`HomepagePreference`) sends it to that URL instead.
     func goHome(for tab: Tab?) {
         guard let tab else { return }
         // Release the old page like closeTab does, so its audio/JS/timers stop
@@ -283,7 +322,14 @@ final class BrowserViewModel {
         tab.loadingProgress = 0
         tab.showSettingsPage = false
         tab.internalPage = nil
-        tab.showHomePage = true
+
+        if let homepage = HomepagePreference.shared.homepageURL {
+            tab.showHomePage = false
+            tab.title = homepage.host ?? "Loading..."
+            tab.loadURL(homepage)
+        } else {
+            tab.showHomePage = true
+        }
     }
 
     // MARK: - Internal cherry:// Pages
@@ -641,35 +687,11 @@ final class BrowserViewModel {
         if tabManager.secondarySelectedTabID == tab.id { tabManager.secondarySelectedTabID = fresh.id }
     }
 
+    /// Used by the command palette. File ▸ New Incognito Window (⌘⇧N) calls
+    /// `openBrowserWindow(isPrivate:)` directly, because it has to work with no
+    /// browser window open at all — this is the same single implementation.
     func openPrivateWindow() {
-        let newBrowserView = BrowserView(isPrivate: true)
-        let hostingView = NSHostingView(rootView: newBrowserView)
-
-        let window = DetachedWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 1000, height: 700),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
-            backing: .buffered,
-            defer: false
-        )
-        window.contentView = hostingView
-        window.titlebarAppearsTransparent = true
-        window.titleVisibility = .hidden
-        window.isMovableByWindowBackground = false
-        window.isMovable = false
-        window.backgroundColor = .windowBackgroundColor
-        window.titlebarSeparatorStyle = .none
-        window.title = "Private Browsing"
-
-        // Use the shared delegate for close cleanup like every other detached
-        // window. The previous block-based observer's token was discarded, so
-        // the observation could never be removed and leaked per private window.
-        let delegate = DetachedWindowDelegate()
-        window.delegate = delegate
-        BrowserViewModel.detachedWindows.append(window)
-        BrowserViewModel.detachedWindowDelegates.append(delegate)
-
-        window.center()
-        window.makeKeyAndOrderFront(nil)
+        openBrowserWindow(isPrivate: true)
     }
 
     // MARK: - Vertical Tabs
@@ -722,6 +744,20 @@ final class BrowserViewModel {
     func openBookmark(_ bookmark: Bookmark, in tab: Tab) {
         tab.loadURL(bookmark.url)
         bookmarkRepository.incrementVisitCount(for: bookmark)
+    }
+
+    /// "Open in New Tab" / ⌘-click / middle-click on a bookmark. Opens in the
+    /// BACKGROUND (the current tab keeps focus), like every other browser.
+    func openBookmarkInNewTab(_ bookmark: Bookmark) {
+        openInBackgroundTab(bookmark.url)
+        bookmarkRepository.incrementVisitCount(for: bookmark)
+    }
+
+    /// Shared by the bookmark and history "Open in New Tab" paths.
+    private func openInBackgroundTab(_ url: URL) {
+        let tab = tabManager.newTab(url: url, switchTo: false)
+        tab.isPrivate = isPrivateMode
+        tab.loadURL(url)
     }
 
     // MARK: - Sidebar
@@ -814,6 +850,11 @@ final class BrowserViewModel {
     /// Pane-targeted variant used by the full-page cherry://history view.
     func openHistoryItem(_ item: HistoryItem, in tab: Tab) {
         tab.loadURL(item.url)
+    }
+
+    /// "Open in New Tab" / ⌘-click / middle-click on a history row.
+    func openHistoryItemInNewTab(_ item: HistoryItem) {
+        openInBackgroundTab(item.url)
     }
 
     // MARK: - Find in Page

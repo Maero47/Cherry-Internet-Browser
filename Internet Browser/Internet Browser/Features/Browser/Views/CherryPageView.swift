@@ -27,6 +27,7 @@ struct CherryPageView: View {
                     HistoryView(
                         repository: viewModel.historyRepository,
                         onItemClick: { viewModel.openHistoryItem($0, in: tab) },
+                        onOpenInNewTab: { viewModel.openHistoryItemInNewTab($0) },
                         onClose: { viewModel.goBack(for: tab) }
                     )
                 }
@@ -35,6 +36,7 @@ struct CherryPageView: View {
                     BookmarksSidebarView(
                         repository: viewModel.bookmarkRepository,
                         onBookmarkClick: { viewModel.openBookmark($0, in: tab) },
+                        onOpenInNewTab: { viewModel.openBookmarkInNewTab($0) },
                         onClose: { viewModel.goBack(for: tab) },
                         isPrivateMode: viewModel.isPrivateMode
                     )

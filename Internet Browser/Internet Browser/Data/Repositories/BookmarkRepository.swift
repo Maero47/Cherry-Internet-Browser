@@ -382,6 +382,10 @@ final class BookmarkRepository {
 
     // MARK: - Import/Export
 
+    /// Netscape bookmark HTML — the interchange format Chrome, Firefox, Safari
+    /// and Edge all import. Everything user-supplied (titles, URLs, folder
+    /// names) is HTML-escaped, so a bookmark titled `Fish & <Chips>` round-trips
+    /// instead of producing a file the other browser silently truncates.
     func exportToHTML() -> String {
         var html = """
         <!DOCTYPE NETSCAPE-Bookmark-file-1>
@@ -398,21 +402,36 @@ final class BookmarkRepository {
 
         // Root bookmarks
         for bookmark in rootBookmarks {
-            let timestamp = Int(bookmark.createdAt.timeIntervalSince1970)
-            html += "    <DT><A HREF=\"\(bookmark.url.absoluteString)\" ADD_DATE=\"\(timestamp)\">\(bookmark.title)</A>\n"
+            html += "    " + Self.anchorLine(for: bookmark) + "\n"
         }
 
         // Folder bookmarks
         for (folder, items) in folderGroups.sorted(by: { $0.key < $1.key }) {
-            html += "    <DT><H3>\(folder)</H3>\n    <DL><p>\n"
+            html += "    <DT><H3>\(Self.escapingHTML(folder))</H3>\n    <DL><p>\n"
             for bookmark in items {
-                let timestamp = Int(bookmark.createdAt.timeIntervalSince1970)
-                html += "        <DT><A HREF=\"\(bookmark.url.absoluteString)\" ADD_DATE=\"\(timestamp)\">\(bookmark.title)</A>\n"
+                html += "        " + Self.anchorLine(for: bookmark) + "\n"
             }
             html += "    </DL><p>\n"
         }
 
         html += "</DL><p>\n"
         return html
+    }
+
+    private static func anchorLine(for bookmark: Bookmark) -> String {
+        let timestamp = Int(bookmark.createdAt.timeIntervalSince1970)
+        let href = escapingHTML(bookmark.url.absoluteString)
+        let title = escapingHTML(bookmark.title)
+        return "<DT><A HREF=\"\(href)\" ADD_DATE=\"\(timestamp)\">\(title)</A>"
+    }
+
+    /// Minimal HTML text/attribute escaping. `&` must be replaced first or the
+    /// entities introduced below would be double-escaped.
+    static func escapingHTML(_ text: String) -> String {
+        text
+            .replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
+            .replacingOccurrences(of: "\"", with: "&quot;")
     }
 }

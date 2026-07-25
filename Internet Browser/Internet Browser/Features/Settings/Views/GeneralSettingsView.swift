@@ -9,6 +9,8 @@ import UniformTypeIdentifiers
 
 struct GeneralSettingsView: View {
     @Bindable private var settings = SettingsManager.shared
+    @Bindable private var suggestions = SearchSuggestionsPreference.shared
+    @Bindable private var homepagePreference = HomepagePreference.shared
     private var themeManager: FirefoxThemeManager { .shared }
     private var modelManager: LLMModelManager { .shared }
 
@@ -28,7 +30,19 @@ struct GeneralSettingsView: View {
                     .pickerStyle(.menu)
                     .fixedSize()
                 }
+
+                Divider()
+
+                SettingsToggleRow(
+                    title: "Send Search Suggestions",
+                    subtitle: suggestionsSubtitle,
+                    isOn: $suggestions.isEnabled
+                )
             }
+
+            homepageCard
+
+            exportCard
 
             SettingsCard(
                 icon: "brain",
@@ -236,6 +250,88 @@ struct GeneralSettingsView: View {
                     title: "Restore Previous Session on Launch",
                     isOn: $settings.restorePreviousSession
                 )
+            }
+        }
+    }
+
+    // MARK: - Search suggestions
+
+    /// Names the engine that will receive keystrokes, so "on" is never vague
+    /// about where the typing goes — and says plainly when the chosen engine
+    /// offers no suggestions API rather than silently asking a different one.
+    private var suggestionsSubtitle: String {
+        guard suggestions.isEnabled else {
+            return "Off — nothing you type is sent anywhere. Suggestions come from your history only."
+        }
+        if settings.searchEngine.suggestionsURL == nil {
+            return "\(settings.searchEngine.rawValue) doesn't offer suggestions, so Cherry uses your history only."
+        }
+        return "Sends what you type to \(settings.searchEngine.rawValue) as you type it."
+    }
+
+    // MARK: - Homepage
+
+    /// The Home button's destination. Off by default, because Cherry's own new
+    /// tab page is Home — this is the opt-in for people who want a site there.
+    @ViewBuilder
+    private var homepageCard: some View {
+        SettingsCard(
+            icon: "house",
+            title: "Homepage",
+            subtitle: "Where the Home button goes."
+        ) {
+            SettingsToggleRow(
+                title: "Use a Custom Homepage",
+                subtitle: "Off: Home opens Cherry's new tab page.",
+                isOn: $homepagePreference.useCustomHomepage
+            )
+
+            if homepagePreference.useCustomHomepage {
+                Divider()
+
+                VStack(alignment: .leading, spacing: 6) {
+                    TextField("https://example.com", text: $homepagePreference.homepage)
+                        .textFieldStyle(.roundedBorder)
+
+                    if HomepagePreference.resolve(homepagePreference.homepage) == nil {
+                        Text("Enter a web address — Home falls back to the new tab page until you do.")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.orange)
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: - Export
+
+    @ViewBuilder
+    private var exportCard: some View {
+        SettingsCard(
+            icon: "square.and.arrow.up",
+            title: "Export Your Data",
+            subtitle: "Your data is yours. Take it to any other browser, any time."
+        ) {
+            SettingsLabeledRow(
+                title: "Bookmarks",
+                subtitle: "Netscape HTML — importable by Chrome, Firefox, Safari and Edge."
+            ) {
+                Button("Export…") {
+                    DataExportService.exportBookmarks()
+                }
+                .controlSize(.small)
+            }
+
+            Divider()
+
+            SettingsLabeledRow(
+                title: "History",
+                subtitle: "JSON: address, title, time and visit count for every entry."
+            ) {
+                Button("Export…") {
+                    DataExportService.exportHistory()
+                }
+                .controlSize(.small)
             }
         }
     }

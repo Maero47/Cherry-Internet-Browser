@@ -8,7 +8,6 @@ import UniformTypeIdentifiers
 
 struct BrowserView: View {
     @State private var viewModel: BrowserViewModel
-    @FocusState private var isOmniboxFocused: Bool
     /// Which content-area edge zone (if any) a dragged tab currently hovers,
     /// so the drop indicator bar can be shown/hidden during the drag.
     @State private var dragHoverEdge: Edge? = nil
@@ -142,24 +141,20 @@ struct BrowserView: View {
             .focusable()
             .focusEffectDisabled()
             .onKeyPress(.return) { .ignored }
-            .background { keyboardShortcutButtons }
+            .background { escapeShortcut }
             .onReceive(NotificationCenter.default.publisher(for: NSWindow.willEnterFullScreenNotification)) { _ in
                 viewModel.isFullScreen = true
             }
             .onReceive(NotificationCenter.default.publisher(for: NSWindow.willExitFullScreenNotification)) { _ in
                 viewModel.isFullScreen = false
             }
-            .onReceive(NotificationCenter.default.publisher(for: .showCommandPalette)) { _ in
-                viewModel.showCommandPalette = true
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .showWebInspector)) { _ in
-                viewModel.toggleDevTools()
-            }
             .onReceive(NotificationCenter.default.publisher(for: .showConsole)) { _ in
+                // Not a command: WebViewWrapper posts this from the page's
+                // "Inspect Element" context menu, which is always in the key
+                // window — the guard keeps every OTHER window's dev tools panel
+                // from popping open alongside it.
+                guard isKeyBrowserWindow else { return }
                 viewModel.showDevToolsPanel = true
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .viewSource)) { _ in
-                viewModel.fetchAndShowViewSource()
             }
             .onReceive(NotificationCenter.default.publisher(for: .siteBlocked)) { notification in
                 let host = notification.userInfo?["host"] as? String ?? ""
@@ -188,34 +183,91 @@ struct BrowserView: View {
 
     // MARK: - Extracted Sub-Views
 
-    /// Menu-bar commands arrive as app-wide notifications, so only the key
-    /// window's browser reacts — otherwise every open window would navigate
-    /// its tab to the internal page at once.
+    /// Menu-bar commands are broadcast app-wide, so only the key window's
+    /// browser reacts — otherwise every open window would run the command
+    /// (e.g. navigate its tab to an internal page) at once.
     private var isKeyBrowserWindow: Bool {
         viewModel.associatedWindow === NSApp.keyWindow
     }
 
-    /// Routes the History/Bookmarks/Downloads/Settings menu commands to
-    /// cherry:// navigation in the focused tab. Kept out of
+    /// The one and only place a menu command turns into an action. Kept out of
     /// `configuredLayout` so its modifier chain stays type-checkable.
     private var menuRoutedLayout: some View {
         browserLayout
-            .onReceive(NotificationCenter.default.publisher(for: .showHistory)) { _ in
-                guard isKeyBrowserWindow else { return }
-                viewModel.openInternalPage(.history)
+            .onReceive(NotificationCenter.default.publisher(for: .browserCommand)) { notification in
+                guard isKeyBrowserWindow,
+                      let command = BrowserCommand(notification: notification) else { return }
+                perform(command)
             }
-            .onReceive(NotificationCenter.default.publisher(for: .showBookmarks)) { _ in
-                guard isKeyBrowserWindow else { return }
-                viewModel.openInternalPage(.bookmarks)
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .showDownloads)) { _ in
-                guard isKeyBrowserWindow else { return }
-                viewModel.openInternalPage(.downloads)
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .showSettingsPage)) { _ in
-                guard isKeyBrowserWindow else { return }
-                viewModel.openInternalPage(.settings)
-            }
+    }
+
+    /// Runs a menu command against THIS window. Page-scoped commands act on the
+    /// focused split pane's tab, matching what clicking that pane's own nav-bar
+    /// control does.
+    private func perform(_ command: BrowserCommand) {
+        let focusedTab = viewModel.tabManager.focusedTab
+
+        // Cmd+1…Cmd+9.
+        if let index = command.tabIndex {
+            viewModel.selectTab(at: index)
+            return
+        }
+
+        switch command {
+        // Tabs
+        case .newTab: viewModel.newTab()
+        case .closeTab: viewModel.closeCurrentTab()
+        case .reopenClosedTab: viewModel.reopenClosedTab()
+        case .selectNextTab: viewModel.selectNextTab()
+        case .selectPreviousTab: viewModel.selectPreviousTab()
+        case .searchTabs: viewModel.toggleTabSearch()
+
+        // Navigation
+        case .goBack: if let focusedTab { viewModel.goBack(for: focusedTab) }
+        case .goForward: if let focusedTab { viewModel.goForward(for: focusedTab) }
+        case .reloadPage: if let focusedTab { viewModel.reload(for: focusedTab) }
+        case .stopLoading: if let focusedTab { viewModel.stopLoading(for: focusedTab) }
+
+        // Zoom
+        case .zoomIn: viewModel.zoomIn(for: focusedTab)
+        case .zoomOut: viewModel.zoomOut(for: focusedTab)
+        case .actualSize: viewModel.resetZoom(for: focusedTab)
+
+        // Layout
+        case .toggleBookmarkBar: viewModel.toggleBookmarkBar()
+        case .toggleVerticalTabs: viewModel.toggleVerticalTabs()
+        case .toggleSplitView: viewModel.toggleSplitView()
+        case .focusAddressBar: viewModel.focusAddressBar()
+
+        // Internal pages
+        case .showHistory: viewModel.openInternalPage(.history)
+        case .showBookmarks: viewModel.openInternalPage(.bookmarks)
+        case .showDownloads: viewModel.openInternalPage(.downloads)
+        case .showSettingsPage: viewModel.openInternalPage(.settings)
+        case .addBookmark: viewModel.showAddBookmark = true
+
+        // Find & palette
+        case .findInPage: viewModel.toggleFindInPage()
+        case .showCommandPalette: viewModel.toggleCommandPalette()
+
+        // Tools
+        case .printPage: viewModel.printCurrentPage()
+        case .toggleReaderMode: viewModel.toggleReaderMode()
+        case .captureScreenshot: viewModel.captureScreenshot()
+        case .toggleFocusMode: viewModel.toggleFocusMode()
+        case .askThisPage: viewModel.toggleAskThisPage()
+        case .autoFillPassword: viewModel.autoFillCurrentPage()
+
+        // Develop
+        case .showWebInspector: viewModel.toggleDevTools()
+        case .showConsole: viewModel.showDevToolsPanel = true
+        case .viewSource: viewModel.fetchAndShowViewSource()
+
+        // Handled above.
+        case .selectTab1, .selectTab2, .selectTab3, .selectTab4, .selectTab5,
+             .selectTab6, .selectTab7, .selectTab8, .selectTab9:
+            break
+        }
     }
 
     @ViewBuilder
@@ -421,6 +473,7 @@ struct BrowserView: View {
             HistoryView(
                 repository: viewModel.historyRepository,
                 onItemClick: { viewModel.openHistoryItem($0) },
+                onOpenInNewTab: { viewModel.openHistoryItemInNewTab($0) },
                 onClose: { viewModel.closeSidebar() }
             )
             .frame(minWidth: 300, maxWidth: 300)
@@ -428,6 +481,7 @@ struct BrowserView: View {
             BookmarksSidebarView(
                 repository: viewModel.bookmarkRepository,
                 onBookmarkClick: { viewModel.openBookmark($0) },
+                onOpenInNewTab: { viewModel.openBookmarkInNewTab($0) },
                 onClose: { viewModel.closeSidebar() },
                 isPrivateMode: viewModel.isPrivateMode
             )
@@ -660,150 +714,32 @@ struct BrowserView: View {
         }
     }
 
+    /// The one shortcut that is deliberately NOT a menu command: Escape is a
+    /// dismissal gesture, not an action, so it has no menu representation in
+    /// any browser and nothing to be ambiguous with. Everything else lives in
+    /// the menu bar (see `BrowserCommand`); this is the whole remainder of what
+    /// used to be a ~30-button invisible shortcut layer.
     @ViewBuilder
-    private var keyboardShortcutButtons: some View {
-        Group {
-            // New Tab (Cmd+T)
-            Button("") { viewModel.newTab() }
-                .keyboardShortcut("t", modifiers: .command)
-
-            // Close Tab (Cmd+W)
-            Button("") { viewModel.closeCurrentTab() }
-                .keyboardShortcut("w", modifiers: .command)
-
-            // Reopen Closed Tab (Cmd+Shift+T)
-            Button("") { viewModel.reopenClosedTab() }
-                .keyboardShortcut("t", modifiers: [.command, .shift])
-
-            // Reload (Cmd+R) — acts on the focused split pane's tab
-            Button("") {
-                if let tab = viewModel.tabManager.focusedTab { viewModel.reload(for: tab) }
-            }
-                .keyboardShortcut("r", modifiers: .command)
-
-            // Go Back (Cmd+[) — acts on the focused split pane's tab
-            Button("") {
-                if let tab = viewModel.tabManager.focusedTab { viewModel.goBack(for: tab) }
-            }
-                .keyboardShortcut("[", modifiers: .command)
-
-            // Go Forward (Cmd+]) — acts on the focused split pane's tab
-            Button("") {
-                if let tab = viewModel.tabManager.focusedTab { viewModel.goForward(for: tab) }
-            }
-                .keyboardShortcut("]", modifiers: .command)
-
-            // Toggle Split View (Cmd+Shift+\)
-            Button("") { viewModel.toggleSplitView() }
-                .keyboardShortcut("\\", modifiers: [.command, .shift])
-
-            // Focus Address Bar (Cmd+L)
-            Button("") { isOmniboxFocused = true }
-                .keyboardShortcut("l", modifiers: .command)
-
-            // Add Bookmark (Cmd+D)
-            Button("") { viewModel.showAddBookmark = true }
-                .keyboardShortcut("d", modifiers: .command)
-
-            // History page (Cmd+Y) — cherry://history in the focused tab
-            Button("") { viewModel.openInternalPage(.history) }
-                .keyboardShortcut("y", modifiers: .command)
-
-            // Bookmarks page (Cmd+Shift+B) — cherry://bookmarks in the focused tab
-            Button("") { viewModel.openInternalPage(.bookmarks) }
-                .keyboardShortcut("b", modifiers: [.command, .shift])
-
-            // Toggle Bookmark Bar (Cmd+Option+B)
-            Button("") { viewModel.toggleBookmarkBar() }
-                .keyboardShortcut("b", modifiers: [.command, .option])
-
-            // Next Tab (Ctrl+Tab)
-            Button("") { viewModel.selectNextTab() }
-                .keyboardShortcut(.tab, modifiers: .control)
-
-            // Previous Tab (Ctrl+Shift+Tab)
-            Button("") { viewModel.selectPreviousTab() }
-                .keyboardShortcut(.tab, modifiers: [.control, .shift])
-
-            // Tab Search (Cmd+Shift+A)
-            Button("") { viewModel.toggleTabSearch() }
-                .keyboardShortcut("a", modifiers: [.command, .shift])
-
-            // Toggle Vertical Tabs (Cmd+Option+V)
-            Button("") { viewModel.toggleVerticalTabs() }
-                .keyboardShortcut("v", modifiers: [.command, .option])
-
-            // Downloads page (Cmd+Shift+J) — cherry://downloads in the focused tab
-            Button("") { viewModel.openInternalPage(.downloads) }
-                .keyboardShortcut("j", modifiers: [.command, .shift])
-
-            // Auto-fill Password (Cmd+\)
-            Button("") { viewModel.autoFillCurrentPage() }
-                .keyboardShortcut("\\", modifiers: .command)
-
-            // New Private Window (Cmd+Shift+N)
-            Button("") { viewModel.openPrivateWindow() }
-                .keyboardShortcut("n", modifiers: [.command, .shift])
-
-            // Find in Page (Cmd+F)
-            Button("") { viewModel.toggleFindInPage() }
-                .keyboardShortcut("f", modifiers: .command)
-
-            // Command Palette (Cmd+K)
-            Button("") { viewModel.toggleCommandPalette() }
-                .keyboardShortcut("k", modifiers: .command)
-
-            // Dev Tools (Cmd+Option+I)
-            Button("") { viewModel.toggleDevTools() }
-                .keyboardShortcut("i", modifiers: [.command, .option])
-
-            // JS Console (Cmd+Option+C)
-            Button("") { viewModel.showDevToolsPanel = true }
-                .keyboardShortcut("c", modifiers: [.command, .option])
-
-            // Escape — dismiss in priority order
-            Button("") {
-                if viewModel.showCommandPalette {
-                    viewModel.showCommandPalette = false
-                } else if viewModel.showViewSource {
-                    viewModel.showViewSource = false
-                } else if viewModel.showAskThisPage {
-                    viewModel.showAskThisPage = false
-                } else if viewModel.showDevToolsPanel {
-                    viewModel.showDevToolsPanel = false
-                } else if viewModel.showFindInPage {
-                    viewModel.showFindInPage = false
-                    viewModel.dismissFind()
-                }
-            }
-            .keyboardShortcut(.escape, modifiers: [])
-
-            // Print / Save as PDF (Cmd+P)
-            Button("") { viewModel.printCurrentPage() }
-                .keyboardShortcut("p", modifiers: .command)
-
-            // Reader Mode (Cmd+Shift+R)
-            Button("") { viewModel.toggleReaderMode() }
-                .keyboardShortcut("r", modifiers: [.command, .shift])
-
-            // Focus Mode (Cmd+Shift+F)
-            Button("") { viewModel.toggleFocusMode() }
-                .keyboardShortcut("f", modifiers: [.command, .shift])
-
-            // Ask This Page (Cmd+Shift+K)
-            Button("") { viewModel.toggleAskThisPage() }
-                .keyboardShortcut("k", modifiers: [.command, .shift])
-
-            // Screenshot (Cmd+Shift+4)
-            Button("") { viewModel.captureScreenshot() }
-                .keyboardShortcut("4", modifiers: [.command, .shift])
-
-            // Tab selection 1-9
-            ForEach(1...9, id: \.self) { index in
-                Button("") { viewModel.selectTab(at: index) }
-                    .keyboardShortcut(KeyEquivalent(Character(String(index))), modifiers: .command)
+    private var escapeShortcut: some View {
+        Button("") {
+            if viewModel.showCommandPalette {
+                viewModel.showCommandPalette = false
+            } else if viewModel.showViewSource {
+                viewModel.showViewSource = false
+            } else if viewModel.showAskThisPage {
+                viewModel.showAskThisPage = false
+            } else if viewModel.showDevToolsPanel {
+                viewModel.showDevToolsPanel = false
+            } else if viewModel.showFindInPage {
+                viewModel.showFindInPage = false
+                viewModel.dismissFind()
             }
         }
+        .keyboardShortcut(.escape, modifiers: [])
+        // Hidden from assistive tech on purpose: it's a key handler, not a
+        // control, and each panel Escape closes has its own visible close
+        // button that VoiceOver can reach.
+        .accessibilityHidden(true)
         .frame(width: 0, height: 0)
         .opacity(0)
     }
@@ -850,6 +786,12 @@ struct BrowserContentView: View {
     // Track URL changes to force WebViewWrapper updates
     @State private var urlVersion: Int = 0
 
+    /// Bumped when the window-wide "Focus Address Bar" (⌘L) command fires AND
+    /// this pane is the focused one, so only one omnibox takes focus in split
+    /// view. Forwarding the view model's counter directly would also fire on
+    /// the *unfocused* pane whenever split focus changed.
+    @State private var omniboxFocusTrigger: Int = 0
+
     /// Computed from THIS pane's tab, not `viewModel.currentTab` — so the
     /// bookmark star reflects the right tab even for the unfocused split pane.
     private var isBookmarked: Bool {
@@ -891,7 +833,8 @@ struct BrowserContentView: View {
                     onSavePDF: onSavePDF,
                     onToggleFocusMode: onToggleFocusMode,
                     showExtensionButtons: isFocused,
-                    isVerticalTabBarCollapsed: viewModel.verticalTabBarCollapsed
+                    isVerticalTabBarCollapsed: viewModel.verticalTabBarCollapsed,
+                    focusAddressBarTrigger: omniboxFocusTrigger
                 )
                 .overlay(alignment: .topTrailing) {
                     if viewModel.showAutoFillPopup {
@@ -931,6 +874,7 @@ struct BrowserContentView: View {
                 BookmarkBarView(
                     repository: viewModel.bookmarkRepository,
                     onBookmarkClick: { viewModel.openBookmark($0) },
+                    onOpenInNewTab: { viewModel.openBookmarkInNewTab($0) },
                     isPrivateMode: viewModel.isPrivateMode
                 )
             }
@@ -992,6 +936,10 @@ struct BrowserContentView: View {
         }
         .onChange(of: tab.url) { _, _ in
             urlVersion += 1
+        }
+        .onChange(of: viewModel.focusAddressBarTrigger) { _, _ in
+            guard isFocused else { return }
+            omniboxFocusTrigger += 1
         }
     }
 }
