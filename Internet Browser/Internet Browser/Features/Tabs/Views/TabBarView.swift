@@ -22,6 +22,9 @@ struct TabBarView: View {
     @State private var draggingTabID: UUID? = nil
     /// Reference X position (global) used to compute cross-boundary reorders
     @State private var lastReorderX: CGFloat = 0
+    /// Token of the drag session this bar opened on `TabManager`, so the
+    /// deferred cleanup can only ever clear its OWN session (see `finishDrag`).
+    @State private var dragToken: Int = 0
 
     /// Tear-off ghost state — when the tab is dragged out of the bar it floats freely
     @State private var isTearingOff: Bool = false
@@ -107,6 +110,10 @@ struct TabBarView: View {
                         .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(.secondary)
                         .frame(width: 28, height: 28)
+                        // Without an explicit content shape the plain button's
+                        // hit region is only the glyph itself, so clicks in the
+                        // empty part of the 28×28 slot did nothing.
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .help("New Tab (Cmd+T)")
@@ -187,10 +194,15 @@ struct TabBarView: View {
         .animation(.spring(response: 0.15, dampingFraction: 0.85), value: isDragging)
         // The tear-off ghost is a real NSWindow (see `ghostWindow` below) so it can
         // render outside this window's bounds — a SwiftUI overlay would be clipped to it.
-        // DragGesture fires immediately (2 px threshold) — Chrome-like real-time reorder.
+        // The gesture starts once the pointer has travelled `dragActivationDistance`
+        // (Chrome-like) and then reorders in real time. It used to start after 2 px:
+        // a physical mouse slides that far during an ordinary click, so the drag
+        // recognised mid-click and could cancel the tab's tap — the click was simply
+        // lost. Above the threshold the press is unambiguously a drag, and the tab
+        // item's click handling stands down for exactly the same distance.
         // Vertical drag > 30 pt switches to free "tear-off" mode with a ghost that floats.
         .simultaneousGesture(
-            DragGesture(minimumDistance: 2, coordinateSpace: .global)
+            DragGesture(minimumDistance: TabInteraction.dragActivationDistance, coordinateSpace: .global)
                 .onChanged { value in
                     guard !tab.isPinned else { return }
 
@@ -211,7 +223,7 @@ struct TabBarView: View {
                         tearOffTabID = tab.id
                         tearOffStartTranslation = value.translation
                         draggingTabID = nil          // hand off from reorder to ghost
-                        TabManager.draggedTabID = tab.id
+                        dragToken = TabManager.beginDragSession(for: tab.id)
                         showGhostWindow(for: tab)
                         return
                     }
@@ -327,7 +339,7 @@ struct TabBarView: View {
         if draggingTabID == nil {
             draggingTabID = tab.id
             lastReorderX = x
-            TabManager.draggedTabID = tab.id
+            dragToken = TabManager.beginDragSession(for: tab.id)
         }
         guard draggingTabID == tab.id else { return }
 
@@ -353,20 +365,27 @@ struct TabBarView: View {
 
     private func finishDrag() {
         draggingTabID = nil
-        TabManager.reorderedByGesture = true
-        // draggedTabID stays set so a cross-window onDrop can still read it.
-        // Clean up after a short window in case no drop event fires.
+        let token = dragToken
+        dragToken = 0
+        // Marks the gesture over while leaving `draggedTabID` readable, because
+        // a cross-window `onDrop` arrives after the gesture ends. The deferred
+        // clear is the fallback for when no drop ever fires — and it is scoped
+        // to this token, so a drag that starts inside the 0.4 s window can no
+        // longer have its state wiped out from under it by the previous drag's
+        // timer (`TabManager.clearDragSession` ignores stale tokens).
+        TabManager.endDragSession(token)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-            TabManager.reorderedByGesture = false
-            TabManager.draggedTabID = nil
+            TabManager.clearDragSession(token)
         }
     }
 
     /// Fires when the user drags a tab out of the tab bar — tears it off into a new window.
     private func triggerDetach(tab: Tab) {
         draggingTabID = nil
-        TabManager.draggedTabID = nil
-        TabManager.reorderedByGesture = false
+        // The tab is leaving this window: nothing else can consume the drag,
+        // so the shared state is cleared right away instead of on a timer.
+        TabManager.clearDragSession(dragToken)
+        dragToken = 0
         onDetachTab?(tab)
     }
 

@@ -23,6 +23,45 @@ final class TabManager {
     /// Set by DragGesture reorder so the onDrop fallback doesn't double-reorder
     static var reorderedByGesture: Bool = false
 
+    // MARK: - Drag Sessions
+
+    /// Monotonic id of the newest tab-drag gesture; 0 means "no drag has ever
+    /// run", and is never a live session.
+    ///
+    /// `draggedTabID` deliberately outlives the gesture that set it, because a
+    /// cross-window `onDrop` only arrives after the gesture ends — so the bars
+    /// clear it on a 0.4 s timer as a fallback. That timer used to be
+    /// unconditional: a drag started inside another drag's 0.4 s window had its
+    /// shared state wiped out from under it. Tokens make ownership explicit —
+    /// a deferred cleanup only fires while its own session is still the newest.
+    private(set) static var dragSessionToken: Int = 0
+
+    /// Opens a drag session for `tabID` and returns its token.
+    @discardableResult
+    static func beginDragSession(for tabID: UUID) -> Int {
+        dragSessionToken &+= 1
+        if dragSessionToken == 0 { dragSessionToken = 1 } // 0 is reserved
+        draggedTabID = tabID
+        reorderedByGesture = false
+        return dragSessionToken
+    }
+
+    /// The gesture ended. Keeps `draggedTabID` readable for a late drop, and
+    /// records that the gesture already did the reordering so the drop fallback
+    /// doesn't move the tab a second time.
+    static func endDragSession(_ token: Int) {
+        guard token != 0, token == dragSessionToken else { return }
+        reorderedByGesture = true
+    }
+
+    /// Clears the shared drag state, but only if `token` is still the live
+    /// session — a stale token (its drag was superseded) is ignored.
+    static func clearDragSession(_ token: Int) {
+        guard token != 0, token == dragSessionToken else { return }
+        draggedTabID = nil
+        reorderedByGesture = false
+    }
+
     /// The NSWindow this manager's tabs live in. Set by BrowserView's window
     /// registrar. When the last tab leaves (close OR cross-window transfer) we
     /// must close THIS window — not `NSApp.keyWindow`, which during a drag-drop
@@ -35,6 +74,60 @@ final class TabManager {
     var selectedTab: Tab? {
         guard let id = selectedTabID else { return nil }
         return tabs.first { $0.id == id }
+    }
+
+    // MARK: - App Termination
+
+    /// The three facts about an `NSWindow` that decide whether it should keep
+    /// the app running. Split out from `NSWindow` so the policy below is pure
+    /// and testable.
+    struct WindowLiveness: Equatable {
+        /// `NSWindow.isVisible` — on screen, even if obscured. FALSE for a
+        /// window the user minimised to the Dock, and false once closed.
+        let isVisible: Bool
+        /// `NSWindow.isMiniaturized` — sitting in the Dock, tabs and all.
+        let isMiniaturized: Bool
+        /// `NSWindow.canBecomeMain` — true for real browser windows, false for
+        /// the app's helper windows (tear-off ghost, hover preview, off-screen
+        /// research host) and for system panels/popovers.
+        let canBecomeMain: Bool
+
+        init(isVisible: Bool, isMiniaturized: Bool, canBecomeMain: Bool) {
+            self.isVisible = isVisible
+            self.isMiniaturized = isMiniaturized
+            self.canBecomeMain = canBecomeMain
+        }
+
+        init(_ window: NSWindow) {
+            self.init(
+                isVisible: window.isVisible,
+                isMiniaturized: window.isMiniaturized,
+                canBecomeMain: window.canBecomeMain
+            )
+        }
+
+        /// A real user-facing window that still holds the user's tabs, whether
+        /// it is on screen or minimised in the Dock.
+        var keepsAppAlive: Bool { canBecomeMain && (isVisible || isMiniaturized) }
+    }
+
+    /// Whether closing a window should also quit the app.
+    ///
+    /// The old check was `NSApp.windows.filter(\.isVisible).isEmpty`, and
+    /// `isVisible` is FALSE for a minimised window — so closing the last tab of
+    /// window A terminated the app while window B sat in the Dock with open
+    /// tabs, losing them. Minimised windows now count, and only genuine browser
+    /// windows are counted at all, so closing the truly last window still quits.
+    nonisolated static func shouldTerminateApp(windows: [WindowLiveness]) -> Bool {
+        !windows.contains { $0.keepsAppAlive }
+    }
+
+    /// Terminates the app if no window is left that should keep it alive.
+    /// Called after the manager closes its own (now tabless) window.
+    private static func terminateIfNoWindowsRemain() {
+        if shouldTerminateApp(windows: NSApp.windows.map(WindowLiveness.init)) {
+            NSApp.terminate(nil)
+        }
     }
 
     /// `TabManager` isn't formally `@MainActor`-isolated but is only ever used
@@ -147,9 +240,7 @@ final class TabManager {
             if let window = hostWindow ?? NSApp.keyWindow {
                 window.close()
             }
-            if NSApp.windows.filter({ $0.isVisible }).isEmpty {
-                NSApp.terminate(nil)
-            }
+            Self.terminateIfNoWindowsRemain()
             return tab
         } else if let promotedTabID {
             selectedTabID = promotedTabID
@@ -351,10 +442,8 @@ final class TabManager {
             if let window = hostWindow ?? NSApp.keyWindow {
                 window.close()
             }
-            // If no windows remain, quit the app
-            if NSApp.windows.filter({ $0.isVisible }).isEmpty {
-                NSApp.terminate(nil)
-            }
+            // If no window is left that should keep the app alive, quit
+            Self.terminateIfNoWindowsRemain()
             return
         } else if let promotedTabID {
             selectedTabID = promotedTabID

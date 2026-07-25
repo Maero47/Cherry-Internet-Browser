@@ -4,6 +4,7 @@
 //
 
 import SwiftUI
+import AppKit
 
 struct TabItemView: View {
     @Bindable var tab: Tab
@@ -29,8 +30,17 @@ struct TabItemView: View {
     var isPaired: Bool = false
 
     @State private var isHovering = false
-    @State private var showPreview = false
     @State private var previewTask: Task<Void, Never>?
+    /// True while the pointer sits on one of the row's small buttons (close,
+    /// unmute). Those buttons own the click; the tab's own click handling steps
+    /// aside so a press on the X can never also select the tab. Tracked per
+    /// button so moving between them can't leave a stale flag behind.
+    @State private var isPointerOnClose = false
+    @State private var isPointerOnMute = false
+    /// Set by whichever of the two click paths (`onTapGesture` or the
+    /// press-release fallback) resolves the current press first, so a single
+    /// click selects exactly once.
+    @State private var didHandleClick = false
 
     /// Imported Firefox theme overrides — nil for private tabs (never themed)
     /// or when no theme is active, keeping the stock material/hierarchy look.
@@ -74,9 +84,15 @@ struct TabItemView: View {
                     Image(systemName: "speaker.slash.fill")
                         .font(.system(size: 10))
                         .foregroundStyle(.secondary)
+                        .frame(width: 14, height: 14)
+                        // Hit target grows to 20×20; the glyph and the layout
+                        // are unchanged.
+                        .contentShape(
+                            Rectangle().inset(by: TabInteraction.hitTargetInset(forVisualSize: 14))
+                        )
                 }
                 .buttonStyle(.plain)
-                .frame(width: 14, height: 14)
+                .onHover { isPointerOnMute = $0 }
                 .help("Unmute Tab")
             }
 
@@ -86,16 +102,31 @@ struct TabItemView: View {
                     Image(systemName: "xmark")
                         .font(.system(size: 9, weight: .bold))
                         .foregroundStyle(.secondary)
+                        .frame(width: 16, height: 16)
+                        .background(
+                            Circle()
+                                .fill(Color.gray.opacity(0.2))
+                                .opacity(isHovering ? 1 : 0)
+                        )
+                        // The clickable area (20×20) is bigger than the 16 pt
+                        // disc it draws, so a click that lands just off the
+                        // glyph still closes the tab instead of falling through
+                        // to the tab body (which would select it and look like
+                        // the close button "didn't take"). The frame — and so
+                        // the tab's layout — is unchanged.
+                        .contentShape(
+                            Rectangle().inset(by: TabInteraction.hitTargetInset(forVisualSize: 16))
+                        )
                 }
                 .buttonStyle(.plain)
-                .frame(width: 16, height: 16)
-                .background(
-                    Circle()
-                        .fill(Color.gray.opacity(0.2))
-                        .opacity(isHovering ? 1 : 0)
-                )
-                .opacity(isHovering || isSelected ? 1 : 0)
+                .opacity(isCloseButtonActive ? 1 : 0)
+                // A SwiftUI view at `.opacity(0)` is still hit-testable: while
+                // the X was invisible it silently swallowed clicks aimed at the
+                // trailing end of an unselected tab, so that tab never got
+                // selected. Invisible now means untouchable.
+                .allowsHitTesting(isCloseButtonActive)
                 .animation(.easeInOut(duration: 0.1), value: isHovering)
+                .onHover { isPointerOnClose = $0 }
                 .help("Close Tab (Cmd+W)")
             }
         }
@@ -119,27 +150,77 @@ struct TabItemView: View {
         .contentShape(Rectangle())
         .onHover { hovering in
             isHovering = hovering
+            previewTask?.cancel()
             if hovering {
-                previewTask?.cancel()
                 previewTask = Task { @MainActor in
-                    try? await Task.sleep(nanoseconds: 800_000_000)
+                    try? await Task.sleep(nanoseconds: TabInteraction.previewDelayNanoseconds)
                     guard !Task.isCancelled, isHovering else { return }
-                    showPreview = true
+                    TabPreviewPresenter.shared.show(for: tab, at: NSEvent.mouseLocation)
                 }
             } else {
-                previewTask?.cancel()
-                showPreview = false
+                isPointerOnClose = false
+                isPointerOnMute = false
+                hidePreview()
             }
         }
-        .popover(isPresented: $showPreview, arrowEdge: .bottom) {
-            tabPreviewPopover
-        }
         .onTapGesture {
-            onSelect()
+            handleClick()
         }
+        // Belt-and-braces click path. `onTapGesture` above is a `TapGesture`,
+        // and SwiftUI is free to fail a tap once the tab bar's simultaneous
+        // reorder `DragGesture` recognises — which is how a click on a tab
+        // could vanish. A `DragGesture` never fails: `onEnded` fires on every
+        // mouse-up, so we classify the press ourselves and select the tab if
+        // the tap didn't. It is `simultaneousGesture`, so it never competes
+        // with the close/unmute buttons for their own clicks (and those are
+        // additionally excluded via `isPointerOnControl`).
+        .simultaneousGesture(
+            DragGesture(minimumDistance: 0)
+                .onChanged { _ in
+                    // Pressing the tab dismisses the preview immediately, so
+                    // nothing is on screen while the click resolves. Guarded so
+                    // a drag doesn't touch state on every mouse-moved event.
+                    if previewTask != nil { hidePreview() }
+                }
+                .onEnded { value in
+                    guard TabInteraction.isClick(translation: value.translation) else { return }
+                    handleClick()
+                }
+        )
         .contextMenu {
             tabContextMenu
         }
+        .onDisappear {
+            hidePreview()
+        }
+    }
+
+    /// Whether the close button is currently shown — and therefore clickable.
+    private var isCloseButtonActive: Bool { isHovering || isSelected }
+
+    /// The pointer is on a control that owns its own click.
+    private var isPointerOnControl: Bool { isPointerOnClose || isPointerOnMute }
+
+    /// Selects the tab, at most once per press. Both click paths funnel through
+    /// here; whichever resolves first wins and the other becomes a no-op.
+    /// `didHandleClick` is cleared on the next press by the tap gesture itself
+    /// (SwiftUI delivers `onEnded` for a press before the next press begins).
+    private func handleClick() {
+        guard !isPointerOnControl, !didHandleClick else { return }
+        didHandleClick = true
+        hidePreview()
+        onSelect()
+        // Re-arm for the next click. Deferring by one main-queue hop lets the
+        // second of the two paths see the flag and skip.
+        DispatchQueue.main.async {
+            didHandleClick = false
+        }
+    }
+
+    private func hidePreview() {
+        previewTask?.cancel()
+        previewTask = nil
+        TabPreviewPresenter.shared.hide(for: tab.id)
     }
 
     @ViewBuilder
@@ -193,29 +274,6 @@ struct TabItemView: View {
         } else {
             Color.clear
         }
-    }
-
-    @ViewBuilder
-    private var tabPreviewPopover: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(tab.displayTitle)
-                .font(.system(size: 12, weight: .medium))
-                .lineLimit(2)
-            if let url = tab.url {
-                Text(url.absoluteString)
-                    .font(.system(size: 10))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
-            if tab.isSleeping {
-                Text("Tab is sleeping")
-                    .font(.system(size: 10))
-                    .foregroundStyle(.orange)
-            }
-        }
-        .padding(8)
-        .frame(maxWidth: 300)
     }
 
     @ViewBuilder

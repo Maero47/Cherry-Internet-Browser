@@ -23,6 +23,9 @@ struct VerticalTabBarView: View {
     @State private var draggingTabID: UUID? = nil
     /// Reference Y position (global) used to compute cross-boundary reorders
     @State private var lastReorderY: CGFloat = 0
+    /// Token of the drag session this bar opened on `TabManager`, so the
+    /// deferred cleanup can only ever clear its OWN session (see `finishDrag`).
+    @State private var dragToken: Int = 0
 
     /// Tear-off ghost state — when the tab is pulled sideways out of the bar
     /// it floats freely, mirroring TabBarView's mechanism on the other axis.
@@ -221,6 +224,10 @@ struct VerticalTabBarView: View {
                 .frame(maxWidth: .infinity, alignment: isCompact ? .center : .leading)
                 .padding(.horizontal, 8)
                 .padding(.vertical, 8)
+                // Without an explicit content shape the plain button's hit
+                // region is only the glyph and label, so clicks anywhere else
+                // in the row — most of it — did nothing.
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .help("New Tab (Cmd+T)")
@@ -262,13 +269,16 @@ struct VerticalTabBarView: View {
         .shadow(color: isDragging ? .black.opacity(0.22) : .clear, radius: 8, x: 3)
         .zIndex(isDragging || isTearingOffThisTab ? 2 : 0)
         .animation(.spring(response: 0.15, dampingFraction: 0.85), value: isDragging)
-        // Same flow as the horizontal bar: DragGesture fires immediately (2 px
-        // threshold) for real-time in-list reorder along Y; pulling the tab
-        // SIDEWAYS (either direction) beyond 30 pt switches to free tear-off
-        // mode with a floating GhostTabWindow. Click-drags don't scroll a
-        // macOS ScrollView, so the simultaneous gesture never fights the list.
+        // Same flow as the horizontal bar: the gesture starts once the pointer
+        // has travelled `dragActivationDistance` (it used to be 2 px, which an
+        // ordinary click routinely exceeds — that drag could then cancel the
+        // row's tap and swallow the click) and then reorders in real time along
+        // Y; pulling the tab SIDEWAYS (either direction) beyond 30 pt switches
+        // to free tear-off mode with a floating GhostTabWindow. Click-drags
+        // don't scroll a macOS ScrollView, so the simultaneous gesture never
+        // fights the list.
         .simultaneousGesture(
-            DragGesture(minimumDistance: 2, coordinateSpace: .global)
+            DragGesture(minimumDistance: TabInteraction.dragActivationDistance, coordinateSpace: .global)
                 .onChanged { value in
                     guard !tab.isPinned else { return }
 
@@ -284,7 +294,7 @@ struct VerticalTabBarView: View {
                         isTearingOff = true
                         tearOffTabID = tab.id
                         draggingTabID = nil          // hand off from reorder to ghost
-                        TabManager.draggedTabID = tab.id
+                        dragToken = TabManager.beginDragSession(for: tab.id)
                         showGhostWindow(for: tab)
                         return
                     }
@@ -403,7 +413,7 @@ struct VerticalTabBarView: View {
         if draggingTabID == nil {
             draggingTabID = tab.id
             lastReorderY = y
-            TabManager.draggedTabID = tab.id
+            dragToken = TabManager.beginDragSession(for: tab.id)
         }
         guard draggingTabID == tab.id else { return }
 
@@ -431,12 +441,17 @@ struct VerticalTabBarView: View {
 
     private func finishDrag() {
         draggingTabID = nil
-        TabManager.reorderedByGesture = true
-        // draggedTabID stays set so a cross-window onDrop can still read it.
-        // Clean up after a short window in case no drop event fires.
+        let token = dragToken
+        dragToken = 0
+        // Marks the gesture over while leaving `draggedTabID` readable, because
+        // a cross-window `onDrop` arrives after the gesture ends. The deferred
+        // clear is the fallback for when no drop ever fires — and it is scoped
+        // to this token, so a drag that starts inside the 0.4 s window can no
+        // longer have its state wiped out from under it by the previous drag's
+        // timer (`TabManager.clearDragSession` ignores stale tokens).
+        TabManager.endDragSession(token)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-            TabManager.reorderedByGesture = false
-            TabManager.draggedTabID = nil
+            TabManager.clearDragSession(token)
         }
     }
 
@@ -444,8 +459,10 @@ struct VerticalTabBarView: View {
     /// window (or re-attaches to the window under the cursor via onDetachTab).
     private func triggerDetach(tab: Tab) {
         draggingTabID = nil
-        TabManager.draggedTabID = nil
-        TabManager.reorderedByGesture = false
+        // The tab is leaving this window: nothing else can consume the drag,
+        // so the shared state is cleared right away instead of on a timer.
+        TabManager.clearDragSession(dragToken)
+        dragToken = 0
         onDetachTab?(tab)
     }
 
@@ -594,10 +611,25 @@ private struct VerticalTabItemView: View {
     var onDetachTab: ((Tab) -> Void)? = nil
 
     @State private var isHovering = false
+    /// True while the pointer sits on one of the row's small buttons (close,
+    /// unmute) — those own their click, so the row's own click handling stands
+    /// down and a press on the X can never also select the tab. Tracked per
+    /// button so moving between them can't leave a stale flag behind.
+    @State private var isPointerOnClose = false
+    @State private var isPointerOnMute = false
+    /// Set by whichever of the two click paths resolves the current press
+    /// first, so a single click selects exactly once.
+    @State private var didHandleClick = false
 
     private var isSelected: Bool {
         tabManager.selectedTabID == tab.id
     }
+
+    /// Whether the close button is currently shown — and therefore clickable.
+    private var isCloseButtonActive: Bool { isHovering || isSelected }
+
+    /// The pointer is on a control that owns its own click.
+    private var isPointerOnControl: Bool { isPointerOnClose || isPointerOnMute }
 
     /// True when this tab is one of the two tabs currently shown in split
     /// view — mirrors the same check in `TabBarView`'s horizontal tab item.
@@ -675,9 +707,15 @@ private struct VerticalTabItemView: View {
                         Image(systemName: "speaker.slash.fill")
                             .font(.system(size: 9))
                             .foregroundStyle(.secondary)
+                            .frame(width: 12, height: 12)
+                            // Hit target grows to 20×20; the glyph and the row
+                            // layout are unchanged.
+                            .contentShape(
+                                Rectangle().inset(by: TabInteraction.hitTargetInset(forVisualSize: 12))
+                            )
                     }
                     .buttonStyle(.plain)
-                    .frame(width: 12, height: 12)
+                    .onHover { isPointerOnMute = $0 }
                     .help("Unmute Tab")
                 }
 
@@ -688,11 +726,24 @@ private struct VerticalTabItemView: View {
                     Image(systemName: "xmark")
                         .font(.system(size: 8, weight: .bold))
                         .foregroundStyle(.secondary)
+                        .frame(width: 14, height: 14)
+                        // Clickable across a full 20×20 — well beyond the glyph
+                        // — so a slightly-off click still closes the tab
+                        // instead of falling through to the row and merely
+                        // selecting it. The row's layout is unchanged.
+                        .contentShape(
+                            Rectangle().inset(by: TabInteraction.hitTargetInset(forVisualSize: 14))
+                        )
                 }
                 .buttonStyle(.plain)
-                .frame(width: 14, height: 14)
-                .opacity(isHovering || isSelected ? 1 : 0)
+                .opacity(isCloseButtonActive ? 1 : 0)
+                // A SwiftUI view at `.opacity(0)` is still hit-testable: while
+                // invisible, the X silently swallowed clicks aimed at the
+                // trailing end of an unselected row, so that tab never got
+                // selected. Invisible now means untouchable.
+                .allowsHitTesting(isCloseButtonActive)
                 .animation(.easeInOut(duration: 0.1), value: isHovering)
+                .onHover { isPointerOnClose = $0 }
             }
         }
         .padding(.horizontal, 8)
@@ -709,10 +760,26 @@ private struct VerticalTabItemView: View {
         .opacity(tab.isSleeping ? 0.6 : 1.0)
         .contentShape(Rectangle())
         .onTapGesture {
-            tabManager.selectTab(tab)
+            handleClick()
         }
+        // Belt-and-braces click path — see the identical comment in
+        // `TabItemView`: a `TapGesture` can be failed by the sidebar's
+        // simultaneous reorder `DragGesture`, a `DragGesture` never is, so this
+        // guarantees the click resolves. `simultaneousGesture` keeps it out of
+        // the close/unmute buttons' way.
+        .simultaneousGesture(
+            DragGesture(minimumDistance: 0)
+                .onEnded { value in
+                    guard TabInteraction.isClick(translation: value.translation) else { return }
+                    handleClick()
+                }
+        )
         .onHover { hovering in
             isHovering = hovering
+            if !hovering {
+                isPointerOnClose = false
+                isPointerOnMute = false
+            }
         }
         .padding(.horizontal, 4)
         .contextMenu {
@@ -781,6 +848,19 @@ private struct VerticalTabItemView: View {
             Button("Close Tab") { tabManager.closeTab(tab) }
             Button("Close Other Tabs") { tabManager.closeOtherTabs(tab) }
             Button("Close Tabs Below") { tabManager.closeTabsToRight(of: tab) }
+        }
+    }
+
+    /// Selects the tab, at most once per press. Both click paths funnel through
+    /// here; whichever resolves first wins and the other becomes a no-op.
+    private func handleClick() {
+        guard !isPointerOnControl, !didHandleClick else { return }
+        didHandleClick = true
+        tabManager.selectTab(tab)
+        // Re-arm for the next click. Deferring by one main-queue hop lets the
+        // second of the two paths see the flag and skip.
+        DispatchQueue.main.async {
+            didHandleClick = false
         }
     }
 }
