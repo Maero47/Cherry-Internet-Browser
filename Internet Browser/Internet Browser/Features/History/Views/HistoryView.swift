@@ -8,6 +8,8 @@ import SwiftUI
 struct HistoryView: View {
     @Bindable var repository: HistoryRepository
     let onItemClick: (HistoryItem) -> Void
+    /// ⌘-click, middle-click and "Open in New Tab" — opens in the background.
+    var onOpenInNewTab: ((HistoryItem) -> Void)? = nil
     let onClose: () -> Void
 
     @State private var searchText: String = ""
@@ -84,12 +86,16 @@ struct HistoryView: View {
                     ForEach(filteredGroups) { group in
                         Section(header: Text(group.title).font(.subheadline).foregroundStyle(.secondary)) {
                             ForEach(group.items) { item in
-                                HistoryItemRow(item: item) {
-                                    onItemClick(item)
-                                }
+                                HistoryItemRow(
+                                    item: item,
+                                    action: { onItemClick(item) },
+                                    onOpenInNewTab: onOpenInNewTab.map { open in { open(item) } }
+                                )
                                 .contextMenu {
                                     Button("Open") { onItemClick(item) }
-                                    Button("Open in New Tab") { /* TODO */ }
+                                    if let onOpenInNewTab {
+                                        Button("Open in New Tab") { onOpenInNewTab(item) }
+                                    }
                                     Divider()
                                     Button("Copy Link") {
                                         NSPasteboard.general.clearContents()
@@ -134,11 +140,20 @@ struct HistoryView: View {
 struct HistoryItemRow: View {
     let item: HistoryItem
     let action: () -> Void
+    var onOpenInNewTab: (() -> Void)? = nil
 
     @State private var isHovering: Bool = false
 
+    private func open() {
+        if NSEvent.isCommandClick, let onOpenInNewTab {
+            onOpenInNewTab()
+        } else {
+            action()
+        }
+    }
+
     var body: some View {
-        Button(action: action) {
+        Button(action: open) {
             HStack(spacing: 8) {
                 if let favicon = item.favicon {
                     Image(nsImage: favicon)
@@ -173,6 +188,11 @@ struct HistoryItemRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .overlay {
+            if let onOpenInNewTab {
+                AuxClickCatcher(onMiddleClick: onOpenInNewTab)
+            }
+        }
     }
 
     private func formatTime(_ date: Date) -> String {

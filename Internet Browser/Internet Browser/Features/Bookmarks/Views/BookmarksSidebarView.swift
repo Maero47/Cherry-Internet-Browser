@@ -8,6 +8,8 @@ import SwiftUI
 struct BookmarksSidebarView: View {
     @Bindable var repository: BookmarkRepository
     let onBookmarkClick: (Bookmark) -> Void
+    /// ⌘-click, middle-click and "Open in New Tab" — opens in the background.
+    var onOpenInNewTab: ((Bookmark) -> Void)? = nil
     let onClose: () -> Void
     /// Private windows are never themed by an imported Firefox theme.
     var isPrivateMode: Bool = false
@@ -103,12 +105,16 @@ struct BookmarksSidebarView: View {
             } else {
                 List {
                     ForEach(filteredBookmarks) { bookmark in
-                        BookmarkItemRow(bookmark: bookmark) {
-                            onBookmarkClick(bookmark)
-                        }
+                        BookmarkItemRow(
+                            bookmark: bookmark,
+                            action: { onBookmarkClick(bookmark) },
+                            onOpenInNewTab: onOpenInNewTab.map { open in { open(bookmark) } }
+                        )
                         .contextMenu {
                             Button("Open") { onBookmarkClick(bookmark) }
-                            Button("Open in New Tab") { /* TODO */ }
+                            if let onOpenInNewTab {
+                                Button("Open in New Tab") { onOpenInNewTab(bookmark) }
+                            }
                             Divider()
                             Button("Copy Link") {
                                 NSPasteboard.general.clearContents()
@@ -168,9 +174,18 @@ struct FolderChip: View {
 struct BookmarkItemRow: View {
     let bookmark: Bookmark
     let action: () -> Void
+    var onOpenInNewTab: (() -> Void)? = nil
+
+    private func open() {
+        if NSEvent.isCommandClick, let onOpenInNewTab {
+            onOpenInNewTab()
+        } else {
+            action()
+        }
+    }
 
     var body: some View {
-        Button(action: action) {
+        Button(action: open) {
             HStack(spacing: 8) {
                 if let favicon = bookmark.favicon {
                     Image(nsImage: favicon)
@@ -207,5 +222,10 @@ struct BookmarkItemRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .overlay {
+            if let onOpenInNewTab {
+                AuxClickCatcher(onMiddleClick: onOpenInNewTab)
+            }
+        }
     }
 }

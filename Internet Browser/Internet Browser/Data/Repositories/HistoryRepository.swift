@@ -275,12 +275,33 @@ final class HistoryRepository {
 
     // MARK: - Export
 
+    /// Snapshots the history rows the export needs. Cheap and main-actor-bound
+    /// (it reads `historyItems`); the encoding half is `encodeToJSON`, which is
+    /// pure and can run off the main actor.
+    func exportSnapshot() -> [(url: URL, title: String, visitDate: Date, visitCount: Int)] {
+        historyItems.map { ($0.url, $0.title, $0.visitDate, $0.visitCount) }
+    }
+
     func exportToJSON() -> Data? {
-        let exportItems = historyItems.map { item in
+        Self.encodeToJSON(exportSnapshot())
+    }
+
+    /// Serializes an export snapshot. `nonisolated` and taking its input by
+    /// value so `DataExportService` can run it off the main actor — a large
+    /// history otherwise froze the UI before the save panel even appeared.
+    ///
+    /// One formatter for the whole export, not one per row: constructing an
+    /// `ISO8601DateFormatter` is expensive, and it used to be allocated inside
+    /// the `map`.
+    nonisolated static func encodeToJSON(
+        _ items: [(url: URL, title: String, visitDate: Date, visitCount: Int)]
+    ) -> Data? {
+        let formatter = ISO8601DateFormatter()
+        let exportItems = items.map { item in
             [
                 "url": item.url.absoluteString,
                 "title": item.title,
-                "visitDate": ISO8601DateFormatter().string(from: item.visitDate),
+                "visitDate": formatter.string(from: item.visitDate),
                 "visitCount": item.visitCount
             ] as [String: Any]
         }

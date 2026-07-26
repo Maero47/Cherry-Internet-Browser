@@ -20,164 +20,254 @@ struct Internet_BrowserApp: App {
         }
         .windowStyle(.hiddenTitleBar)
         .commands {
+            // ONE command system: every shortcut in Cherry is declared here and
+            // nowhere else. `CommandItem` posts a `BrowserCommand` that the KEY
+            // window's BrowserView runs, so the menu item and its key equivalent
+            // are always the same code path (see BrowserCommand).
+            //
             // App menu: Cmd+, opens cherry://settings in the key window's
             // focused tab (Chrome-style in-tab settings) instead of the old
             // separate native Settings window.
             CommandGroup(replacing: .appSettings) {
-                Button("Settings…") {
-                    NotificationCenter.default.post(name: .showSettingsPage, object: nil)
-                }
-                .keyboardShortcut(",", modifiers: .command)
+                CommandItem("Settings…", .showSettingsPage, ",")
             }
 
-            // File menu
-            CommandGroup(replacing: .newItem) {
-                Button("New Tab") {
-                    NotificationCenter.default.post(name: .newTab, object: nil)
-                }
-                .keyboardShortcut("t", modifiers: .command)
-
-                Button("New Window") {
-                    // Will open a new window
-                }
-                .keyboardShortcut("n", modifiers: .command)
-
-                Divider()
-
-                Button("Close Tab") {
-                    NotificationCenter.default.post(name: .closeTab, object: nil)
-                }
-                .keyboardShortcut("w", modifiers: .command)
-
-                Divider()
-
-                Button("Load Extension…") {
-                    loadExtensionFromOpenPanel()
-                }
+            CommandGroup(replacing: .newItem) { fileMenuItems }
+            // `replacing:` rather than a plain File-menu item, so Cherry's
+            // Print is THE print command and SwiftUI's stock one can't sit
+            // beside it holding the same ⌘P.
+            CommandGroup(replacing: .printItem) {
+                CommandItem("Print…", .printPage, "p")
             }
+            CommandGroup(after: .pasteboard) { editMenuItems }
+            CommandGroup(replacing: .toolbar) { viewMenuItems }
 
-            // Edit menu additions
-            CommandGroup(after: .pasteboard) {
-                Divider()
-                Button("Find in Page...") {
-                    NotificationCenter.default.post(name: .findInPage, object: nil)
-                }
-                .keyboardShortcut("f", modifiers: .command)
-
-                Button("Command Palette...") {
-                    NotificationCenter.default.post(name: .showCommandPalette, object: nil)
-                }
-                .keyboardShortcut("k", modifiers: .command)
-            }
-
-            // View menu
-            CommandGroup(replacing: .toolbar) {
-                Button("Reload Page") {
-                    NotificationCenter.default.post(name: .reloadPage, object: nil)
-                }
-                .keyboardShortcut("r", modifiers: .command)
-
-                Button("Stop Loading") {
-                    NotificationCenter.default.post(name: .stopLoading, object: nil)
-                }
-                .keyboardShortcut(".", modifiers: .command)
-
-                Divider()
-
-                Button("Actual Size") {
-                    NotificationCenter.default.post(name: .actualSize, object: nil)
-                }
-                .keyboardShortcut("0", modifiers: .command)
-
-                Button("Zoom In") {
-                    NotificationCenter.default.post(name: .zoomIn, object: nil)
-                }
-                .keyboardShortcut("+", modifiers: .command)
-
-                Button("Zoom Out") {
-                    NotificationCenter.default.post(name: .zoomOut, object: nil)
-                }
-                .keyboardShortcut("-", modifiers: .command)
-
-                Divider()
-
-                Button("Show Downloads") {
-                    NotificationCenter.default.post(name: .showDownloads, object: nil)
-                }
-                .keyboardShortcut("j", modifiers: [.command, .shift])
-
-                Divider()
-
-                Button("Auto-Fill Password") {
-                    NotificationCenter.default.post(name: .autoFillPassword, object: nil)
-                }
-                .keyboardShortcut("\\", modifiers: .command)
-            }
-
-            // History menu
-            CommandMenu("History") {
-                Button("Back") {
-                    NotificationCenter.default.post(name: .goBack, object: nil)
-                }
-                .keyboardShortcut("[", modifiers: .command)
-
-                Button("Forward") {
-                    NotificationCenter.default.post(name: .goForward, object: nil)
-                }
-                .keyboardShortcut("]", modifiers: .command)
-
-                Divider()
-
-                Button("Reopen Last Closed Tab") {
-                    NotificationCenter.default.post(name: .reopenClosedTab, object: nil)
-                }
-                .keyboardShortcut("t", modifiers: [.command, .shift])
-
-                Divider()
-
-                Button("Show All History") {
-                    NotificationCenter.default.post(name: .showHistory, object: nil)
-                }
-                .keyboardShortcut("y", modifiers: .command)
-            }
-
-            // Bookmarks menu
-            CommandMenu("Bookmarks") {
-                Button("Add Bookmark") {
-                    NotificationCenter.default.post(name: .addBookmark, object: nil)
-                }
-                .keyboardShortcut("d", modifiers: .command)
-
-                Divider()
-
-                Button("Show All Bookmarks") {
-                    NotificationCenter.default.post(name: .showBookmarks, object: nil)
-                }
-                .keyboardShortcut("b", modifiers: [.command, .option])
-            }
-
-            // Developer menu
-            CommandMenu("Develop") {
-                Button("Show Web Inspector") {
-                    NotificationCenter.default.post(name: .showWebInspector, object: nil)
-                }
-                .keyboardShortcut("i", modifiers: [.command, .option])
-
-                Button("Show JavaScript Console") {
-                    NotificationCenter.default.post(name: .showConsole, object: nil)
-                }
-                .keyboardShortcut("c", modifiers: [.command, .option])
-
-                Divider()
-
-                Button("View Page Source") {
-                    NotificationCenter.default.post(name: .viewSource, object: nil)
-                }
-                .keyboardShortcut("u", modifiers: .command)
-            }
+            CommandMenu("Tabs") { tabsMenuItems }
+            CommandMenu("History") { historyMenuItems }
+            CommandMenu("Bookmarks") { bookmarksMenuItems }
+            CommandMenu("Tools") { toolsMenuItems }
+            CommandMenu("Develop") { developMenuItems }
         }
 
     }
+
+    // Split into per-menu builders so each stays readable and the
+    // `commands` result builder stays well under the type-checker's limits.
+
+    @ViewBuilder
+    private var fileMenuItems: some View {
+        CommandItem("New Tab", .newTab, "t")
+
+        // App-level, not a BrowserCommand: these must work even when every
+        // browser window is closed, so they never go through the key-window
+        // routing that all the other commands use.
+        Button("New Window") {
+            openBrowserWindow(isPrivate: false)
+        }
+        .keyboardShortcut("n", modifiers: .command)
+
+        Button("New Incognito Window") {
+            openBrowserWindow(isPrivate: true)
+        }
+        .keyboardShortcut("n", modifiers: [.command, .shift])
+
+        Divider()
+
+        CommandItem("Close Tab", .closeTab, "w")
+
+        Divider()
+
+        Button("Load Extension…") {
+            loadExtensionFromOpenPanel()
+        }
+    }
+
+    @ViewBuilder
+    private var editMenuItems: some View {
+        Divider()
+        CommandItem("Find in Page…", .findInPage, "f")
+        CommandItem("Command Palette…", .showCommandPalette, "k")
+        Divider()
+        CommandItem("Auto-Fill Password", .autoFillPassword, "\\")
+    }
+
+    @ViewBuilder
+    private var viewMenuItems: some View {
+        CommandItem("Reload Page", .reloadPage, "r")
+        CommandItem("Stop Loading", .stopLoading, ".")
+
+        Divider()
+
+        CommandItem("Actual Size", .actualSize, "0")
+        // Two entries, ONE command: `+` is ⌘⇧= on most layouts, so binding it
+        // alone leaves the ⌘= that Chrome, Safari and Firefox all accept doing
+        // nothing. SwiftUI can't hang an alternate key equivalent off a single
+        // item, so the alias is its own row — the command is still declared
+        // once, only the key equivalent is doubled.
+        CommandItem("Zoom In", .zoomIn, "=")
+        CommandItem("Zoom In", .zoomIn, "+")
+        CommandItem("Zoom Out", .zoomOut, "-")
+
+        Divider()
+
+        CommandItem("Toggle Bookmark Bar", .toggleBookmarkBar, "b", [.command, .shift])
+        CommandItem("Toggle Vertical Tab Bar", .toggleVerticalTabs, "v", [.command, .option])
+        CommandItem("Toggle Split View", .toggleSplitView, "\\", [.command, .shift])
+
+        Divider()
+
+        CommandItem("Toggle Reader", .toggleReaderMode, "r", [.command, .shift])
+        CommandItem("Focus Address Bar", .focusAddressBar, "l")
+
+        Divider()
+
+        CommandItem("Show Downloads", .showDownloads, "j", [.command, .shift])
+    }
+
+    @ViewBuilder
+    private var tabsMenuItems: some View {
+        CommandItem("Show Next Tab", .selectNextTab, .tab, .control)
+        CommandItem("Show Previous Tab", .selectPreviousTab, .tab, [.control, .shift])
+
+        Divider()
+
+        // Cmd+1…Cmd+8 select that tab; Cmd+9 selects the LAST tab, matching
+        // Safari/Chrome (see BrowserViewModel.selectTab(at:)).
+        ForEach(1...9, id: \.self) { index in
+            if let command = BrowserCommand(rawValue: "selectTab\(index)") {
+                CommandItem(
+                    index == 9 ? "Show Last Tab" : "Show Tab \(index)",
+                    command,
+                    KeyEquivalent(Character(String(index)))
+                )
+            }
+        }
+
+        Divider()
+
+        CommandItem("Search Tabs…", .searchTabs, "a", [.command, .shift])
+    }
+
+    @ViewBuilder
+    private var historyMenuItems: some View {
+        CommandItem("Back", .goBack, "[")
+        CommandItem("Forward", .goForward, "]")
+
+        Divider()
+
+        CommandItem("Reopen Last Closed Tab", .reopenClosedTab, "t", [.command, .shift])
+
+        Divider()
+
+        CommandItem("Show All History", .showHistory, "y")
+    }
+
+    @ViewBuilder
+    private var bookmarksMenuItems: some View {
+        CommandItem("Add Bookmark…", .addBookmark, "d")
+
+        Divider()
+
+        CommandItem("Show All Bookmarks", .showBookmarks, "b", [.command, .option])
+    }
+
+    @ViewBuilder
+    private var toolsMenuItems: some View {
+        // ⌘⌥4, not ⌘⇧4: macOS reserves ⇧⌘3/4/5/6 (and their ⌃ variants) for
+        // system screen capture and consumes them before the app ever sees the
+        // event, so the old binding could never fire. ⌘⌥4 keeps the "4" muscle
+        // memory and is unclaimed both by the system and by Cherry. ⌘⇧S was the
+        // other candidate, rejected because it's universally Save As — the kind
+        // of latent collision this whole task exists to remove.
+        CommandItem("Take Screenshot", .captureScreenshot, "4", [.command, .option])
+        CommandItem("Toggle Focus Mode", .toggleFocusMode, "f", [.command, .shift])
+        CommandItem("Ask This Page", .askThisPage, "k", [.command, .shift])
+    }
+
+    @ViewBuilder
+    private var developMenuItems: some View {
+        CommandItem("Show Web Inspector", .showWebInspector, "i", [.command, .option])
+        CommandItem("Show JavaScript Console", .showConsole, "c", [.command, .option])
+
+        Divider()
+
+        CommandItem("View Page Source", .viewSource, "u")
+    }
+}
+
+// MARK: - Menu Item
+
+/// A menu item that posts a `BrowserCommand`. Every shortcut-bearing item in
+/// Cherry's menu bar is one of these, so the shortcut, the title and the action
+/// are declared together exactly once.
+private struct CommandItem: View {
+    let title: String
+    let command: BrowserCommand
+    let key: KeyEquivalent
+    let modifiers: EventModifiers
+
+    init(
+        _ title: String,
+        _ command: BrowserCommand,
+        _ key: KeyEquivalent,
+        _ modifiers: EventModifiers = .command
+    ) {
+        self.title = title
+        self.command = command
+        self.key = key
+        self.modifiers = modifiers
+    }
+
+    var body: some View {
+        Button(title) { command.post() }
+            .keyboardShortcut(key, modifiers: modifiers)
+    }
+}
+
+// MARK: - Opening Windows
+
+/// The single implementation of "open another browser window". Used by File ▸
+/// New Window / New Incognito Window (⌘N / ⌘⇧N), the Dock menu, and
+/// `BrowserViewModel.openPrivateWindow()` — previously three near-identical
+/// copies, one of which (the ⌘N menu item) was an empty closure.
+@MainActor
+func openBrowserWindow(isPrivate: Bool) {
+    let hostingView = NSHostingView(rootView: BrowserView(isPrivate: isPrivate))
+
+    let window = DetachedWindow(
+        contentRect: NSRect(x: 0, y: 0, width: 1000, height: 700),
+        styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+        backing: .buffered,
+        defer: false
+    )
+    window.contentView = hostingView
+    configureBrowserWindow(window)
+    window.title = isPrivate ? "Incognito" : "Cherry"
+
+    let delegate = DetachedWindowDelegate()
+    window.delegate = delegate
+    BrowserViewModel.detachedWindows.append(window)
+    BrowserViewModel.detachedWindowDelegates.append(delegate)
+
+    window.center()
+    window.makeKeyAndOrderFront(nil)
+}
+
+/// Applies Cherry's chrome-less window look. Shared by `AppDelegate` (for the
+/// `WindowGroup` windows) and `openBrowserWindow(isPrivate:)`.
+@MainActor
+func configureBrowserWindow(_ window: NSWindow) {
+    window.titlebarAppearsTransparent = true
+    window.titleVisibility = .hidden
+    window.isMovableByWindowBackground = false
+    window.isMovable = false
+    window.backgroundColor = .clear
+    window.isOpaque = false
+    window.titlebarSeparatorStyle = .none
+
+    window.standardWindowButton(.closeButton)?.isHidden = false
+    window.standardWindowButton(.miniaturizeButton)?.isHidden = false
+    window.standardWindowButton(.zoomButton)?.isHidden = false
 }
 
 // MARK: - Load Extension…
@@ -221,7 +311,11 @@ func loadExtensionFromOpenPanel() {
 @MainActor
 func openInNewCherryTab(_ url: URL) {
     let viewModels = BrowserViewModel.windowViewModels.values.filter { !$0.isPrivateMode }
-    let target = viewModels.first { $0.associatedWindow === NSApp.keyWindow } ?? viewModels.first
+    let target = CommandRouting.preferringKeyWindow(
+        Array(viewModels),
+        keyWindow: NSApp.keyWindow,
+        window: { $0.associatedWindow }
+    )
     guard let target else {
         NSWorkspace.shared.open(url)
         return
@@ -312,63 +406,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func openNewWindow() {
-        let browserView = BrowserView()
-        let hostingView = NSHostingView(rootView: browserView)
-
-        let window = DetachedWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 1000, height: 700),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
-            backing: .buffered,
-            defer: false
-        )
-        window.contentView = hostingView
-        configureWindow(window)
-        window.title = "Cherry"
-
-        let delegate = DetachedWindowDelegate()
-        window.delegate = delegate
-        BrowserViewModel.detachedWindows.append(window)
-        BrowserViewModel.detachedWindowDelegates.append(delegate)
-
-        window.center()
-        window.makeKeyAndOrderFront(nil)
+        openBrowserWindow(isPrivate: false)
     }
 
     @objc private func openIncognitoWindow() {
-        let browserView = BrowserView(isPrivate: true)
-        let hostingView = NSHostingView(rootView: browserView)
-
-        let window = DetachedWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 1000, height: 700),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
-            backing: .buffered,
-            defer: false
-        )
-        window.contentView = hostingView
-        configureWindow(window)
-        window.title = "Incognito"
-
-        let delegate = DetachedWindowDelegate()
-        window.delegate = delegate
-        BrowserViewModel.detachedWindows.append(window)
-        BrowserViewModel.detachedWindowDelegates.append(delegate)
-
-        window.center()
-        window.makeKeyAndOrderFront(nil)
+        openBrowserWindow(isPrivate: true)
     }
 
     private func configureWindow(_ window: NSWindow) {
-        window.titlebarAppearsTransparent = true
-        window.titleVisibility = .hidden
-        window.isMovableByWindowBackground = false
-        window.isMovable = false
-        window.backgroundColor = .clear
-        window.isOpaque = false
-        window.titlebarSeparatorStyle = .none
-
-        window.standardWindowButton(.closeButton)?.isHidden = false
-        window.standardWindowButton(.miniaturizeButton)?.isHidden = false
-        window.standardWindowButton(.zoomButton)?.isHidden = false
+        configureBrowserWindow(window)
     }
 
     @objc private func windowDidEnterFullScreen(_ notification: Notification) {
@@ -384,30 +430,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
-// MARK: - Notification Names for menu commands
+// MARK: - Notification Names
+
+// The per-command notifications this file used to declare are gone: every user
+// command now travels as a `BrowserCommand` over `.browserCommand`. What's left
+// are the three EVENTS the browser reports to itself — they're not commands, so
+// they have no menu item and no shortcut.
 
 extension Notification.Name {
-    static let newTab = Notification.Name("newTab")
-    static let closeTab = Notification.Name("closeTab")
-    static let reloadPage = Notification.Name("reloadPage")
-    static let stopLoading = Notification.Name("stopLoading")
-    static let goBack = Notification.Name("goBack")
-    static let goForward = Notification.Name("goForward")
-    static let reopenClosedTab = Notification.Name("reopenClosedTab")
-    static let findInPage = Notification.Name("findInPage")
-    static let zoomIn = Notification.Name("zoomIn")
-    static let zoomOut = Notification.Name("zoomOut")
-    static let actualSize = Notification.Name("actualSize")
-    static let showHistory = Notification.Name("showHistory")
-    static let showBookmarks = Notification.Name("showBookmarks")
-    static let showSettingsPage = Notification.Name("showSettingsPage")
-    static let addBookmark = Notification.Name("addBookmark")
-    static let showDownloads = Notification.Name("showDownloads")
-    static let showWebInspector = Notification.Name("showWebInspector")
+    /// Posted by `WebViewWrapper` from a page's "Inspect Element" context menu,
+    /// to surface the dev tools panel on the element it just selected.
     static let showConsole = Notification.Name("showConsole")
-    static let viewSource = Notification.Name("viewSource")
-    static let autoFillPassword = Notification.Name("autoFillPassword")
-    static let showCommandPalette = Notification.Name("showCommandPalette")
+    /// Posted by `WebViewWrapper` when Focus Mode blocks a navigation.
     static let siteBlocked = Notification.Name("CherrySiteBlocked")
+    /// Posted by `FocusModeManager` when a focus session ends.
     static let focusModeSessionEnded = Notification.Name("CherryFocusModeSessionEnded")
 }

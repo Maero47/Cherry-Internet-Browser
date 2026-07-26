@@ -8,7 +8,14 @@ import SwiftUI
 struct BookmarkBarView: View {
     @Bindable var repository: BookmarkRepository
     let onBookmarkClick: (Bookmark) -> Void
+    /// ⌘-click, middle-click and "Open in New Tab" — opens in the background.
+    var onOpenInNewTab: ((Bookmark) -> Void)? = nil
     var isPrivateMode: Bool = false
+
+    /// The bookmark whose "Edit…" sheet is open. Lives here rather than on the
+    /// item so the sheet survives the item view being rebuilt by the repository
+    /// refresh that a rename triggers.
+    @State private var editingBookmark: Bookmark? = nil
 
     /// Imported Firefox theme overrides. Both nil when no theme is active or
     /// this is a private window (private windows keep their stock look).
@@ -23,9 +30,13 @@ struct BookmarkBarView: View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 4) {
                 ForEach(repository.bookmarkBarItems) { bookmark in
-                    BookmarkBarItemView(bookmark: bookmark) {
-                        onBookmarkClick(bookmark)
-                    }
+                    BookmarkBarItemView(
+                        bookmark: bookmark,
+                        action: { onBookmarkClick(bookmark) },
+                        onOpenInNewTab: onOpenInNewTab.map { open in { open(bookmark) } },
+                        onEdit: { editingBookmark = bookmark },
+                        onDelete: { repository.deleteBookmark(bookmark) }
+                    )
                 }
 
                 if repository.bookmarkBarItems.isEmpty {
@@ -62,17 +73,35 @@ struct BookmarkBarView: View {
                 }
             }
         }
+        .sheet(item: $editingBookmark) { bookmark in
+            EditBookmarkView(bookmark: bookmark) { updated in
+                repository.updateBookmark(updated)
+            }
+        }
     }
 }
 
 struct BookmarkBarItemView: View {
     let bookmark: Bookmark
     let action: () -> Void
+    var onOpenInNewTab: (() -> Void)? = nil
+    var onEdit: (() -> Void)? = nil
+    var onDelete: (() -> Void)? = nil
 
     @State private var isHovering = false
 
+    /// ⌘-click opens in a background tab, a plain click navigates here — the
+    /// behavior every browser's bookmark bar has.
+    private func open() {
+        if NSEvent.isCommandClick, let onOpenInNewTab {
+            onOpenInNewTab()
+        } else {
+            action()
+        }
+    }
+
     var body: some View {
-        Button(action: action) {
+        Button(action: open) {
             HStack(spacing: 4) {
                 if let favicon = bookmark.favicon {
                     Image(nsImage: favicon)
@@ -100,12 +129,140 @@ struct BookmarkBarItemView: View {
         .onHover { hovering in
             isHovering = hovering
         }
+        .overlay {
+            if let onOpenInNewTab {
+                AuxClickCatcher(onMiddleClick: onOpenInNewTab)
+            }
+        }
         .contextMenu {
             Button("Open") { action() }
-            Button("Open in New Tab") { /* TODO */ }
+            if let onOpenInNewTab {
+                Button("Open in New Tab") { onOpenInNewTab() }
+            }
             Divider()
-            Button("Edit...") { /* TODO */ }
-            Button("Delete") { /* TODO */ }
+            Button("Copy Link") {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(bookmark.url.absoluteString, forType: .string)
+            }
+            Divider()
+            if let onEdit {
+                Button("Edit…") { onEdit() }
+            }
+            if let onDelete {
+                Button("Delete", role: .destructive) { onDelete() }
+            }
+        }
+    }
+}
+
+/// Rename a bookmark / change its folder / move it in or out of the bookmark
+/// bar. Reached from the bookmark bar's "Edit…" context-menu item, which had no
+/// implementation and no alternative — the bar was the one surface where you
+/// could not change or remove a bookmark you had saved.
+struct EditBookmarkView: View {
+    @Environment(\.dismiss) private var dismiss
+
+    let bookmark: Bookmark
+    let onSave: (Bookmark) -> Void
+
+    @State private var title: String = ""
+    @State private var urlString: String = ""
+    @State private var selectedFolder: String? = nil
+    @State private var isInBookmarkBar: Bool = false
+
+    @Bindable private var repository = BookmarkRepository.shared
+
+    /// Save is blocked on anything that wouldn't survive a round trip: an empty
+    /// name, or a URL that doesn't parse.
+    private var editedURL: URL? {
+        URL(string: urlString.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    var body: some View {
+        VStack(spacing: 16) {
+            HStack {
+                if let favicon = bookmark.favicon {
+                    Image(nsImage: favicon)
+                        .resizable()
+                        .frame(width: 32, height: 32)
+                } else {
+                    Image(systemName: "bookmark.fill")
+                        .font(.system(size: 24))
+                        .foregroundStyle(SettingsManager.shared.accentColor)
+                }
+
+                Text("Edit Bookmark")
+                    .font(.headline)
+
+                Spacer()
+            }
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: 12) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Name")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    TextField("Bookmark name", text: $title)
+                        .textFieldStyle(.roundedBorder)
+                }
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Address")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    TextField("https://example.com", text: $urlString)
+                        .textFieldStyle(.roundedBorder)
+                }
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Folder")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    Picker("", selection: $selectedFolder) {
+                        Text("None").tag(nil as String?)
+                        ForEach(repository.folders, id: \.self) { folder in
+                            Text(folder).tag(folder as String?)
+                        }
+                    }
+                    .labelsHidden()
+                }
+
+                Toggle("Show in Bookmark Bar", isOn: $isInBookmarkBar)
+                    .toggleStyle(.checkbox)
+            }
+
+            Divider()
+
+            HStack {
+                Button("Cancel") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+
+                Spacer()
+
+                Button("Save") {
+                    guard let url = editedURL else { return }
+                    var updated = bookmark
+                    updated.title = title
+                    updated.url = url
+                    updated.folder = selectedFolder
+                    updated.isInBookmarkBar = isInBookmarkBar
+                    onSave(updated)
+                    dismiss()
+                }
+                .keyboardShortcut(.defaultAction)
+                .buttonStyle(.borderedProminent)
+                .disabled(title.isEmpty || editedURL == nil)
+            }
+        }
+        .padding(20)
+        .frame(width: 350)
+        .onAppear {
+            title = bookmark.title
+            urlString = bookmark.url.absoluteString
+            selectedFolder = bookmark.folder
+            isInBookmarkBar = bookmark.isInBookmarkBar
         }
     }
 }

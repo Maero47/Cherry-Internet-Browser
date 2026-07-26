@@ -64,6 +64,11 @@ struct NavigationBarView: View {
     /// SettingsManager is only the seed/default for newly opened windows.
     var isVerticalTabBarCollapsed: Bool = false
 
+    /// Incremented by `BrowserContentView` when the "Focus Address Bar" (⌘L)
+    /// command targets THIS pane. Forwarded to the omnibox, which takes focus
+    /// on every change.
+    var focusAddressBarTrigger: Int = 0
+
     /// Whether to surface loading chrome (omnibox spinner, Stop button).
     /// The covered site stays live behind an internal cherry:// page, but its
     /// loading state must not leak onto the internal page's chrome.
@@ -108,6 +113,7 @@ struct NavigationBarView: View {
                 // is shown — don't wear its https lock on a cherry:// location.
                 isSecure: tab.internalPage == nil && tab.url?.scheme == "https",
                 isPrivateMode: isPrivateMode,
+                focusTrigger: focusAddressBarTrigger,
                 onSubmit: { input in
                     // If a suggestion is selected via keyboard, use that instead
                     if let idx = selectedSuggestionIndex,

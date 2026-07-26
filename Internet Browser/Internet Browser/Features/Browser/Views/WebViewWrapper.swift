@@ -171,6 +171,10 @@ struct WebViewWrapper: NSViewRepresentable {
         // the JS-side mute state lives in the page's document, so it's lost
         // on sleep/wake and any other webView recreation.
         tab.applyMuteState()
+        // Same story for page zoom: `pageZoom` belongs to the WKWebView, so a
+        // 150%-zoomed tab would snap back to 100% on sleep/wake or Home
+        // without this. The level itself lives on the Tab.
+        tab.applyZoomLevel()
 
         // Enable Safari Web Inspector attachment (Develop > Show Web Inspector in menu bar)
         if #available(macOS 13.3, *) {

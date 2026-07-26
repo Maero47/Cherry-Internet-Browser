@@ -7,15 +7,10 @@ import SwiftUI
 
 enum AppConstants {
     static let appName = "Cherry"
+    /// Seeds `SettingsManager.homepage` for a fresh install. Only used when the
+    /// user turns on a custom homepage (`HomepagePreference`); Cherry's own
+    /// new-tab page is Home by default.
     static let defaultHomePage = "https://www.google.com"
-    static let newTabPage = "about:blank"
-
-    enum Search {
-        static let defaultEngine = SearchEngine.google
-        static let googleURL = "https://www.google.com/search?q="
-        static let duckDuckGoURL = "https://duckduckgo.com/?q="
-        static let bingURL = "https://www.bing.com/search?q="
-    }
 
     enum UI {
         static let tabBarHeight: CGFloat = 38
@@ -24,11 +19,6 @@ enum AppConstants {
         static let maxTabWidth: CGFloat = 240
         static let tabCornerRadius: CGFloat = 8
         static let toolbarIconSize: CGFloat = 16
-    }
-
-    enum Colors {
-        static var accent: Color { Color(hex: SettingsManager.shared.accentColorHex) }
-        static var accentBlue: Color { Color(hex: SettingsManager.shared.accentColorHex) }
     }
 }
 

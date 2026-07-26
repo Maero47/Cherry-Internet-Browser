@@ -11,6 +11,10 @@ struct OmniboxView: View {
     let isSecure: Bool
     /// Private windows are never themed by an imported Firefox theme.
     var isPrivateMode: Bool = false
+    /// Any change takes keyboard focus (View ▸ Focus Address Bar, ⌘L). A
+    /// counter rather than a Bool so repeated ⌘L presses each re-focus and
+    /// re-select, the way every browser's address bar behaves.
+    var focusTrigger: Int = 0
     let onSubmit: (String) -> Void
     let onFocus: () -> Void
     var onTextChange: ((String) -> Void)? = nil
@@ -78,6 +82,18 @@ struct OmniboxView: View {
                 .onKeyPress(.escape) {
                     onEscape?()
                     return onEscape != nil ? .handled : .ignored
+                }
+                .onChange(of: focusTrigger) { _, _ in
+                    // Already focused? Re-select all, which `onChange(of:
+                    // isFocused)` would otherwise skip.
+                    if isFocused {
+                        DispatchQueue.main.async {
+                            NSApp.keyWindow?.firstResponder?
+                                .tryToPerform(#selector(NSText.selectAll(_:)), with: nil)
+                        }
+                    } else {
+                        isFocused = true
+                    }
                 }
 
             // Loading indicator or reload button

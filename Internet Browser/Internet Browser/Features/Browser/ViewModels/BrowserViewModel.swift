@@ -80,9 +80,31 @@ final class BrowserViewModel {
     // MARK: - PDF detection
     var isViewingPDF: Bool = false
 
-    // MARK: - Screenshot toast
+    // MARK: - Status toast
+    // A brief bottom-of-window message. Was screenshot-only; now also carries
+    // the "zoom doesn't apply here" reply, so the icon travels with the text.
     var showScreenshotToast: Bool = false
     var screenshotToastMessage: String = ""
+    var screenshotToastIcon: String = "camera.fill"
+    var screenshotToastIconColor: Color = .green
+    @ObservationIgnored private var statusToastDismissTask: Task<Void, Never>?
+
+    /// Shows `message` for three seconds. Re-showing while one is up replaces
+    /// it and restarts the timer, rather than letting the first one's
+    /// dismissal cut the second one short.
+    func showStatusToast(_ message: String, icon: String = "camera.fill", iconColor: Color = .green) {
+        screenshotToastMessage = message
+        screenshotToastIcon = icon
+        screenshotToastIconColor = iconColor
+        showScreenshotToast = true
+
+        statusToastDismissTask?.cancel()
+        statusToastDismissTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            guard !Task.isCancelled else { return }
+            self?.showScreenshotToast = false
+        }
+    }
 
     // MARK: - Command Palette
     var showCommandPalette: Bool = false
@@ -97,6 +119,16 @@ final class BrowserViewModel {
     var showAskThisPage: Bool = false
     var askThisPageTitle: String = ""
     var askThisPageText: String = ""
+
+    // MARK: - Address Bar Focus
+    /// Bumped by the "Focus Address Bar" (⌘L) command. `BrowserContentView`
+    /// watches it and forwards to its omnibox only when its pane is focused,
+    /// so exactly one address bar takes focus in split view.
+    private(set) var focusAddressBarTrigger: Int = 0
+
+    func focusAddressBar() {
+        focusAddressBarTrigger &+= 1
+    }
 
     // Keep strong references to detached windows and their delegates
     static var detachedWindows: [NSWindow] = []
@@ -246,6 +278,67 @@ final class BrowserViewModel {
         tab.reload()
     }
 
+    // MARK: - Zoom
+
+    /// Whether `tab` is showing a page zoom can act on. False on the new-tab
+    /// page, on any `cherry://` internal page, and while the Reader overlay is
+    /// up (it renders its own detached web view) — none of those are the
+    /// tab's `WKWebView`, so zooming them is not a thing that can happen.
+    ///
+    /// Mirrors the condition `BrowserContentView` uses to decide whether to
+    /// render `WebViewWrapper` at all.
+    func canZoom(_ tab: Tab?) -> Bool {
+        guard let tab, !showReaderMode else { return false }
+        return tab.internalPage == nil && !tab.showHomePage && !tab.showSettingsPage
+    }
+
+    /// The zoom steps ⌘+ / ⌘- walk through, matching Chrome's ladder.
+    /// `PageZoom.step(from:direction:)` owns the arithmetic so it can be
+    /// unit-tested without a web view.
+    ///
+    /// Refuses — with a visible reason — when there's no web page to zoom.
+    /// Recording the level anyway is worse than doing nothing: the keypress
+    /// looks like a no-op and then silently changes the size of whatever page
+    /// the user loads in that tab next.
+    func zoomIn(for tab: Tab?) {
+        guard canZoom(tab) else { reportZoomUnavailable(); return }
+        applyZoom(PageZoom.step(from: currentZoom(for: tab), direction: 1), to: tab)
+    }
+
+    func zoomOut(for tab: Tab?) {
+        guard canZoom(tab) else { reportZoomUnavailable(); return }
+        applyZoom(PageZoom.step(from: currentZoom(for: tab), direction: -1), to: tab)
+    }
+
+    /// Actual Size is always allowed: it can only ever CLEAR a level, never
+    /// leave a surprise behind, so it stays available on the new-tab page to
+    /// undo a zoom set before navigating away.
+    func resetZoom(for tab: Tab?) {
+        applyZoom(PageZoom.defaultLevel, to: tab)
+    }
+
+    private func reportZoomUnavailable() {
+        showStatusToast(
+            "Zoom applies to web pages",
+            icon: "magnifyingglass",
+            iconColor: .secondary
+        )
+    }
+
+    private func currentZoom(for tab: Tab?) -> Double {
+        tab?.zoomLevel ?? PageZoom.defaultLevel
+    }
+
+    /// Records the level on the TAB, then pushes it to the live web view. Going
+    /// through the tab means zooming works on a tab whose web view doesn't
+    /// exist yet (sleeping, or just sent Home) and survives every web-view
+    /// recreation instead of snapping back to 100%.
+    private func applyZoom(_ level: Double, to tab: Tab?) {
+        guard let tab else { return }
+        tab.zoomLevel = level
+        tab.applyZoomLevel()
+    }
+
     func stopLoading() {
         currentTab?.stopLoading()
     }
@@ -258,10 +351,13 @@ final class BrowserViewModel {
         goHome(for: tabManager.focusedTab)
     }
 
-    /// Takes a specific pane's tab to the home page IN PLACE (like `goBack(for:)`
-    /// acts on that tab), rather than spawning a new primary tab — so clicking
-    /// Home in the secondary split pane returns THAT pane to the home page
-    /// instead of creating an unrelated tab in the primary pane.
+    /// Takes a specific pane's tab home IN PLACE (like `goBack(for:)` acts on
+    /// that tab), rather than spawning a new primary tab — so clicking Home in
+    /// the secondary split pane returns THAT pane home instead of creating an
+    /// unrelated tab in the primary pane.
+    ///
+    /// "Home" is Cherry's new-tab page by default; setting a custom homepage in
+    /// General settings (`HomepagePreference`) sends it to that URL instead.
     func goHome(for tab: Tab?) {
         guard let tab else { return }
         // Release the old page like closeTab does, so its audio/JS/timers stop
@@ -283,7 +379,14 @@ final class BrowserViewModel {
         tab.loadingProgress = 0
         tab.showSettingsPage = false
         tab.internalPage = nil
-        tab.showHomePage = true
+
+        if let homepage = HomepagePreference.shared.homepageURL {
+            tab.showHomePage = false
+            tab.title = homepage.host ?? "Loading..."
+            tab.loadURL(homepage)
+        } else {
+            tab.showHomePage = true
+        }
     }
 
     // MARK: - Internal cherry:// Pages
@@ -641,35 +744,11 @@ final class BrowserViewModel {
         if tabManager.secondarySelectedTabID == tab.id { tabManager.secondarySelectedTabID = fresh.id }
     }
 
+    /// Used by the command palette. File ▸ New Incognito Window (⌘⇧N) calls
+    /// `openBrowserWindow(isPrivate:)` directly, because it has to work with no
+    /// browser window open at all — this is the same single implementation.
     func openPrivateWindow() {
-        let newBrowserView = BrowserView(isPrivate: true)
-        let hostingView = NSHostingView(rootView: newBrowserView)
-
-        let window = DetachedWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 1000, height: 700),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
-            backing: .buffered,
-            defer: false
-        )
-        window.contentView = hostingView
-        window.titlebarAppearsTransparent = true
-        window.titleVisibility = .hidden
-        window.isMovableByWindowBackground = false
-        window.isMovable = false
-        window.backgroundColor = .windowBackgroundColor
-        window.titlebarSeparatorStyle = .none
-        window.title = "Private Browsing"
-
-        // Use the shared delegate for close cleanup like every other detached
-        // window. The previous block-based observer's token was discarded, so
-        // the observation could never be removed and leaked per private window.
-        let delegate = DetachedWindowDelegate()
-        window.delegate = delegate
-        BrowserViewModel.detachedWindows.append(window)
-        BrowserViewModel.detachedWindowDelegates.append(delegate)
-
-        window.center()
-        window.makeKeyAndOrderFront(nil)
+        openBrowserWindow(isPrivate: true)
     }
 
     // MARK: - Vertical Tabs
@@ -722,6 +801,42 @@ final class BrowserViewModel {
     func openBookmark(_ bookmark: Bookmark, in tab: Tab) {
         tab.loadURL(bookmark.url)
         bookmarkRepository.incrementVisitCount(for: bookmark)
+    }
+
+    /// "Open in New Tab" / ⌘-click / middle-click on a bookmark. Opens in the
+    /// BACKGROUND (the current tab keeps focus), like every other browser.
+    func openBookmarkInNewTab(_ bookmark: Bookmark) {
+        openInBackgroundTab(bookmark.url, title: bookmark.title, favicon: bookmark.favicon)
+        bookmarkRepository.incrementVisitCount(for: bookmark)
+    }
+
+    /// Shared by the bookmark and history "Open in New Tab" paths.
+    ///
+    /// Background tabs stay LAZY: only the displayed tab gets a
+    /// `WebViewWrapper`, and the wrapper is what creates the web view, so
+    /// there's nothing to load into yet and the page loads when the tab is
+    /// first selected. (Eager loading is possible — `TabManager`'s research
+    /// tabs do it — but it needs an off-screen host window and a hand-built
+    /// configuration, which is a lot of machinery to spend on ⌘-clicking a
+    /// bookmark, and it would let a stack of middle-clicks load in parallel
+    /// behind the user's back.)
+    ///
+    /// What matters is that the tab is IDENTIFIABLE while it waits: the
+    /// bookmark's / history entry's own title and favicon are seeded here, the
+    /// same way session restore seeds a restored-but-unloaded tab, so
+    /// ⌘-clicking three rows gives three labelled tabs rather than three
+    /// indistinguishable "New Tab"s. The page's real title and icon take over
+    /// via KVO once it loads.
+    private func openInBackgroundTab(_ url: URL, title: String, favicon: NSImage?) {
+        let tab = tabManager.newTab(url: url, switchTo: false)
+        tab.isPrivate = isPrivateMode
+        tab.showHomePage = false
+        if !title.isEmpty {
+            tab.title = title
+        } else {
+            tab.title = url.host ?? url.absoluteString
+        }
+        tab.favicon = favicon
     }
 
     // MARK: - Sidebar
@@ -814,6 +929,11 @@ final class BrowserViewModel {
     /// Pane-targeted variant used by the full-page cherry://history view.
     func openHistoryItem(_ item: HistoryItem, in tab: Tab) {
         tab.loadURL(item.url)
+    }
+
+    /// "Open in New Tab" / ⌘-click / middle-click on a history row.
+    func openHistoryItemInNewTab(_ item: HistoryItem) {
+        openInBackgroundTab(item.url, title: item.title, favicon: item.favicon)
     }
 
     // MARK: - Find in Page
@@ -1349,6 +1469,14 @@ final class BrowserViewModel {
             if let groupID = entry.groupID {
                 restoredTab.group = groupsByID[groupID]
             }
+            // Restore page zoom. Written before the web view exists, which is
+            // fine — `Tab.applyZoomLevel()` pushes it as soon as one does.
+            // Sessions saved before zoom was persisted decode as nil and stay
+            // at 100%. Clamped to the ladder's bounds so a hand-edited or
+            // corrupt value can't produce an unreadable page.
+            if let zoomLevel = entry.zoomLevel {
+                restoredTab.zoomLevel = PageZoom.clamped(zoomLevel)
+            }
         }
 
         // Select the previously active tab
@@ -1398,12 +1526,7 @@ final class BrowserViewModel {
             do {
                 try pngData.write(to: fileURL)
                 DispatchQueue.main.async {
-                    self.screenshotToastMessage = "Screenshot saved to Downloads"
-                    self.showScreenshotToast = true
-                    // Auto-dismiss after 3 seconds
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
-                        self.showScreenshotToast = false
-                    }
+                    self.showStatusToast("Screenshot saved to Downloads", icon: "camera.fill")
                 }
             } catch {
                 // Silently fail

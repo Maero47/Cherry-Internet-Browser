@@ -5,12 +5,21 @@
 
 import Foundation
 
-/// One saved tab entry — URL + display title + optional tab-group membership.
-/// `groupID` is Optional so sessions saved before groups were persisted still decode.
+/// One saved tab entry — URL + display title + optional tab-group membership
+/// and page zoom.
+///
+/// Both extras are Optional so sessions saved before they were persisted still
+/// decode: Swift's synthesized decoder uses `decodeIfPresent` for Optional
+/// properties, so an absent key yields `nil` rather than a thrown error (the
+/// whole `loadSavedTabs` decode is all-or-nothing, so one missing key would
+/// otherwise silently drop the entire saved session).
 struct SavedTabEntry: Codable {
     let urlString: String
     let title: String
     var groupID: UUID? = nil
+    /// `nil` means "was at 100%" — written only for a tab the user actually
+    /// zoomed, so an un-zoomed session's JSON is byte-identical to before.
+    var zoomLevel: Double? = nil
 }
 
 /// One saved tab group — enough to recreate it (name, color, collapsed state,
@@ -67,7 +76,12 @@ final class SessionRestoreManager {
             if let selectedIndex, index == selectedIndex {
                 mappedSelectedIndex = entries.count
             }
-            entries.append(SavedTabEntry(urlString: url.absoluteString, title: tab.title, groupID: tab.group?.id))
+            entries.append(SavedTabEntry(
+                urlString: url.absoluteString,
+                title: tab.title,
+                groupID: tab.group?.id,
+                zoomLevel: tab.zoomLevel == PageZoom.defaultLevel ? nil : tab.zoomLevel
+            ))
         }
         guard !entries.isEmpty else {
             clearSession()
