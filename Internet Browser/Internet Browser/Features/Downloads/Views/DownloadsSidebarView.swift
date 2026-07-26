@@ -195,7 +195,6 @@ struct DownloadItemRow: View {
             if item.isActive, let prog = progress, prog.total > 0 {
                 ProgressView(value: Double(prog.downloaded), total: Double(prog.total))
                     .progressViewStyle(.linear)
-                    .tint(SettingsManager.shared.accentColor)
 
                 // Speed & ETA
                 if let speed = speedText {

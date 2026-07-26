@@ -14,7 +14,7 @@ final class GhostTabWindow: NSWindow {
     private static let chipSize = NSSize(width: 180, height: 36)
 
     init(tab: Tab) {
-        let hostingView = NSHostingView(rootView: GhostTabChipView(tab: tab))
+        let hostingView = cherryHostingView(GhostTabChipView(tab: tab))
         hostingView.frame = NSRect(origin: .zero, size: Self.chipSize)
 
         super.init(

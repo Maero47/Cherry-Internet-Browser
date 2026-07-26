@@ -107,6 +107,14 @@ struct GeneralSettingsView: View {
                             }
                         }
                     }
+
+                    // Said plainly rather than left as a mystery: macOS draws
+                    // these itself from its own accent colour and gives apps no
+                    // way to override it at runtime.
+                    Text("Focus rings, text selection, save panels and alerts are drawn by macOS and follow System Settings ▸ Appearance ▸ Accent colour.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
 
@@ -167,36 +175,7 @@ struct GeneralSettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
-            SettingsCard(
-                icon: "sparkles.rectangle.stack",
-                title: "Homepage Background",
-                subtitle: "Auto follows your accent color. Pick a theme to override it."
-            ) {
-                LazyVGrid(
-                    columns: [GridItem(.adaptive(minimum: 84, maximum: 120), spacing: 10)],
-                    spacing: 12
-                ) {
-                    HomepageSwatch(
-                        name: "Auto",
-                        colors: autoPreviewColors,
-                        isSelected: settings.homepageMatchesAccent,
-                        icon: "wand.and.stars"
-                    ) {
-                        settings.homepageMatchesAccent = true
-                    }
-
-                    ForEach(HomepageTheme.allCases) { theme in
-                        HomepageSwatch(
-                            name: theme.rawValue,
-                            colors: previewColors(for: theme),
-                            isSelected: !settings.homepageMatchesAccent && settings.homepageTheme == theme
-                        ) {
-                            settings.homepageTheme = theme
-                            settings.homepageMatchesAccent = false
-                        }
-                    }
-                }
-            }
+            homepageBackgroundCard
 
             SettingsCard(icon: "arrow.down.circle", title: "Downloads") {
                 SettingsLabeledRow(title: "Save files to") {
@@ -297,6 +276,72 @@ struct GeneralSettingsView: View {
                         Text("Enter a web address — Home falls back to the new tab page until you do.")
                             .font(.system(size: 11))
                             .foregroundStyle(.orange)
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: - Homepage background
+
+    /// The background picker. Every swatch previews the background it actually
+    /// produces, and every swatch is reachable: picking one takes the homepage
+    /// back from an imported theme's `ntp_background`, which used to outrank
+    /// this choice permanently.
+    @ViewBuilder
+    private var homepageBackgroundCard: some View {
+        SettingsCard(
+            icon: "sparkles.rectangle.stack",
+            title: "Homepage Background",
+            subtitle: "Auto follows your accent color. Pick a theme to override it."
+        ) {
+            if themeBackgroundIsAvailable {
+                Text(
+                    settings.homepageThemeBackgroundIsActive
+                        ? "\(activeThemeName) is providing the homepage background. Pick Auto or a theme below to use Cherry's instead — the rest of the Firefox theme stays active."
+                        : "\(activeThemeName) also has a homepage background. Pick \"Theme\" to use it."
+                )
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+
+            LazyVGrid(
+                columns: [GridItem(.adaptive(minimum: 84, maximum: 120), spacing: 10)],
+                spacing: 12
+            ) {
+                if let themeBackground = themeManager.homepageBackground {
+                    HomepageSwatch(
+                        name: "Theme",
+                        preview: .flat(themeBackground),
+                        isSelected: settings.homepageThemeBackgroundIsActive,
+                        icon: "flame.fill"
+                    ) {
+                        settings.homepageUsesThemeBackground = true
+                    }
+                }
+
+                HomepageSwatch(
+                    name: "Auto",
+                    preview: autoPreview,
+                    isSelected: settings.homepageMatchesAccent && !settings.homepageThemeBackgroundIsActive,
+                    icon: "wand.and.stars"
+                ) {
+                    settings.homepageMatchesAccent = true
+                    settings.homepageUsesThemeBackground = false
+                }
+
+                ForEach(HomepageTheme.allCases) { theme in
+                    HomepageSwatch(
+                        name: theme.rawValue,
+                        preview: .gradient(previewColors(for: theme)),
+                        isSelected: !settings.homepageMatchesAccent
+                            && !settings.homepageThemeBackgroundIsActive
+                            && settings.homepageTheme == theme
+                    ) {
+                        settings.homepageTheme = theme
+                        settings.homepageMatchesAccent = false
+                        settings.homepageUsesThemeBackground = false
                     }
                 }
             }
@@ -412,10 +457,20 @@ struct GeneralSettingsView: View {
         AccentColorOption.options.first { $0.hex == settings.accentColorHex }?.name ?? "Custom"
     }
 
-    /// Three sample stops (light → mid → deep) for a swatch preview gradient.
-    private var autoPreviewColors: [Color] {
+    private var themeBackgroundIsAvailable: Bool { themeManager.homepageBackground != nil }
+
+    private var activeThemeName: String { themeManager.activeTheme?.name ?? "This Firefox theme" }
+
+    /// What "Auto" actually paints: the accent's wallpaper image, or — for an
+    /// accent outside the palette, which ships no wallpaper — the accent-derived
+    /// mesh gradient. It used to always preview the mesh gradient, showing
+    /// something the user would never see for any of the eight palette accents.
+    private var autoPreview: HomepageSwatchPreview {
+        if let assetName = HomepageBackgroundResolver.wallpaperAssetName(forAccentHex: settings.accentColorHex) {
+            return .wallpaper(assetName: assetName)
+        }
         let colors = AccentDerivedPalette.gradientColors(fromHex: settings.accentColorHex)
-        return [colors[1], colors[4], colors[8]]
+        return .gradient([colors[1], colors[4], colors[8]])
     }
 
     private func previewColors(for theme: HomepageTheme) -> [Color] {

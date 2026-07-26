@@ -137,7 +137,6 @@ struct FocusModeSettingsView: View {
                             commitNewDomain()
                         }
                         .buttonStyle(.borderedProminent)
-                        .tint(accent)
                         .controlSize(.small)
                         .disabled(newDomain.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                         Button("Cancel") {

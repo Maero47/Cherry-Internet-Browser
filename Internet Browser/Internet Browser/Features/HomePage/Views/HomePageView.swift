@@ -13,29 +13,12 @@ private struct HomepageBackground: View {
     @State private var isDrifting = false
 
     private var settings: SettingsManager { SettingsManager.shared }
-    private var firefoxThemeHasHomepageBackground: Bool {
-        FirefoxThemeManager.shared.homepageBackground != nil
-    }
+    /// Whether the theme background is what's actually being painted — not
+    /// merely that the active theme defines one. See
+    /// `HomepageBackgroundResolver`.
+    private var themeBackgroundIsActive: Bool { settings.homepageThemeBackgroundIsActive }
 
-    private var wallpaperName: String? {
-        guard settings.homepageMatchesAccent, !firefoxThemeHasHomepageBackground else {
-            return nil
-        }
-
-        // Locale-independent: an identifier, not prose. (Hex digits happen to
-        // dodge the Turkish I/ı mapping today, but only by accident.)
-        switch settings.accentColorHex.uppercased(with: Locale(identifier: "en_US_POSIX")) {
-        case "DB283C": return "HomepageWallpaperDB283C"
-        case "2563EB": return "HomepageWallpaper2563EB"
-        case "059669": return "HomepageWallpaper059669"
-        case "7C3AED": return "HomepageWallpaper7C3AED"
-        case "EA580C": return "HomepageWallpaperEA580C"
-        case "DB2777": return "HomepageWallpaperDB2777"
-        case "0D9488": return "HomepageWallpaper0D9488"
-        case "6B7280": return "HomepageWallpaper6B7280"
-        default: return nil
-        }
-    }
+    private var wallpaperName: String? { settings.homepageWallpaperAssetName }
 
     var body: some View {
         ZStack {
@@ -81,7 +64,7 @@ private struct HomepageBackground: View {
             // into soft, legible pastels in light mode without changing a theme's hue.
             // An imported Firefox theme's ntp_background is an absolute color
             // (not light/dark adaptive), so it gets no wash at all.
-            if !firefoxThemeHasHomepageBackground {
+            if !themeBackgroundIsActive {
                 Color.white.opacity(colorScheme == .light ? 0.7 : 0.035)
             }
         }
@@ -122,8 +105,11 @@ struct HomePageView: View {
     private var accent: Color { SettingsManager.shared.accentColor }
     private var foreground: Color {
         // An active Firefox theme's ntp_text keeps text legible against its
-        // absolute ntp_background; otherwise stay scheme-adaptive as before.
-        if let themeText = FirefoxThemeManager.shared.homepageText {
+        // absolute ntp_background — but only while that background is the one
+        // being painted. Against Cherry's own wallpaper it would be a colour
+        // chosen for a surface that isn't there, so we stay scheme-adaptive.
+        if SettingsManager.shared.homepageThemeBackgroundIsActive,
+           let themeText = FirefoxThemeManager.shared.homepageText {
             return themeText
         }
         return colorScheme == .dark ? .white : Color(red: 0.09, green: 0.08, blue: 0.11)
@@ -450,7 +436,6 @@ private struct ShortcutForm: View {
                 Button(actionTitle, action: onCommit)
                     .keyboardShortcut(.defaultAction)
                     .buttonStyle(.borderedProminent)
-                    .tint(SettingsManager.shared.accentColor)
                     .disabled(!canCommit)
             }
         }

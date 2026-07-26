@@ -136,8 +136,6 @@ struct BrowserView: View {
             .background(Color(nsColor: .windowBackgroundColor))
             .background { WindowConfigurator() }
             .background { WindowRegistrar(viewModel: viewModel) }
-            .preferredColorScheme(SettingsManager.shared.resolvedColorScheme)
-            .tint(SettingsManager.shared.accentColor)
             .focusable()
             .focusEffectDisabled()
             .onKeyPress(.return) { .ignored }

@@ -71,7 +71,6 @@ struct ClearDataView: View {
                     }
                 }
                 .buttonStyle(.borderedProminent)
-                .tint(SettingsManager.shared.accentColor)
                 .disabled(isClearing || (!clearHistory && !clearCookies && !clearCache))
                 .keyboardShortcut(.defaultAction)
             }

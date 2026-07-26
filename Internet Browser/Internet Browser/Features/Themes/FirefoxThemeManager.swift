@@ -235,6 +235,12 @@ final class FirefoxThemeManager {
             backgrounds: Self.loadBackgrounds(backgrounds, themeDirectory: themeDirectory)
         )
 
+        // A freshly imported theme gets to show its own new-tab background, the
+        // way Firefox does — including for a user who had previously opted a
+        // different theme's background out. Picking any swatch in Settings ▸
+        // Homepage Background clears this again.
+        SettingsManager.shared.homepageUsesThemeBackground = true
+
         if let previousID {
             try? FileManager.default.removeItem(
                 at: Self.themesDirectory.appendingPathComponent(previousID, isDirectory: true))

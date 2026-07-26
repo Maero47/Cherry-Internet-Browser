@@ -17,6 +17,7 @@ struct Internet_BrowserApp: App {
     var body: some Scene {
         WindowGroup {
             BrowserView()
+                .cherryWindowRoot()
         }
         .windowStyle(.hiddenTitleBar)
         .commands {
@@ -232,7 +233,7 @@ private struct CommandItem: View {
 /// copies, one of which (the ⌘N menu item) was an empty closure.
 @MainActor
 func openBrowserWindow(isPrivate: Bool) {
-    let hostingView = NSHostingView(rootView: BrowserView(isPrivate: isPrivate))
+    let hostingView = cherryHostingView(BrowserView(isPrivate: isPrivate))
 
     let window = DetachedWindow(
         contentRect: NSRect(x: 0, y: 0, width: 1000, height: 700),

@@ -163,7 +163,7 @@ struct FolderChip: View {
                 .font(.system(size: 12))
                 .padding(.horizontal, 10)
                 .padding(.vertical, 4)
-                .background(isSelected ? Color.accentColor : Color(nsColor: .controlBackgroundColor))
+                .background(isSelected ? SettingsManager.shared.accentColor : Color(nsColor: .controlBackgroundColor))
                 .foregroundStyle(isSelected ? .white : .primary)
                 .cornerRadius(12)
         }
