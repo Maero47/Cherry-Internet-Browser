@@ -76,6 +76,40 @@ final class HostNormalizerTests: XCTestCase {
         XCTAssertEqual(HostNormalizer.baseDomain("www.example.govt.nz"), "example.govt.nz")
     }
 
+    /// The Public Suffix List's *private* section: shared hosting where every
+    /// customer is a subdomain. Missing these produces a base domain shared by
+    /// every tenant — the `co.uk` hole at a different suffix.
+    func testBaseDomainOfSharedHostingSuffixesKeepsTheTenantLabel() {
+        let cases = [
+            "attacker.github.io": "attacker.github.io",
+            "someone.blogspot.com": "someone.blogspot.com",
+            "app.vercel.app": "app.vercel.app",
+            "site.netlify.app": "site.netlify.app",
+            "docs.pages.dev": "docs.pages.dev",
+            "api.workers.dev": "api.workers.dev",
+            "thing.herokuapp.com": "thing.herokuapp.com",
+            "proj.firebaseapp.com": "proj.firebaseapp.com",
+            "svc.azurewebsites.net": "svc.azurewebsites.net",
+            "bucket.s3.amazonaws.com": "bucket.s3.amazonaws.com",
+            "dist.cloudfront.net": "dist.cloudfront.net",
+        ]
+        for (host, expected) in cases {
+            XCTAssertEqual(HostNormalizer.baseDomain(host), expected, host)
+        }
+    }
+
+    func testSharedHostingSuffixesCannotEnterAWhitelistAlone() {
+        for suffix in ["github.io", "vercel.app", "pages.dev", "s3.amazonaws.com"] {
+            XCTAssertTrue(HostNormalizer.isPublicSuffix(suffix), suffix)
+            XCTAssertFalse(HostNormalizer.isRegistrable(suffix), suffix)
+        }
+    }
+
+    func testLongestSuffixWins() {
+        // `amazonaws.com` alone is not the suffix that matters here.
+        XCTAssertEqual(HostNormalizer.baseDomain("a.b.bucket.s3.amazonaws.com"), "bucket.s3.amazonaws.com")
+    }
+
     func testBaseDomainLeavesIPLiteralsAlone() {
         XCTAssertEqual(HostNormalizer.baseDomain("192.168.1.10"), "192.168.1.10")
         XCTAssertEqual(HostNormalizer.baseDomain("[::1]"), "[::1]")
@@ -90,6 +124,21 @@ final class HostNormalizerTests: XCTestCase {
         XCTAssertTrue(HostNormalizer.isPublicSuffix("gov.uk"))
         XCTAssertFalse(HostNormalizer.isPublicSuffix("bbc.co.uk"))
         XCTAssertFalse(HostNormalizer.isPublicSuffix("example.com"))
+    }
+
+    /// The purge in `SettingsManager` uses the TABLE only. The
+    /// `<generic>.<ccTLD>` heuristic reads real, registrable sites as
+    /// suffixes; deleting a pause the user deliberately set on one of those
+    /// would be a worse bug than keeping a narrow entry.
+    func testKnownPublicSuffixIsTableDrivenAndSpareTheseRealSites() {
+        XCTAssertTrue(HostNormalizer.isKnownPublicSuffix("co.uk"))
+        XCTAssertTrue(HostNormalizer.isKnownPublicSuffix("com.au"))
+        XCTAssertTrue(HostNormalizer.isKnownPublicSuffix("github.io"))
+        XCTAssertTrue(HostNormalizer.isKnownPublicSuffix("com"))
+        // Registrable sites the heuristic misreads — must survive the purge.
+        XCTAssertFalse(HostNormalizer.isKnownPublicSuffix("web.de"))
+        XCTAssertFalse(HostNormalizer.isKnownPublicSuffix("in.gr"))
+        XCTAssertFalse(HostNormalizer.isKnownPublicSuffix("bbc.co.uk"))
     }
 
     func testOnlyRegistrableHostsCanEnterAWhitelist() {

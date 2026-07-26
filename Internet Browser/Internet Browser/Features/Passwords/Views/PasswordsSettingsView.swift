@@ -13,7 +13,6 @@ struct PasswordsSettingsView: View {
     @State private var selectedID: UUID?
     @State private var showAddSheet = false
     @State private var isAuthenticated = false
-    @State private var isAuthenticating = false
 
     private var filteredPasswords: [PasswordItem] {
         if searchText.isEmpty {
@@ -38,9 +37,12 @@ struct PasswordsSettingsView: View {
         // on screen while the user is elsewhere is the whole thing this gate
         // is meant to prevent.
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in
-            // Not while a prompt is up: the system auth panel can itself take
-            // focus, and re-locking mid-prompt would throw away the answer.
-            guard !isAuthenticating else { return }
+            // Not while ANY prompt is up — including the reveal/copy/edit ones
+            // raised from a row. The LocalAuthentication panel takes focus, so
+            // re-locking here would tear down the row that is waiting for the
+            // answer. The flag lives on PasswordManager for exactly that
+            // reason: a view-local one only ever covered this gate.
+            guard !PasswordManager.shared.isPrompting else { return }
             isAuthenticated = false
         }
     }
@@ -68,9 +70,7 @@ struct PasswordsSettingsView: View {
     }
 
     private func authenticate() {
-        isAuthenticating = true
         PasswordManager.shared.authenticateWithTouchID(reason: "Access saved passwords") { success in
-            isAuthenticating = false
             isAuthenticated = success
         }
     }

@@ -19,15 +19,27 @@ import Foundation
 enum DownloadQuarantine {
 
     /// Attaches quarantine metadata to a finished download.
+    ///
     /// - Parameter sourceURL: where the bytes came from, recorded so Gatekeeper
     ///   and the Finder can tell the user which site they trusted.
-    static func apply(to fileURL: URL, sourceURL: URL?) {
+    /// - Parameter isPrivate: the download came from a private window. The
+    ///   origin is then **omitted**: LaunchServices copies `LSQuarantineDataURL`
+    ///   and `LSQuarantineOriginURL` into
+    ///   `~/Library/Preferences/com.apple.LaunchServices.QuarantineEventsV2`,
+    ///   a permanent on-disk SQLite log. Keeping the Core Data row out of a
+    ///   private download while writing the same URL there instead would be no
+    ///   privacy at all. Type/agent/timestamp alone still set the quarantine
+    ///   bit, which is what makes Gatekeeper prompt.
+    /// - Returns: `false` if the metadata could not be written — the file is
+    ///   then NOT quarantined and must be treated as unverified.
+    @discardableResult
+    static func apply(to fileURL: URL, sourceURL: URL?, isPrivate: Bool) -> Bool {
         var properties: [String: Any] = [
             kLSQuarantineTypeKey as String: kLSQuarantineTypeWebDownload as String,
             kLSQuarantineAgentNameKey as String: "Cherry",
             kLSQuarantineTimeStampKey as String: Date(),
         ]
-        if let sourceURL {
+        if let sourceURL, !isPrivate {
             properties[kLSQuarantineDataURLKey as String] = sourceURL.absoluteString
             properties[kLSQuarantineOriginURLKey as String] = sourceURL.absoluteString
         }
@@ -37,8 +49,16 @@ enum DownloadQuarantine {
         values.quarantineProperties = properties
         do {
             try url.setResourceValues(values)
+            return true
         } catch {
-            print("Failed to quarantine downloaded file: \(error)")
+            // Filesystems without extended attributes (exFAT, some network
+            // shares) land here. Silently failing would leave a file that
+            // looks quarantined but opens with no Gatekeeper prompt at all.
+            print("""
+            [Downloads] ⚠️ Could not quarantine \(fileURL.lastPathComponent) — \
+            it will open WITHOUT a Gatekeeper check. \(error.localizedDescription)
+            """)
+            return false
         }
     }
 
@@ -47,14 +67,14 @@ enum DownloadQuarantine {
     /// appears for some of them, and a double-click in a browser sidebar is
     /// too small a gesture to launch an installer on its own.
     static let riskyExtensions: Set<String> = [
-        "app", "dmg", "pkg", "mpkg", "iso",
+        "app", "dmg", "pkg", "mpkg", "iso", "xip", "mobileconfig", "appex",
         "command", "sh", "bash", "zsh", "csh", "tool",
         "scpt", "scptd", "applescript", "workflow", "action",
         "jar", "pl", "py", "rb", "php",
         "exe", "msi", "bat", "cmd", "scr", "vbs",
         "deb", "rpm", "run", "bin", "apk",
         "prefpane", "kext", "dylib", "so", "plugin", "bundle", "qlgenerator",
-        "terminal", "webloc", "inetloc", "url", "shortcut",
+        "terminal", "webloc", "inetloc", "fileloc", "url", "shortcut",
     ]
 
     static func isRisky(_ fileURL: URL) -> Bool {

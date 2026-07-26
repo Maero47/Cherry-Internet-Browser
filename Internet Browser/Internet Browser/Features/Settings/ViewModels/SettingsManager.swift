@@ -407,15 +407,27 @@ final class SettingsManager {
         // Privacy
         self.adBlockEnabled = defaults.object(forKey: Keys.adBlockEnabled) as? Bool ?? true
         let savedDomains = defaults.stringArray(forKey: Keys.adBlockWhitelistedDomains) ?? []
-        // Drop entries that aren't registrable domains. Older builds derived
-        // the entry with "last two labels", so a user who paused the blocker
-        // on bbc.co.uk has `co.uk` stored — which silently disables blocking
-        // on every .co.uk site until it's removed.
-        self.adBlockWhitelistedDomains = Set(
+        // Drop entries that are public suffixes. Older builds derived the
+        // entry with "last two labels", so a user who paused the blocker on
+        // bbc.co.uk has `co.uk` stored — which silently disables blocking on
+        // every .co.uk site.
+        //
+        // Purging uses the explicit TABLE only (`isKnownPublicSuffix`), never
+        // the `<generic>.<ccTLD>` heuristic: the heuristic reads real sites
+        // like `web.de` and `in.gr` as suffixes, and deleting a pause the user
+        // deliberately set is worse than keeping a narrow one.
+        let cleaned = Set(
             savedDomains
                 .map(HostNormalizer.normalizedHost)
-                .filter(HostNormalizer.isRegistrable)
+                .filter { !$0.isEmpty && !HostNormalizer.isKnownPublicSuffix($0) }
         )
+        self.adBlockWhitelistedDomains = cleaned
+        // `didSet` does not fire during `init`, so write the repaired set back
+        // by hand — otherwise the stale entry is re-read on every launch and
+        // the "purge" only ever lasts for one session.
+        if cleaned != Set(savedDomains) {
+            defaults.set(Array(cleaned), forKey: Keys.adBlockWhitelistedDomains)
+        }
 
         if let cookieRaw = defaults.string(forKey: Keys.blockCookies),
            let level = CookieBlockingLevel(rawValue: cookieRaw) {
@@ -456,8 +468,14 @@ final class SettingsManager {
         // governs the app's own URLSession traffic (favicon fetches, filter
         // list downloads, search suggestions) and is ignored by WKWebView.
         let level = blockCookies
-        Task { @MainActor in
-            CookiePolicyManager.shared.updatePolicy(level)
+        // Synchronously when we're already on the main actor — which is every
+        // real call site. Hopping through a Task left a window in which a web
+        // view could be built between the setting changing and the policy
+        // being told about it, and that web view would carry the old list.
+        if Thread.isMainThread {
+            MainActor.assumeIsolated { CookiePolicyManager.shared.updatePolicy(level) }
+        } else {
+            Task { @MainActor in CookiePolicyManager.shared.updatePolicy(level) }
         }
 
         let policy: HTTPCookie.AcceptPolicy

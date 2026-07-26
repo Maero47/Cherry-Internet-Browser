@@ -6,6 +6,18 @@
 import Foundation
 import WebKit
 
+extension Notification.Name {
+    /// Posted whenever a compiled `WKContentRuleList` appears, changes, or is
+    /// dropped — by `CookiePolicyManager` and by `AdBlockManager`.
+    ///
+    /// Rule lists compile asynchronously, and a web view only ever holds the
+    /// lists that existed when it was built. Without this, tabs restored at
+    /// launch (created before the first compile finishes), background-research
+    /// web views, and adopted popups all run with no rules attached, while the
+    /// settings UI says otherwise. Every coordinator listens and re-attaches.
+    static let cherryContentRuleListsChanged = Notification.Name("cherryContentRuleListsChanged")
+}
+
 /// Enforces the Cookie Policy picker.
 ///
 /// The picker used to do nothing at all: it set
@@ -21,15 +33,20 @@ import WebKit
 /// page's own `document.cookie` still works for the lifetime of the document.
 /// The settings UI says so rather than overpromising.
 @MainActor
+@Observable
 final class CookiePolicyManager {
     static let shared = CookiePolicyManager()
 
-    private var compiledList: WKContentRuleList?
-    private var compiledLevel: CookieBlockingLevel?
-    private var isCompiling = false
+    /// The list every web view should currently be carrying. `nil` for "Allow
+    /// All", and also while a newly selected policy is still compiling.
+    private(set) var compiledList: WKContentRuleList?
 
-    /// Identifier suffix is bumped whenever the emitted JSON changes, so a
-    /// previously compiled list is never reused for different rules.
+    /// Policy `compiledList` belongs to. Read by web views to tell "no list
+    /// because Allow All" apart from "no list yet".
+    private(set) var activeLevel: CookieBlockingLevel = .none
+
+    /// Identifier is versioned so a previously compiled list is never reused
+    /// for different rules.
     private static func identifier(for level: CookieBlockingLevel) -> String {
         "CherryCookiePolicy_V1_\(level.rawValue.replacingOccurrences(of: " ", with: "_"))"
     }
@@ -39,43 +56,60 @@ final class CookiePolicyManager {
     // MARK: - Apply
 
     /// Adds the current cookie rule list to a web view configuration. Called
-    /// for every new web view and again whenever the live rule lists are
-    /// rebuilt after a settings change.
+    /// for every new web view — fresh, adopted, or background — and again
+    /// whenever the live rule lists are rebuilt.
     func apply(to configuration: WKWebViewConfiguration) {
         guard let compiledList else { return }
         configuration.userContentController.add(compiledList)
     }
 
     /// Compiles the rule list for `level` (or drops it for "Allow All").
-    /// Idempotent: re-selecting the active level is a no-op.
+    ///
+    /// Not idempotent on the *stored* level alone: a repeat call for a level
+    /// whose compile failed will retry, and every successful compile posts
+    /// `cherryContentRuleListsChanged` so existing web views pick it up. The
+    /// previous version latched — it recorded the new level immediately and
+    /// returned early forever after, so the second policy change a user made
+    /// was silently a no-op.
     func updatePolicy(_ level: CookieBlockingLevel) {
-        guard compiledLevel != level else { return }
-        compiledLevel = level
-
         guard let json = Self.ruleJSON(for: level) else {
+            activeLevel = level
             compiledList = nil
+            NotificationCenter.default.post(name: .cherryContentRuleListsChanged, object: nil)
             return
         }
+        // Already compiled and in force.
+        if activeLevel == level, compiledList != nil { return }
 
-        isCompiling = true
         WKContentRuleListStore.default().compileContentRuleList(
             forIdentifier: Self.identifier(for: level),
             encodedContentRuleList: json
         ) { [weak self] ruleList, error in
             Task { @MainActor in
                 guard let self else { return }
-                self.isCompiling = false
+                // A newer selection may have landed while this compiled.
+                guard SettingsManager.shared.blockCookies == level else { return }
+
                 if let error {
-                    print("[Cookies] ❌ Compile error for \(level.rawValue): \(error.localizedDescription)")
+                    print("""
+                    [Cookies] ❌❌❌ POLICY "\(level.rawValue)" FAILED TO COMPILE — \
+                    COOKIES ARE NOT BEING BLOCKED. \(error.localizedDescription)
+                    """)
+                    self.compileFailure = error.localizedDescription
                     return
                 }
-                // A newer selection may have landed while this compiled.
-                guard self.compiledLevel == level else { return }
+                self.compileFailure = nil
+                self.activeLevel = level
                 self.compiledList = ruleList
                 print("[Cookies] ✅ Applied policy: \(level.rawValue)")
+                NotificationCenter.default.post(name: .cherryContentRuleListsChanged, object: nil)
             }
         }
     }
+
+    /// Non-nil when the selected policy could not be compiled, i.e. cookies
+    /// are not actually being blocked. Surfaced in Settings.
+    private(set) var compileFailure: String?
 
     // MARK: - Rules
 

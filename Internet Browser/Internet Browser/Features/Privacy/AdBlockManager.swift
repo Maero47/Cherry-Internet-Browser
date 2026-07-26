@@ -7,12 +7,30 @@ import WebKit
 import Foundation
 
 @MainActor
+@Observable
 final class AdBlockManager {
     static let shared = AdBlockManager()
 
     /// Multiple compiled rule lists — all get added to each webview
     private var compiledLists: [String: WKContentRuleList] = [:]
     private var isCompiling = false
+
+    /// Rule lists WebKit refused to compile, keyed by name. A rejected list is
+    /// invisible at runtime — the requests it would have blocked simply go
+    /// through — so this is surfaced in Settings rather than swallowed.
+    private(set) var compileFailures: [String: String] = [:]
+
+    /// True when some part of the blocklist is not in force.
+    var hasCompileFailure: Bool { !compileFailures.isEmpty }
+
+    /// Human-readable summary for the Settings warning row.
+    var compileFailureSummary: String? {
+        guard !compileFailures.isEmpty else { return nil }
+        return compileFailures
+            .sorted { $0.key < $1.key }
+            .map { "\($0.key): \($0.value)" }
+            .joined(separator: "\n")
+    }
 
     /// Whether any ad blocker rules are ready to use
     var rulesReady: Bool { !compiledLists.isEmpty }
@@ -159,12 +177,26 @@ final class AdBlockManager {
             Task { @MainActor in
                 guard let self else { return }
                 if let error {
-                    print("[AdBlocker] ❌ Compile error for \(name): \(error.localizedDescription)")
+                    // A rejected rule list means this whole set of block rules
+                    // is simply absent, while the UI still says blocking is
+                    // on. Never let that pass quietly: record it so Settings
+                    // can show it, and shout in the log.
+                    let message = error.localizedDescription
+                    self.compileFailures[name] = message
+                    print("""
+                    [AdBlocker] ❌❌❌ RULE LIST "\(name)" FAILED TO COMPILE — \
+                    NO NETWORK-LEVEL BLOCKING FROM THIS LIST. \(message)
+                    """)
+                    self.notifyWaiters()
                     return
                 }
+                self.compileFailures.removeValue(forKey: name)
                 self.compiledLists[name] = ruleList
                 print("[AdBlocker] ✅ Compiled \(name) successfully")
                 self.notifyWaiters()
+                // Web views created before this finished compiling have no
+                // rules attached — tell them to pick the list up.
+                NotificationCenter.default.post(name: .cherryContentRuleListsChanged, object: nil)
             }
         }
     }
@@ -342,33 +374,12 @@ final class AdBlockManager {
 
         print("[AdBlocker] Extracted \(domains.count) unique domains from EasyList")
 
-        var domainRules: [[String: Any]] = []
-        for domain in domains.sorted() {
-            domainRules.append(AdBlockRuleBuilder.blockRule(for: domain))
-            if domainRules.count >= 45000 { break }
-        }
-
-        // Consent platform + Cloudflare + CDN exceptions (ignore-previous-rules).
-        // Host-anchored — see AdBlockRuleBuilder: an unanchored substring here
-        // let any tracker cancel the whole blocklist for its own request.
-        for domain in AdBlockRuleBuilder.alwaysAllowedDomains {
-            domainRules.append(AdBlockRuleBuilder.exceptionRule(for: domain))
-        }
-
-        // Never block Cloudflare internal paths (/cdn-cgi/) — these serve challenge
-        // scripts, turnstile captchas, and other essential Cloudflare functionality
-        // from the SITE'S OWN domain
-        domainRules.append(AdBlockRuleBuilder.cdnCGIExceptionRule())
-
-        print("[AdBlocker] Domain rules: \(domainRules.count)")
-
-        let domainJSON: String
-        if let data = try? JSONSerialization.data(withJSONObject: domainRules, options: []),
-           let json = String(data: data, encoding: .utf8) {
-            domainJSON = json
-        } else {
-            domainJSON = "[]"
-        }
+        // Block rules, then the never-block exceptions (host-anchored — see
+        // AdBlockRuleBuilder: an unanchored substring let any tracker cancel
+        // the whole blocklist for its own request), then the Cloudflare
+        // /cdn-cgi/ path exception. Assembled by the same builder the
+        // compile test exercises.
+        let domainJSON = AdBlockRuleBuilder.domainRulesJSON(for: domains.sorted())
 
         try? domainJSON.write(to: cacheDir.appendingPathComponent("easylist_domains_v13.json"), atomically: true, encoding: .utf8)
         UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: lastUpdateKey)
@@ -712,9 +723,12 @@ final class AdBlockManager {
         """
     }
 
-    // MARK: - Supplementary Rules (hardcoded, guaranteed to compile)
+    // MARK: - Supplementary Rules (hardcoded)
 
-    private static func buildSupplementaryJSON() -> String {
+    /// Exposed (not private) so `AdBlockRuleCompilationTests` can push the
+    /// real output through `WKContentRuleListStore`. A string assertion cannot
+    /// tell you whether WebKit will accept a pattern; only compiling can.
+    static func buildSupplementaryJSON() -> String {
         // Every exact subdomain from the d3host adblock test list
         let exactDomains: [String] = [
             // Ads - Amazon
@@ -820,11 +834,7 @@ final class AdBlockManager {
         // Never block Cloudflare internal paths (/cdn-cgi/)
         rules.append(AdBlockRuleBuilder.cdnCGIExceptionRule())
 
-        guard let data = try? JSONSerialization.data(withJSONObject: rules, options: []),
-              let json = String(data: data, encoding: .utf8) else {
-            return "[]"
-        }
         print("[AdBlocker] Supplementary: \(rules.count) rules")
-        return json
+        return AdBlockRuleBuilder.json(from: rules)
     }
 }

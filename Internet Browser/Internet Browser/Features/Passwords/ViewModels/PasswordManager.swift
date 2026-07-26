@@ -51,6 +51,20 @@ final class PasswordManager {
         return expiry > Date()
     }
 
+    /// Outstanding `evaluatePolicy` calls. The LocalAuthentication panel is
+    /// presented by a system process and takes focus, so `didResignActive`
+    /// fires *while the user is authenticating*. Anything that re-locks on
+    /// deactivation must skip it for the lifetime of a prompt, or the prompt
+    /// throws away its own result: the view swaps back to the lock screen and
+    /// the success handler writes into a row that no longer exists.
+    private var promptCount = 0
+
+    /// True while any authentication prompt is on screen. Observable, and
+    /// shared — the previous `@State` flag in `PasswordsSettingsView` covered
+    /// only the initial unlock, leaving the reveal/copy/edit prompts to
+    /// discard their own authentication.
+    var isPrompting: Bool { promptCount > 0 }
+
     private init() {
         // Leaving the app, or the machine going to sleep, re-locks the vault:
         // an unattended Mac must not still be one click from revealing a
@@ -58,13 +72,15 @@ final class PasswordManager {
         let center = NotificationCenter.default
         for name in [NSApplication.didResignActiveNotification, NSApplication.willTerminateNotification] {
             center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
-                self?.invalidateAuthSession()
+                guard let self, !self.isPrompting else { return }
+                self.invalidateAuthSession()
             }
         }
         let workspaceCenter = NSWorkspace.shared.notificationCenter
         for name in [NSWorkspace.willSleepNotification, NSWorkspace.screensDidSleepNotification,
                      NSWorkspace.sessionDidResignActiveNotification] {
             workspaceCenter.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                // Sleep is not a prompt artefact — always re-lock.
                 self?.invalidateAuthSession()
             }
         }
@@ -104,11 +120,15 @@ final class PasswordManager {
             return
         }
 
+        promptCount += 1
         context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: reason) { success, _ in
             DispatchQueue.main.async { [self] in
                 if success {
                     authSessionExpiry = Date().addingTimeInterval(Self.authSessionDuration)
                 }
+                // Decremented only after the session is recorded, so a
+                // `didResignActive` racing the panel's dismissal can't undo it.
+                promptCount = max(0, promptCount - 1)
                 completion(success)
             }
         }
@@ -131,7 +151,15 @@ final class PasswordManager {
             // This is the last instruction before the secret enters the page.
             guard Self.credential(credential, matchesLivePageOf: webView) else { return }
             guard let password = repository.fetchPassword(for: credential.id) else { return }
-            let js = PasswordAutoFillScripts.autoFillScript(username: credential.username, password: password)
+            // The same origin is re-asserted inside the injected script, so
+            // the check also holds in the web content process at the moment
+            // the fields are written — evaluateJavaScript is async IPC and
+            // isn't pinned to the document checked above.
+            let js = PasswordAutoFillScripts.autoFillScript(
+                username: credential.username,
+                password: password,
+                expectedOrigin: Self.expectedOrigin(of: webView)
+            )
             webView.evaluateJavaScript(js) { _, error in
                 if let error {
                     print("Auto-fill error: \(error)")
@@ -153,6 +181,17 @@ final class PasswordManager {
     /// site the credential was saved for. `webView.url` is WebKit's committed
     /// main-frame URL — it cannot be forged by page script, unlike the origin
     /// the detection message used to carry.
+    /// `scheme://host` of the page currently loaded, in the form the injected
+    /// script compares against (`location.protocol + '//' + location.hostname`
+    /// — hostname, so a non-default port doesn't turn the guard into a silent
+    /// autofill failure).
+    private static func expectedOrigin(of webView: WKWebView) -> String? {
+        guard let url = webView.url,
+              let scheme = url.scheme.map(HostNormalizer.foldedASCII),
+              let host = url.host, !host.isEmpty else { return nil }
+        return "\(scheme)://\(HostNormalizer.foldedASCII(host))"
+    }
+
     private static func credential(_ credential: PasswordItem, matchesLivePageOf webView: WKWebView) -> Bool {
         guard let liveHost = webView.url?.host, !liveHost.isEmpty else { return false }
         guard let scheme = webView.url?.scheme.map(HostNormalizer.foldedASCII),

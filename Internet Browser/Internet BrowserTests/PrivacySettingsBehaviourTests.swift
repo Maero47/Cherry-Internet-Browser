@@ -57,6 +57,25 @@ final class PrivacySettingsBehaviourTests: XCTestCase {
         XCTAssertTrue(settings.adBlockWhitelistedDomains.isEmpty)
     }
 
+    func testPausingOnSharedHostingCoversOnlyThatTenant() {
+        let settings = SettingsManager.shared
+        settings.toggleAdBlockPause(for: URL(string: "https://attacker.github.io/page"))
+        XCTAssertEqual(settings.adBlockWhitelistedDomains, ["attacker.github.io"])
+        XCTAssertTrue(settings.isAdBlockPaused(for: URL(string: "https://attacker.github.io/other")))
+        // Every other GitHub Pages site keeps its blocking.
+        XCTAssertFalse(settings.isAdBlockPaused(for: URL(string: "https://victim.github.io/")))
+        XCTAssertFalse(settings.isAdBlockPaused(for: URL(string: "https://github.io/")))
+    }
+
+    func testPauseSticksOnSitesTheSuffixHeuristicMisreads() {
+        let settings = SettingsManager.shared
+        settings.toggleAdBlockPause(for: URL(string: "https://web.de/mail"))
+        XCTAssertEqual(settings.adBlockWhitelistedDomains, ["web.de"])
+        // The purge must not eat it: it is a real site, not a public suffix.
+        XCTAssertFalse(HostNormalizer.isKnownPublicSuffix("web.de"))
+        XCTAssertTrue(settings.isAdBlockPaused(for: URL(string: "https://web.de/")))
+    }
+
     func testPauseIgnoresURLsWithoutAHost() {
         let settings = SettingsManager.shared
         settings.toggleAdBlockPause(for: URL(string: "about:blank"))
@@ -71,6 +90,36 @@ final class PrivacySettingsBehaviourTests: XCTestCase {
         XCTAssertEqual(focus.cleanDomain("HTTPS://WWW.Reddit.com/r/swift"), "reddit.com")
         XCTAssertEqual(focus.cleanDomain("  news.ycombinator.com  "), "news.ycombinator.com")
         XCTAssertEqual(focus.cleanDomain("https://WIKI.example.com:8080/"), "wiki.example.com")
+    }
+
+    // MARK: - Auto-fill origin guard
+
+    /// `evaluateJavaScript` is async IPC and is not pinned to the document
+    /// that was checked on the Swift side, so the origin is re-asserted inside
+    /// the script, where it runs at the instant the fields are written.
+    func testAutoFillScriptRefusesToRunOnAnotherOrigin() {
+        let js = PasswordAutoFillScripts.autoFillScript(
+            username: "user@example.com",
+            password: "hunter2",
+            expectedOrigin: "https://accounts.google.com"
+        )
+        XCTAssertTrue(
+            js.contains("location.protocol + '//' + location.hostname !== 'https://accounts.google.com'"),
+            js.prefix(400).description
+        )
+        // The guard must precede any field write.
+        let guardIndex = try? XCTUnwrap(js.range(of: "location.hostname")).lowerBound
+        let fillIndex = try? XCTUnwrap(js.range(of: "fillField(pwField")).lowerBound
+        if let guardIndex, let fillIndex {
+            XCTAssertLessThan(guardIndex, fillIndex)
+        }
+    }
+
+    /// The generator invents a value rather than replaying a stored one, so it
+    /// has no origin to pin — and must still work.
+    func testAutoFillScriptWithoutAnExpectedOriginHasNoGuard() {
+        let js = PasswordAutoFillScripts.autoFillScript(username: "", password: "generated")
+        XCTAssertFalse(js.contains("location.hostname"))
     }
 
     // MARK: - Cookie policy

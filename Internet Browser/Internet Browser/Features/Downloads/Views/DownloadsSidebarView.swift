@@ -168,6 +168,15 @@ struct DownloadItemRow: View {
 
                 Spacer()
 
+                // macOS refused to mark this file as downloaded-from-the-internet,
+                // so opening it gets no Gatekeeper check. Say so.
+                if item.status == .completed, DownloadManager.shared.isUnquarantined(id: item.id) {
+                    Image(systemName: "exclamationmark.shield.fill")
+                        .foregroundStyle(.orange)
+                        .font(.system(size: 12))
+                        .help("Not marked as downloaded from the internet — this file will open without a Gatekeeper check.")
+                }
+
                 // Quick Look button for completed downloads
                 if item.status == .completed, item.filePath != nil {
                     Button(action: onQuickLook) {

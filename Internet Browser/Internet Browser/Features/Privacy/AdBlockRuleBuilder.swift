@@ -88,15 +88,46 @@ enum AdBlockRuleBuilder {
         let escaped = filename.replacingOccurrences(of: ".", with: "\\.")
         return [
             "trigger": [
-                // Anchored to a path segment boundary and to the end of the
-                // path, so `/ads.js` cannot be matched by a query parameter
-                // that happens to contain the string.
-                "url-filter": "^https?://[^/]+(/[^?#]*)?/" + escaped + "([?#]|$)",
+                // Anchored to a path segment boundary, so `/ads.js` cannot be
+                // matched by a query parameter that happens to contain it.
+                //
+                // Deliberately built from the same constructs the shipped
+                // domain rules already use — `^`, `[^…]`, `(…)?`, `*` — and
+                // nothing else. `url-filter` is parsed by WebKit's own
+                // restricted regex engine, not NSRegularExpression: an
+                // unsupported construct (alternation, say) makes WebKit reject
+                // the ENTIRE rule list, which would silently turn the blocker
+                // off. `AdBlockRuleCompilationTests` compiles the real output
+                // through WKContentRuleListStore to keep that honest.
+                "url-filter": "^https?://[^/]+(/[^?#]*)?/" + escaped,
                 "url-filter-is-case-insensitive": true,
                 "resource-type": ["script"],
             ],
             "action": ["type": "block"],
         ]
+    }
+
+    // MARK: - Whole rule sets
+
+    /// The EasyList-derived rule set: one third-party block rule per domain,
+    /// then the never-block exceptions, which must come last to override them.
+    static func domainRulesJSON(for domains: [String], limit: Int = 45_000) -> String {
+        var rules: [[String: Any]] = []
+        for domain in domains {
+            rules.append(blockRule(for: domain))
+            if rules.count >= limit { break }
+        }
+        for domain in alwaysAllowedDomains {
+            rules.append(exceptionRule(for: domain))
+        }
+        rules.append(cdnCGIExceptionRule())
+        return json(from: rules)
+    }
+
+    static func json(from rules: [[String: Any]]) -> String {
+        guard let data = try? JSONSerialization.data(withJSONObject: rules, options: []),
+              let json = String(data: data, encoding: .utf8) else { return "[]" }
+        return json
     }
 
     // MARK: - Never-block list

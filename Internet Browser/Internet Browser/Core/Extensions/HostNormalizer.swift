@@ -88,29 +88,36 @@ enum HostNormalizer {
         let labels = host.split(separator: ".").map(String.init)
         guard labels.count > 2 else { return host }
 
-        let lastTwo = labels.suffix(2).joined(separator: ".")
-        if isPublicSuffix(lastTwo) {
-            return labels.suffix(3).joined(separator: ".")
+        // Longest suffix wins. `foo.s3.amazonaws.com` must resolve against
+        // `s3.amazonaws.com`, not `amazonaws.com` — checking shortest-first
+        // would hand back a base domain shared by every S3 bucket.
+        let longest = min(labels.count - 1, maxPublicSuffixLabels)
+        for suffixLength in stride(from: longest, through: 2, by: -1) {
+            let candidate = labels.suffix(suffixLength).joined(separator: ".")
+            if isPublicSuffix(candidate) {
+                return labels.suffix(suffixLength + 1).joined(separator: ".")
+            }
         }
-        return lastTwo
+        return labels.suffix(2).joined(separator: ".")
     }
 
     /// True when `host` is a public suffix — something nobody can register
     /// directly, and therefore something that must never end up in a
-    /// whitelist on its own (`com`, `co.uk`, `com.au`).
+    /// whitelist on its own (`com`, `co.uk`, `github.io`).
+    ///
+    /// Includes the shared-hosting ("private") suffixes, which the registry
+    /// heuristic below cannot see: without `github.io` in the table, pausing
+    /// the ad blocker on `attacker.github.io` would store `github.io` and
+    /// cover every GitHub Pages site — the `co.uk` bug at a different suffix.
     static func isPublicSuffix(_ host: String) -> Bool {
         let host = normalizedHost(host)
         guard !isIPLiteral(host) else { return false }
 
         let labels = host.split(separator: ".").map(String.init)
-        switch labels.count {
-        case 0: return true
-        case 1: return true          // a bare TLD: "com", "uk"
-        case 2: break
-        default: return false
-        }
+        if labels.count < 2 { return true }          // "" or a bare TLD
+        if knownPublicSuffixes.contains(host) { return true }
+        guard labels.count == 2 else { return false }
 
-        if knownMultiLabelSuffixes.contains(host) { return true }
         // Heuristic: <generic-second-level>.<two-letter ccTLD> — co.uk, com.au,
         // ne.jp, gov.tr … Registries that don't work that way (com.de is a
         // real registrable domain) get a *narrower* base domain, never a
@@ -118,10 +125,21 @@ enum HostNormalizer {
         return labels[1].count == 2 && genericSecondLevelLabels.contains(labels[0])
     }
 
+    /// Table-only version of `isPublicSuffix`, with no heuristic. Used where a
+    /// false positive would *destroy* user data rather than narrow a lookup —
+    /// the whitelist purge in `SettingsManager`, which would otherwise delete
+    /// a pause the user set on a real site like `web.de` or `in.gr` (both of
+    /// which the heuristic misreads as registry suffixes).
+    static func isKnownPublicSuffix(_ host: String) -> Bool {
+        let host = normalizedHost(host)
+        guard !isIPLiteral(host) else { return false }
+        let labels = host.split(separator: ".")
+        if labels.count < 2 { return true }
+        return knownPublicSuffixes.contains(host)
+    }
+
     /// True when `host` is something a person can actually own — used to
-    /// reject junk (and to purge previously-stored public suffixes such as
-    /// the `co.uk` the old base-domain code wrote) before it reaches a
-    /// whitelist.
+    /// reject junk before it reaches a whitelist.
     static func isRegistrable(_ host: String) -> Bool {
         let host = normalizedHost(host)
         guard !host.isEmpty else { return false }
@@ -172,16 +190,71 @@ enum HostNormalizer {
         "pol", "pp", "pro", "re", "res", "sch", "web",
     ]
 
-    /// Multi-label public suffixes the heuristic above would miss — either
-    /// the second-level label is not generic (`police.uk`, `govt.nz`) or the
-    /// TLD is longer than two letters (`com.krd`).
-    private static let knownMultiLabelSuffixes: Set<String> = [
-        "police.uk", "nhs.uk", "mod.uk", "parliament.uk",
-        "govt.nz", "school.nz", "geek.nz", "kiwi.nz", "health.nz", "cri.nz",
-        "k12.tr", "tsk.tr", "kep.tr", "bbs.tr", "gen.tr",
-        "jus.br", "leg.br", "mil.br", "tur.br", "blog.br",
-        "waw.pl", "krakow.pl", "wroc.pl", "poznan.pl", "gda.pl",
-        "kiev.ua", "lviv.ua", "dp.ua",
+    /// Longest suffix in `knownPublicSuffixes`, in labels. Bounds the search
+    /// in `baseDomain`.
+    private static let maxPublicSuffixLabels = 3
+
+    /// Explicit public suffixes: everything the `<generic>.<ccTLD>` heuristic
+    /// cannot derive, plus the common registry suffixes spelled out so the
+    /// whitelist purge (`isKnownPublicSuffix`) has a table it can trust.
+    ///
+    /// The second block is the Public Suffix List's *private* section —
+    /// shared-hosting domains where each customer gets a subdomain. They are
+    /// the same hazard as `co.uk`: without them, one tenant's ad-block pause
+    /// (or any other per-site decision) would cover every other tenant.
+    private static let knownPublicSuffixes: Set<String> = [
+        // --- ICANN section: common registry suffixes, spelled out ---
+        "co.uk", "org.uk", "ac.uk", "gov.uk", "me.uk", "net.uk", "ltd.uk", "plc.uk",
+        "sch.uk", "police.uk", "nhs.uk", "mod.uk", "parliament.uk",
+        "com.au", "net.au", "org.au", "edu.au", "gov.au", "asn.au", "id.au",
         "conf.au", "csiro.au",
+        "co.nz", "net.nz", "org.nz", "ac.nz", "govt.nz", "school.nz", "geek.nz",
+        "kiwi.nz", "health.nz", "cri.nz",
+        "co.jp", "or.jp", "ne.jp", "ac.jp", "go.jp", "ad.jp", "ed.jp", "gr.jp", "lg.jp",
+        "co.kr", "or.kr", "ne.kr", "go.kr", "re.kr", "pe.kr",
+        "co.za", "org.za", "net.za", "gov.za", "ac.za", "web.za",
+        "co.in", "net.in", "org.in", "gen.in", "firm.in", "ind.in", "gov.in",
+        "ac.in", "edu.in", "res.in",
+        "com.br", "net.br", "org.br", "gov.br", "edu.br", "jus.br", "leg.br",
+        "mil.br", "tur.br", "blog.br",
+        "com.cn", "net.cn", "org.cn", "gov.cn", "edu.cn", "ac.cn",
+        "com.tr", "net.tr", "org.tr", "gov.tr", "edu.tr", "bel.tr", "av.tr",
+        "k12.tr", "tsk.tr", "kep.tr", "bbs.tr", "gen.tr",
+        "com.mx", "com.ar", "com.sg", "com.hk", "com.tw", "com.my", "com.ph",
+        "com.vn", "com.pk", "com.ua", "com.co", "com.pe", "com.ve", "com.ec",
+        "com.uy", "com.py", "com.bo", "com.do", "com.gt", "com.pa", "com.sv",
+        "com.ng", "com.gh", "com.eg", "com.sa", "com.qa", "com.kw", "com.bh",
+        "com.om", "com.jo", "com.lb", "com.cy", "com.mt",
+        "net.ua", "org.ua", "gov.ua", "edu.ua", "in.ua", "kiev.ua", "lviv.ua", "dp.ua",
+        "com.pl", "net.pl", "org.pl", "gov.pl", "edu.pl",
+        "waw.pl", "krakow.pl", "wroc.pl", "poznan.pl", "gda.pl",
+        "co.il", "org.il", "net.il", "ac.il", "gov.il",
+        "co.id", "or.id", "web.id", "ac.id", "go.id", "my.id",
+        "co.th", "in.th", "ac.th", "go.th", "or.th",
+        "co.ke", "co.ug", "co.tz", "co.zw", "co.mz", "co.ao",
+        "co.cr", "go.cr", "ac.cr", "or.cr",
+        "com.pt", "org.pt", "edu.pt", "gov.pt",
+        "com.gr", "net.gr", "org.gr", "edu.gr", "gov.gr",
+        "com.ro", "org.ro", "com.ru", "net.ru", "org.ru",
+        "co.at", "or.at", "ac.at", "gv.at",
+        "co.hu", "co.rs", "co.me", "co.ma", "co.im", "co.ls", "co.bw",
+
+        // --- PSL private section: shared hosting. One tenant must never be
+        //     able to make a decision that covers every other tenant. ---
+        "github.io", "githubusercontent.com", "gitlab.io", "bitbucket.io",
+        "blogspot.com", "wordpress.com", "tumblr.com", "medium.com",
+        "vercel.app", "netlify.app", "netlify.com", "pages.dev", "workers.dev",
+        "r2.dev", "herokuapp.com", "herokudns.com", "onrender.com", "fly.dev",
+        "firebaseapp.com", "web.app", "appspot.com", "run.app", "cloudfunctions.net",
+        "azurewebsites.net", "azurestaticapps.net", "cloudapp.azure.com",
+        "s3.amazonaws.com", "s3-website.amazonaws.com", "elasticbeanstalk.com",
+        "cloudfront.net", "amplifyapp.com", "awsapprunner.com",
+        "glitch.me", "surge.sh", "now.sh", "repl.co", "replit.dev",
+        "ngrok.io", "ngrok-free.app", "trycloudflare.com", "loca.lt",
+        "readthedocs.io", "gitbook.io", "notion.site", "webflow.io",
+        "myshopify.com", "squarespace.com", "wixsite.com", "weebly.com",
+        "sharepoint.com", "zendesk.com", "freshdesk.com", "statuspage.io",
+        "translate.goog", "codeberg.page", "neocities.org", "hashnode.dev",
+        "vercel.sh", "supabase.co", "railway.app", "deno.dev", "val.run",
     ]
 }

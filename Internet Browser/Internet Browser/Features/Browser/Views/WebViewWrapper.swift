@@ -183,6 +183,14 @@ struct WebViewWrapper: NSViewRepresentable {
 
         context.coordinator.observeWebView(webView)
 
+        if isAdoptedWebView {
+            // An adopted web view (a popup carrying its opener's configuration,
+            // or a background research tab built by TabManager) never went
+            // through the fresh-configuration path, so it can be missing the
+            // ad-block and cookie rule lists entirely. Attach the current set.
+            context.coordinator.rebuildContentRuleLists()
+        }
+
         if !isAdoptedWebView {
             if let url = tab.url {
                 if webView.url == nil {
@@ -427,9 +435,13 @@ struct WebViewWrapper: NSViewRepresentable {
         /// Cookie policy this web view's rule lists were built for, so a change
         /// in Settings can be detected and re-applied to a live tab.
         var appliedCookiePolicy: CookieBlockingLevel = SettingsManager.shared.blockCookies
+        /// Same, for the GPC signal — whose user script also has to be
+        /// rebuilt, not just reloaded, when the setting changes.
+        var appliedGlobalPrivacyControl: Bool = SettingsManager.shared.sendGlobalPrivacyControl
         private var observations: [NSKeyValueObservation] = []
         private var progressThrottleTask: Task<Void, Never>?
         private var settingsObservation: (any NSObjectProtocol)?
+        private var ruleListObservation: (any NSObjectProtocol)?
         /// Maps URL string -> DevTools network entry key for main-frame navigation timing
         private var pendingNetworkKeys: [String: String] = [:]
 
@@ -445,7 +457,18 @@ struct WebViewWrapper: NSViewRepresentable {
                 object: nil,
                 queue: .main
             ) { [weak self] _ in
-                self?.checkAdBlockStateChanged()
+                self?.applyLivePrivacySettings()
+            }
+
+            // Rule lists compile asynchronously. This web view may have been
+            // built before its lists existed — a tab restored at launch always
+            // is — so re-attach whenever a compiled list appears or changes.
+            ruleListObservation = NotificationCenter.default.addObserver(
+                forName: .cherryContentRuleListsChanged,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated { self?.rebuildContentRuleLists() }
             }
         }
 
@@ -453,68 +476,103 @@ struct WebViewWrapper: NSViewRepresentable {
             if let obs = settingsObservation {
                 NotificationCenter.default.removeObserver(obs)
             }
+            if let obs = ruleListObservation {
+                NotificationCenter.default.removeObserver(obs)
+            }
+        }
+
+        /// Attaches exactly the content rule lists this web view should be
+        /// carrying right now: the ad-block lists if blocking is on for this
+        /// tab, plus the cookie policy list.
+        ///
+        /// Rule lists can only be removed wholesale, so the set is always
+        /// rebuilt rather than added to — that is what stops the ad-block and
+        /// cookie lists from dropping each other. Safe to call at any time;
+        /// it is what the `cherryContentRuleListsChanged` observer runs when a
+        /// list finishes compiling after this web view was created.
+        func rebuildContentRuleLists() {
+            guard let webView else { return }
+            let settings = SettingsManager.shared
+            let adBlockActive = settings.adBlockEnabled && !settings.isAdBlockPaused(for: tab?.url)
+
+            webView.configuration.userContentController.removeAllContentRuleLists()
+            if adBlockActive, AdBlockManager.shared.rulesReady {
+                AdBlockManager.shared.applyRules(to: webView.configuration)
+            }
+            CookiePolicyManager.shared.apply(to: webView.configuration)
         }
 
         /// Called when UserDefaults change — re-apply the privacy settings that
         /// have to reach web views that already exist.
-        private func checkAdBlockStateChanged() {
+        private func applyLivePrivacySettings() {
             guard let webView else { return }
             let settings = SettingsManager.shared
             let shouldBeEnabled = settings.adBlockEnabled && !settings.isAdBlockPaused(for: tab?.url)
             let cookiePolicy = settings.blockCookies
+            let gpcEnabled = settings.sendGlobalPrivacyControl
 
             let adBlockChanged = shouldBeEnabled != cosmeticAdBlockEnabled
             let cookiePolicyChanged = cookiePolicy != appliedCookiePolicy
-            guard adBlockChanged || cookiePolicyChanged else { return }
+            let gpcChanged = gpcEnabled != appliedGlobalPrivacyControl
+            guard adBlockChanged || cookiePolicyChanged || gpcChanged else { return }
 
             cosmeticAdBlockEnabled = shouldBeEnabled
             appliedCookiePolicy = cookiePolicy
+            appliedGlobalPrivacyControl = gpcEnabled
 
             // Network-level rules. Turning "Block Ads & Trackers" off used to
             // toggle only the cosmetic CSS/JS, leaving the compiled block
             // rules attached — the switch said off while the blocker kept
-            // blocking. Rule lists can only be removed wholesale, so rebuild
-            // the full set, exactly as the per-site pause does.
-            let controller = webView.configuration.userContentController
-            controller.removeAllContentRuleLists()
-            if shouldBeEnabled, AdBlockManager.shared.rulesReady {
-                AdBlockManager.shared.applyRules(to: webView.configuration)
+            // blocking.
+            if adBlockChanged || cookiePolicyChanged {
+                rebuildContentRuleLists()
+                // The compiled cookie list may not exist yet for a policy the
+                // user just picked; the compile posts and we re-attach then.
+                CookiePolicyManager.shared.updatePolicy(cookiePolicy)
             }
-            CookiePolicyManager.shared.apply(to: webView.configuration)
 
-            guard adBlockChanged else { return }
+            if adBlockChanged {
+                if shouldBeEnabled {
+                    // Re-enable: inject CSS + JS on the current page
+                    webView.evaluateJavaScript(AdBlockManager.cosmeticEnableJS(), completionHandler: nil)
+                } else {
+                    // Disable: remove style tag, disconnect observer, unhide elements on current page
+                    webView.evaluateJavaScript(AdBlockManager.cosmeticDisableJS(), completionHandler: nil)
+                }
+            }
 
-            if shouldBeEnabled {
-                // Re-enable: inject CSS + JS on the current page
-                webView.evaluateJavaScript(AdBlockManager.cosmeticEnableJS(), completionHandler: nil)
-                // Add scripts back to the controller for future navigations
-                AdBlockManager.shared.applyCosmeticRules(to: webView.configuration)
-            } else {
-                // Disable: remove style tag, disconnect observer, unhide elements on current page
-                webView.evaluateJavaScript(AdBlockManager.cosmeticDisableJS(), completionHandler: nil)
-                // Remove all user scripts so future navigations don't re-inject.
-                // WKUserContentController can only remove scripts wholesale,
-                // which also wipes the password autofill and devtools scripts —
-                // reinstall those or they stay broken until the tab is recreated.
-                controller.removeAllUserScripts()
-                reinstallCoreUserScripts(on: controller)
+            // User scripts live on the content controller, not the document,
+            // so a reload alone would NOT pick up a GPC or cosmetic-filter
+            // change — the script set itself has to be rebuilt.
+            if adBlockChanged || gpcChanged {
+                rebuildUserScripts(adBlockActive: shouldBeEnabled)
             }
 
             // The page in front of the user was loaded under the old rules;
-            // reload so what it shows matches what the switch now says.
+            // reload so what it shows matches what the switches now say.
             Task { @MainActor in self.tab?.reload() }
         }
 
-        /// Re-adds the always-on user scripts (password autofill, devtools
-        /// bridges, mute) after removeAllUserScripts wiped them. Message
-        /// handlers remain registered on the controller, only the scripts
-        /// are gone.
-        private func reinstallCoreUserScripts(on controller: WKUserContentController) {
+        /// Rebuilds the whole user-script set: the always-on core scripts
+        /// (password autofill, devtools bridges, GPC, mute) plus the cosmetic
+        /// ad-block scripts when blocking is on.
+        ///
+        /// `WKUserContentController` can only remove scripts wholesale, so
+        /// anything that changes one script has to re-add all of them —
+        /// forgetting the others is how autofill and devtools used to stay
+        /// broken until the tab was recreated.
+        private func rebuildUserScripts(adBlockActive: Bool) {
+            guard let webView else { return }
+            let controller = webView.configuration.userContentController
+            controller.removeAllUserScripts()
             WebViewWrapper.addCoreUserScripts(
                 to: controller,
                 isPrivate: tab?.isPrivate ?? false,
                 isMuted: tab?.isMuted ?? false
             )
+            if adBlockActive {
+                AdBlockManager.shared.applyCosmeticRules(to: webView.configuration)
+            }
         }
 
         func observeWebView(_ webView: WKWebView) {
@@ -862,7 +920,17 @@ struct WebViewWrapper: NSViewRepresentable {
                             try FileManager.default.removeItem(at: saveURL)
                         }
                         try FileManager.default.moveItem(at: tempFile, to: saveURL)
-                        DownloadQuarantine.apply(to: saveURL, sourceURL: download.originalRequest?.url)
+                        // Private downloads get the quarantine bit but no
+                        // origin: LaunchServices would otherwise log the URL
+                        // to a permanent on-disk database.
+                        manager.noteQuarantineResult(
+                            id: itemID,
+                            succeeded: DownloadQuarantine.apply(
+                                to: saveURL,
+                                sourceURL: download.originalRequest?.url,
+                                isPrivate: manager.isPrivateDownload(id: itemID)
+                            )
+                        )
                         DownloadRepository.shared.completeDownload(id: itemID, filePath: saveURL.path)
                         manager.downloadDidCleanup(id: itemID)
                     } catch {
@@ -1198,11 +1266,18 @@ struct WebViewWrapper: NSViewRepresentable {
                 if origin.port != 0 { components.port = Int(origin.port) }
                 if let url = components.url { return url }
             }
+            // Fallback: the committed page URL, reduced to a bare origin. The
+            // full URL would carry the path and query into a saved credential
+            // — some login flows put single-use tokens there.
             guard let pageURL = message.webView?.url,
                   let pageScheme = pageURL.scheme.map(HostNormalizer.foldedASCII),
                   pageScheme == "https" || pageScheme == "http",
-                  pageURL.host?.isEmpty == false else { return nil }
-            return pageURL
+                  let pageHost = pageURL.host, !pageHost.isEmpty else { return nil }
+            var components = URLComponents()
+            components.scheme = pageScheme
+            components.host = pageHost
+            components.port = pageURL.port
+            return components.url
         }
 
         // MARK: - Helpers
