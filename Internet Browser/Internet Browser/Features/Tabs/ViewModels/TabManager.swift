@@ -120,8 +120,19 @@ final class TabManager {
         }
 
         /// A real user-facing window that still holds the user's tabs, whether
-        /// it is on screen or minimised in the Dock.
-        var keepsAppAlive: Bool { isTitled && !isPanel && (isVisible || isMiniaturized) }
+        /// it is on screen, minimised in the Dock, or off screen only because
+        /// the whole app is hidden.
+        ///
+        /// `isVisible` has TWO traps, and both are the same data-loss bug:
+        /// it is false for a minimised window, and it is false for *every*
+        /// window while the application is hidden (⌘H). A tab closed from a
+        /// non-UI path while the app is hidden would otherwise look like the
+        /// last window closing and take every hidden window's tabs with it.
+        /// While hidden the app therefore never quits itself; it quits on the
+        /// next close once the user brings it back.
+        func keepsAppAlive(appIsHidden: Bool) -> Bool {
+            isTitled && !isPanel && (isVisible || isMiniaturized || appIsHidden)
+        }
     }
 
     /// Whether closing a window should also quit the app.
@@ -132,14 +143,20 @@ final class TabManager {
     /// tabs, losing them. Minimised windows now count, and only real windows
     /// (titled, not a panel) are counted at all, so closing the truly last
     /// window still quits.
-    nonisolated static func shouldTerminateApp(windows: [WindowLiveness]) -> Bool {
-        !windows.contains { $0.keepsAppAlive }
+    nonisolated static func shouldTerminateApp(
+        windows: [WindowLiveness], appIsHidden: Bool = false
+    ) -> Bool {
+        !windows.contains { $0.keepsAppAlive(appIsHidden: appIsHidden) }
     }
 
     /// Terminates the app if no window is left that should keep it alive.
     /// Called after the manager closes its own (now tabless) window.
     private static func terminateIfNoWindowsRemain() {
-        if shouldTerminateApp(windows: NSApp.windows.map(WindowLiveness.init)) {
+        let shouldTerminate = shouldTerminateApp(
+            windows: NSApp.windows.map(WindowLiveness.init),
+            appIsHidden: NSApp.isHidden
+        )
+        if shouldTerminate {
             NSApp.terminate(nil)
         }
     }

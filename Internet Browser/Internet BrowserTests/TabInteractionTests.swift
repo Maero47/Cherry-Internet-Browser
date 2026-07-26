@@ -119,6 +119,62 @@ final class TabInteractionTests: XCTestCase {
         )
     }
 
+    // MARK: - Which presses a control actually consumes
+
+    // A SwiftUI Button fires only when press AND release land inside it, so the
+    // tab's click handling may only stand down for that same combination. All
+    // four corners of the matrix, on the close button's 20 pt hit rect:
+
+    func testPressInReleaseInIsConsumedByTheControl() {
+        XCTAssertTrue(
+            TabInteraction.pressIsConsumedByControl(
+                start: CGPoint(x: 306, y: 18), end: CGPoint(x: 304, y: 16),
+                controlFrames: [closeHitRect]
+            )
+        )
+    }
+
+    func testPressInReleaseOutFallsThroughToTheTab() {
+        // The residual click-eater: the Button doesn't fire (released outside),
+        // so vetoing here too would make the press do nothing at all.
+        XCTAssertFalse(
+            TabInteraction.pressIsConsumedByControl(
+                start: CGPoint(x: 306, y: 18), end: CGPoint(x: 290, y: 18),
+                controlFrames: [closeHitRect]
+            )
+        )
+    }
+
+    func testPressOutReleaseInFallsThroughToTheTab() {
+        XCTAssertFalse(
+            TabInteraction.pressIsConsumedByControl(
+                start: CGPoint(x: 290, y: 18), end: CGPoint(x: 306, y: 18),
+                controlFrames: [closeHitRect]
+            )
+        )
+    }
+
+    func testPressOutReleaseOutIsNotConsumed() {
+        XCTAssertFalse(
+            TabInteraction.pressIsConsumedByControl(
+                start: CGPoint(x: 150, y: 18), end: CGPoint(x: 152, y: 18),
+                controlFrames: [closeHitRect]
+            )
+        )
+    }
+
+    func testEndpointsOnDIFFERENTControlsAreNotConsumed() {
+        // Press on unmute, release on close: neither Button fires, so the press
+        // must fall through to the tab rather than vanish.
+        let muteHitRect = CGRect(x: 268, y: 8, width: 20, height: 20)
+        XCTAssertFalse(
+            TabInteraction.pressIsConsumedByControl(
+                start: CGPoint(x: 278, y: 18), end: CGPoint(x: 306, y: 18),
+                controlFrames: [closeHitRect, muteHitRect]
+            )
+        )
+    }
+
     func testHitRectExpandsAControlsFrameToTheHitTarget() {
         // The reported frame is the 16 pt glyph; arbitration must use the same
         // 20 pt region the control is actually clickable across.

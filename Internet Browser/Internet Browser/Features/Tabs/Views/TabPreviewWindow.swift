@@ -54,16 +54,22 @@ final class TabPreviewWindow: NSWindow {
         ignoresMouseEvents = true
         // A preview must not outlive the app losing focus (Cmd+Tab away with
         // the pointer parked on a tab would otherwise leave a floating chip
-        // above the other app). AppKit hides it for us.
-        hidesOnDeactivate = true
+        // above the other app). `TabPreviewPresenter` owns that outright: it
+        // observes deactivation and CLOSES the window. `hidesOnDeactivate`
+        // stays off deliberately — it would only park the window off screen and
+        // then restore it on reactivation, so the two mechanisms would race and
+        // the survivor would be an AppKit implementation detail.
+        hidesOnDeactivate = false
         isExcludedFromWindowsMenu = true
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .transient]
         contentView = hostingView
     }
 
-    /// Never key, never main — so it can't take focus from the browser window,
-    /// and `TabManager`'s "does any window keep the app alive" check (which
-    /// keys off `canBecomeMain`) never mistakes it for a browser window.
+    /// Never key, never main: a preview must not pull focus off the browser
+    /// window it is describing. (This is about focus only — `TabManager`'s
+    /// "does any window keep the app alive" check does NOT read `canBecomeMain`,
+    /// which is visibility-coupled and so useless for minimised windows; it
+    /// excludes this chip because a `.borderless` window is not titled.)
     override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
 
@@ -107,11 +113,10 @@ final class TabPreviewPresenter {
     private var ownerID: UUID?
 
     private init() {
-        // `hidesOnDeactivate` parks the window when the app loses focus, but
-        // AppKit brings it back on reactivation — so ⌘-Tab away from a visible
-        // preview and back would redisplay a chip with no pointer on the tab
-        // and nothing left to dismiss it. Dropping the window on deactivation
-        // means there is nothing to come back.
+        // Sole owner of deactivation dismissal. ⌘-Tab away from a visible
+        // preview and back must not redisplay a chip with no pointer on the tab
+        // and nothing left to dismiss it — `hide()` closes the window, so there
+        // is nothing for AppKit to restore.
         NotificationCenter.default.addObserver(
             forName: NSApplication.didResignActiveNotification,
             object: nil,
@@ -136,7 +141,10 @@ final class TabPreviewPresenter {
     }
 
     func hide() {
-        window?.orderOut(nil)
+        // `close()`, not `orderOut(nil)`: closing takes the window out of the
+        // application's window list, not just off the screen, so nothing can
+        // order it back in. Safe because `isReleasedWhenClosed` is false.
+        window?.close()
         window = nil
         ownerID = nil
     }

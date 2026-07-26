@@ -169,7 +169,8 @@ struct TabItemView: View {
             }
         }
         .onTapGesture(coordinateSpace: .global) { location in
-            handleClick(at: location)
+            // A tap has one location, so both endpoints are that point.
+            handleClick(from: location, to: location)
         }
         // Belt-and-braces click path. `onTapGesture` above is a `TapGesture`,
         // and SwiftUI is free to fail a tap once the tab bar's simultaneous
@@ -199,7 +200,7 @@ struct TabItemView: View {
                 }
                 .onEnded { value in
                     guard TabInteraction.isClick(translation: value.translation) else { return }
-                    handleClick(at: value.startLocation)
+                    handleClick(from: value.startLocation, to: value.location)
                 }
         )
         .contextMenu {
@@ -230,13 +231,15 @@ struct TabItemView: View {
 
     /// Selects the tab, at most once per press. Both click paths funnel through
     /// here; whichever resolves first wins and the other becomes a no-op. A
-    /// press that started on one of the row's controls belongs to that control
-    /// and is ignored here, so one press can never both close and select.
-    private func handleClick(at point: CGPoint?) {
-        if let point,
-           TabInteraction.pressIsOnControl(at: point, controlFrames: activeControlFrames) {
-            return
-        }
+    /// press that one of the row's controls will consume — pressed AND released
+    /// on the same control — belongs to that control and is ignored here, so
+    /// one press can never both close and select. A press that merely starts or
+    /// ends on a control still selects, because the control's `Button` needs
+    /// both endpoints and therefore will not have fired.
+    private func handleClick(from start: CGPoint, to end: CGPoint) {
+        guard !TabInteraction.pressIsConsumedByControl(
+            start: start, end: end, controlFrames: activeControlFrames
+        ) else { return }
         guard claimPress() else { return }
         hidePreview()
         onSelect()

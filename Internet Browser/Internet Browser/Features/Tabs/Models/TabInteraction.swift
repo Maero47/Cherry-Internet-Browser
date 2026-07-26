@@ -77,4 +77,21 @@ enum TabInteraction {
     static func pressIsOnControl(at point: CGPoint, controlFrames: [CGRect]) -> Bool {
         controlFrames.contains { !$0.isEmpty && $0.contains(point) }
     }
+
+    /// True when one of the row's controls will actually consume this press, so
+    /// the tab's own click handling must stand down.
+    ///
+    /// It takes BOTH endpoints, and both must be on the SAME control, because
+    /// that is exactly when a SwiftUI `Button` fires: press-in and release-in.
+    /// Vetoing on the press location alone left a hole of precisely the kind
+    /// this whole branch exists to close — press on the X, release 3 pt outside
+    /// it, and the Button didn't fire (released out), the tab's click handling
+    /// vetoed itself (pressed in), and the click did nothing at all. Falling
+    /// through to "select" in that case is right: the control did not act, so
+    /// the press means what a press on the tab body means.
+    static func pressIsConsumedByControl(
+        start: CGPoint, end: CGPoint, controlFrames: [CGRect]
+    ) -> Bool {
+        controlFrames.contains { !$0.isEmpty && $0.contains(start) && $0.contains(end) }
+    }
 }

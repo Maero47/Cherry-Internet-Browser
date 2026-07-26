@@ -62,9 +62,46 @@ final class AppTerminationPolicyTests: XCTestCase {
     }
 
     func testMinimizedWindowIsNotVisible_soVisibilityAloneWouldHaveQuit() {
-        // Documents exactly why the original predicate was wrong.
+        // Trap 1 of 2: documents exactly why the original predicate was wrong.
         XCTAssertFalse(minimized().isVisible)
-        XCTAssertTrue(minimized().keepsAppAlive)
+        XCTAssertTrue(minimized().keepsAppAlive(appIsHidden: false))
+    }
+
+    func testHiddenAppWindowsAreNotVisibleEither_theSameTrapAgain() {
+        // Trap 2 of 2: `NSWindow.isVisible` is false for EVERY window while the
+        // application is hidden (Cmd+H), not just for minimised ones. A tab
+        // closed from a non-UI path while hidden would otherwise read as "the
+        // last window closed" and terminate the app with every hidden window's
+        // tabs still open.
+        let hiddenAppWindow = onScreen()   // an ordinary window, but the app is hidden
+        XCTAssertFalse(
+            Window(isVisible: false, isMiniaturized: false, isTitled: true, isPanel: false)
+                .keepsAppAlive(appIsHidden: false),
+            "with the app visible, these values mean the window is closed"
+        )
+        XCTAssertTrue(
+            Window(isVisible: false, isMiniaturized: false, isTitled: true, isPanel: false)
+                .keepsAppAlive(appIsHidden: true),
+            "with the app hidden, the same values mean the window is merely hidden"
+        )
+        XCTAssertTrue(hiddenAppWindow.keepsAppAlive(appIsHidden: true))
+    }
+
+    func testHiddenAppNeverTerminatesItself() {
+        XCTAssertFalse(
+            TabManager.shouldTerminateApp(windows: [closed()], appIsHidden: true),
+            "quitting waits until the app is back on screen"
+        )
+    }
+
+    func testHiddenAppWithNoWindowsAtAllStillQuits() {
+        XCTAssertTrue(TabManager.shouldTerminateApp(windows: [], appIsHidden: true))
+    }
+
+    func testHiddenAppWithOnlyHelperWindowsStillQuits() {
+        XCTAssertTrue(
+            TabManager.shouldTerminateApp(windows: [helper(isVisible: false)], appIsHidden: true)
+        )
     }
 
     @MainActor
