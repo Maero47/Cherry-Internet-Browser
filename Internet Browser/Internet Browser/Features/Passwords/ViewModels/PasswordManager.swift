@@ -59,11 +59,22 @@ final class PasswordManager {
     /// the success handler writes into a row that no longer exists.
     private var promptCount = 0
 
+    /// When the outstanding prompts stop being believed. `evaluatePolicy` can
+    /// fail to call back at all — the panel left up indefinitely, the context
+    /// invalidated — and a `promptCount` that never returns to zero would
+    /// suppress every re-lock for the rest of the process lifetime, leaving an
+    /// unlocked vault permanently unlockable-again. Suppression expires.
+    private var promptDeadline: Date?
+    private static let promptSuppressionWindow: TimeInterval = 2 * 60
+
     /// True while any authentication prompt is on screen. Observable, and
     /// shared — the previous `@State` flag in `PasswordsSettingsView` covered
     /// only the initial unlock, leaving the reveal/copy/edit prompts to
     /// discard their own authentication.
-    var isPrompting: Bool { promptCount > 0 }
+    var isPrompting: Bool {
+        guard promptCount > 0, let deadline = promptDeadline else { return false }
+        return deadline > Date()
+    }
 
     private init() {
         // Leaving the app, or the machine going to sleep, re-locks the vault:
@@ -121,6 +132,7 @@ final class PasswordManager {
         }
 
         promptCount += 1
+        promptDeadline = Date().addingTimeInterval(Self.promptSuppressionWindow)
         context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: reason) { success, _ in
             DispatchQueue.main.async { [self] in
                 if success {
@@ -129,6 +141,7 @@ final class PasswordManager {
                 // Decremented only after the session is recorded, so a
                 // `didResignActive` racing the panel's dismissal can't undo it.
                 promptCount = max(0, promptCount - 1)
+                if promptCount == 0 { promptDeadline = nil }
                 completion(success)
             }
         }

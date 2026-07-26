@@ -229,6 +229,12 @@ final class TabManager {
             }
             adBlocker.applyCosmeticRules(to: configuration)
         }
+        // This web view loads immediately and has no WebViewWrapper.Coordinator
+        // until the user selects the tab, so it never hears about a rule list
+        // that compiles later — whatever is compiled NOW is what this page
+        // gets. Attach the cookie policy here for the same reason: without it
+        // a research page ran with no cookie blocking at all.
+        CookiePolicyManager.shared.apply(to: configuration)
 
         // A real (off-screen) viewport, never `.zero`: WebKit lays the page
         // out against the view's size, and at 0×0 every element collapses to

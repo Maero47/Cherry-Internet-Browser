@@ -88,6 +88,17 @@ enum HostNormalizer {
         let labels = host.split(separator: ".").map(String.init)
         guard labels.count > 2 else { return host }
 
+        // Cloud tenancy roots hand out subdomains in shapes we cannot enumerate
+        // — `bucket.s3.eu-west-1.amazonaws.com`,
+        // `bucket.s3-website-us-east-1.amazonaws.com`,
+        // `api.execute-api.us-east-1.amazonaws.com`,
+        // `account.blob.core.windows.net`. Rather than chase every regional
+        // form, treat anything under them as its own site: the full host. Too
+        // narrow costs the user one extra click; too short is the `co.uk` hole.
+        if opaqueTenancyRoots.contains(where: { host.hasSuffix("." + $0) }) {
+            return host
+        }
+
         // Longest suffix wins. `foo.s3.amazonaws.com` must resolve against
         // `s3.amazonaws.com`, not `amazonaws.com` — checking shortest-first
         // would hand back a base domain shared by every S3 bucket.
@@ -115,7 +126,7 @@ enum HostNormalizer {
 
         let labels = host.split(separator: ".").map(String.init)
         if labels.count < 2 { return true }          // "" or a bare TLD
-        if knownPublicSuffixes.contains(host) { return true }
+        if registrySuffixes.contains(host) || privateHostingSuffixes.contains(host) { return true }
         guard labels.count == 2 else { return false }
 
         // Heuristic: <generic-second-level>.<two-letter ccTLD> — co.uk, com.au,
@@ -125,17 +136,23 @@ enum HostNormalizer {
         return labels[1].count == 2 && genericSecondLevelLabels.contains(labels[0])
     }
 
-    /// Table-only version of `isPublicSuffix`, with no heuristic. Used where a
-    /// false positive would *destroy* user data rather than narrow a lookup —
-    /// the whitelist purge in `SettingsManager`, which would otherwise delete
-    /// a pause the user set on a real site like `web.de` or `in.gr` (both of
-    /// which the heuristic misreads as registry suffixes).
+    /// The strictest reading: bare TLDs and unambiguous **registry** suffixes
+    /// only — no heuristic, and no shared-hosting suffixes.
+    ///
+    /// Used where a false positive *destroys user data* rather than narrowing
+    /// a lookup: the whitelist purge in `SettingsManager`. The two uses really
+    /// are different. For deriving a base domain, `medium.com` and `github.io`
+    /// belong in the suffix set (one tenant is not another). For deciding
+    /// whether to delete an entry the user deliberately created, they do not —
+    /// `medium.com` is a site people browse and pause, and purging it would
+    /// silently undo that on every launch. Likewise the `<generic>.<ccTLD>`
+    /// heuristic, which misreads real sites like `web.de` and `in.gr`.
     static func isKnownPublicSuffix(_ host: String) -> Bool {
         let host = normalizedHost(host)
         guard !isIPLiteral(host) else { return false }
         let labels = host.split(separator: ".")
         if labels.count < 2 { return true }
-        return knownPublicSuffixes.contains(host)
+        return registrySuffixes.contains(host)
     }
 
     /// True when `host` is something a person can actually own — used to
@@ -194,16 +211,10 @@ enum HostNormalizer {
     /// in `baseDomain`.
     private static let maxPublicSuffixLabels = 3
 
-    /// Explicit public suffixes: everything the `<generic>.<ccTLD>` heuristic
-    /// cannot derive, plus the common registry suffixes spelled out so the
-    /// whitelist purge (`isKnownPublicSuffix`) has a table it can trust.
-    ///
-    /// The second block is the Public Suffix List's *private* section —
-    /// shared-hosting domains where each customer gets a subdomain. They are
-    /// the same hazard as `co.uk`: without them, one tenant's ad-block pause
-    /// (or any other per-site decision) would cover every other tenant.
-    private static let knownPublicSuffixes: Set<String> = [
-        // --- ICANN section: common registry suffixes, spelled out ---
+    /// The Public Suffix List's **ICANN** section: registry-operated suffixes
+    /// nobody can register directly. Spelled out (rather than left to the
+    /// heuristic) so the whitelist purge has a table it can trust absolutely.
+    private static let registrySuffixes: Set<String> = [
         "co.uk", "org.uk", "ac.uk", "gov.uk", "me.uk", "net.uk", "ltd.uk", "plc.uk",
         "sch.uk", "police.uk", "nhs.uk", "mod.uk", "parliament.uk",
         "com.au", "net.au", "org.au", "edu.au", "gov.au", "asn.au", "id.au",
@@ -238,9 +249,18 @@ enum HostNormalizer {
         "com.ro", "org.ro", "com.ru", "net.ru", "org.ru",
         "co.at", "or.at", "ac.at", "gv.at",
         "co.hu", "co.rs", "co.me", "co.ma", "co.im", "co.ls", "co.bw",
+    ]
 
-        // --- PSL private section: shared hosting. One tenant must never be
-        //     able to make a decision that covers every other tenant. ---
+    /// The Public Suffix List's **private** section: shared hosting, where
+    /// each customer gets a subdomain. One tenant must never be able to make a
+    /// per-site decision that covers every other tenant — the `co.uk` hazard
+    /// at a different suffix.
+    ///
+    /// Kept apart from `registrySuffixes` because these are also *sites*. A
+    /// user browses `medium.com` and may pause ad-blocking on it; deriving a
+    /// base domain must treat `a.medium.com` and `b.medium.com` as different
+    /// sites, but the whitelist purge must never delete a `medium.com` entry.
+    private static let privateHostingSuffixes: Set<String> = [
         "github.io", "githubusercontent.com", "gitlab.io", "bitbucket.io",
         "blogspot.com", "wordpress.com", "tumblr.com", "medium.com",
         "vercel.app", "netlify.app", "netlify.com", "pages.dev", "workers.dev",
@@ -256,5 +276,19 @@ enum HostNormalizer {
         "sharepoint.com", "zendesk.com", "freshdesk.com", "statuspage.io",
         "translate.goog", "codeberg.page", "neocities.org", "hashnode.dev",
         "vercel.sh", "supabase.co", "railway.app", "deno.dev", "val.run",
+    ]
+
+    /// Cloud tenancy roots whose per-tenant subdomain shape is regional and
+    /// open-ended (`s3.<region>.amazonaws.com`,
+    /// `s3-website-<region>.amazonaws.com`, `execute-api.<region>.amazonaws.com`,
+    /// `<account>.blob.core.windows.net`). Enumerating every form is a losing
+    /// game, and getting it wrong yields a base domain shared by every
+    /// customer of the platform — so anything under these is treated as its
+    /// own site.
+    private static let opaqueTenancyRoots: Set<String> = [
+        "amazonaws.com", "amazonaws.com.cn",
+        "windows.net", "core.windows.net", "azure.com", "azurecontainer.io",
+        "googleapis.com", "googleusercontent.com", "cloudfunctions.net",
+        "digitaloceanspaces.com", "linodeobjects.com", "backblazeb2.com",
     ]
 }

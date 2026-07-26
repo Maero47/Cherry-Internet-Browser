@@ -183,6 +183,15 @@ struct WebViewWrapper: NSViewRepresentable {
 
         context.coordinator.observeWebView(webView)
 
+        // Claim the content controller for rule-list purposes. A fresh web view
+        // has its own; a popup shares its opener's, which stays owned by the
+        // opener's coordinator so the two tabs can't impose their per-site
+        // pause state on each other.
+        Coordinator.claimRuleListOwnership(
+            of: webView.configuration.userContentController,
+            by: context.coordinator
+        )
+
         if isAdoptedWebView {
             // An adopted web view (a popup carrying its opener's configuration,
             // or a background research tab built by TabManager) never went
@@ -438,6 +447,9 @@ struct WebViewWrapper: NSViewRepresentable {
         /// Same, for the GPC signal — whose user script also has to be
         /// rebuilt, not just reloaded, when the setting changes.
         var appliedGlobalPrivacyControl: Bool = SettingsManager.shared.sendGlobalPrivacyControl
+        /// Set when a cookie-policy change is waiting for its rule list to
+        /// finish compiling; the reload happens when the list arrives.
+        private var reloadWhenRuleListsChange = false
         private var observations: [NSKeyValueObservation] = []
         private var progressThrottleTask: Task<Void, Never>?
         private var settingsObservation: (any NSObjectProtocol)?
@@ -468,7 +480,19 @@ struct WebViewWrapper: NSViewRepresentable {
                 object: nil,
                 queue: .main
             ) { [weak self] _ in
-                MainActor.assumeIsolated { self?.rebuildContentRuleLists() }
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    self.rebuildContentRuleLists()
+                    // A policy change that was waiting for its list reloads
+                    // HERE, once the list is actually attached — reloading at
+                    // change time re-fetched the page under the old policy,
+                    // because a main-actor hop always beats an out-of-process
+                    // WebKit compile.
+                    if self.reloadWhenRuleListsChange {
+                        self.reloadWhenRuleListsChange = false
+                        self.tab?.reload()
+                    }
+                }
             }
         }
 
@@ -485,21 +509,50 @@ struct WebViewWrapper: NSViewRepresentable {
         /// carrying right now: the ad-block lists if blocking is on for this
         /// tab, plus the cookie policy list.
         ///
-        /// Rule lists can only be removed wholesale, so the set is always
-        /// rebuilt rather than added to — that is what stops the ad-block and
-        /// cookie lists from dropping each other. Safe to call at any time;
-        /// it is what the `cherryContentRuleListsChanged` observer runs when a
-        /// list finishes compiling after this web view was created.
+        /// **This is the only function allowed to touch the content-rule-list
+        /// set on a web view.** Rule lists can only be removed wholesale, so
+        /// any caller that removes them and re-adds only its own concern drops
+        /// somebody else's — which is exactly how the per-site ad-block pause
+        /// used to wipe the cookie policy. Safe to call at any time; it is what
+        /// the `cherryContentRuleListsChanged` observer runs when a list
+        /// finishes compiling after this web view was created.
         func rebuildContentRuleLists() {
             guard let webView else { return }
+            let controller = webView.configuration.userContentController
+            // A popup carries its OPENER's configuration, so two tabs can share
+            // one controller. Only the coordinator that claimed it may rebuild:
+            // otherwise a rebuild triggered by tab A would silently impose tab
+            // A's per-site pause state on tab B, and every compile notification
+            // would start a fight between them.
+            guard Self.ruleListOwner(of: controller) === self else { return }
+
             let settings = SettingsManager.shared
             let adBlockActive = settings.adBlockEnabled && !settings.isAdBlockPaused(for: tab?.url)
 
-            webView.configuration.userContentController.removeAllContentRuleLists()
+            controller.removeAllContentRuleLists()
             if adBlockActive, AdBlockManager.shared.rulesReady {
                 AdBlockManager.shared.applyRules(to: webView.configuration)
             }
             CookiePolicyManager.shared.apply(to: webView.configuration)
+        }
+
+        /// Coordinator responsible for the rule-list set on a given content
+        /// controller — the first one to claim it, for as long as it lives.
+        /// Weak on both sides so a closed window releases the entry.
+        private static let ruleListOwners =
+            NSMapTable<WKUserContentController, Coordinator>.weakToWeakObjects()
+
+        static func ruleListOwner(of controller: WKUserContentController) -> Coordinator? {
+            ruleListOwners.object(forKey: controller)
+        }
+
+        /// Claims ownership if the controller has none (or its previous owner
+        /// has been deallocated, e.g. a web view re-wrapped after its window
+        /// closed).
+        static func claimRuleListOwnership(of controller: WKUserContentController, by coordinator: Coordinator) {
+            if ruleListOwners.object(forKey: controller) == nil {
+                ruleListOwners.setObject(coordinator, forKey: controller)
+            }
         }
 
         /// Called when UserDefaults change — re-apply the privacy settings that
@@ -526,8 +579,14 @@ struct WebViewWrapper: NSViewRepresentable {
             // blocking.
             if adBlockChanged || cookiePolicyChanged {
                 rebuildContentRuleLists()
-                // The compiled cookie list may not exist yet for a policy the
-                // user just picked; the compile posts and we re-attach then.
+            }
+            if cookiePolicyChanged {
+                // The compiled list for a policy the user just picked does not
+                // exist yet. Ask for it, and defer this tab's reload until the
+                // notification says it is attached — otherwise the reload
+                // (one main-actor hop) beats the compile (an out-of-process
+                // WebKit call) and the page is re-fetched under the OLD policy.
+                reloadWhenRuleListsChange = true
                 CookiePolicyManager.shared.updatePolicy(cookiePolicy)
             }
 
@@ -549,8 +608,12 @@ struct WebViewWrapper: NSViewRepresentable {
             }
 
             // The page in front of the user was loaded under the old rules;
-            // reload so what it shows matches what the switches now say.
-            Task { @MainActor in self.tab?.reload() }
+            // reload so what it shows matches what the switches now say. A
+            // cookie-only change reloads later, from the rule-list observer.
+            if adBlockChanged || gpcChanged {
+                reloadWhenRuleListsChange = false
+                Task { @MainActor in self.tab?.reload() }
+            }
         }
 
         /// Rebuilds the whole user-script set: the always-on core scripts

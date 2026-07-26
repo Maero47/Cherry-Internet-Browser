@@ -278,6 +278,28 @@ final class SettingsManager {
         }
     }
 
+    /// What the persisted ad-block whitelist becomes on launch.
+    ///
+    /// Drops entries that are public suffixes: older builds derived the entry
+    /// with "last two labels", so a user who paused the blocker on bbc.co.uk
+    /// has `co.uk` stored, which silently disables blocking on every .co.uk
+    /// site.
+    ///
+    /// Deliberately uses the strict TABLE (`isKnownPublicSuffix`) — registry
+    /// suffixes and bare TLDs only. Not the `<generic>.<ccTLD>` heuristic
+    /// (which reads real sites like `web.de` as suffixes) and not the
+    /// shared-hosting table (`medium.com`, `wordpress.com` — sites people
+    /// actually browse and pause). Deleting an entry the user deliberately
+    /// created is worse than keeping a narrow one, and since this result is
+    /// written back to disk, a wrong deletion is permanent.
+    static func sanitizedWhitelist(_ saved: [String]) -> Set<String> {
+        Set(
+            saved
+                .map(HostNormalizer.normalizedHost)
+                .filter { !$0.isEmpty && !HostNormalizer.isKnownPublicSuffix($0) }
+        )
+    }
+
     func isAdBlockPaused(for url: URL?) -> Bool {
         guard let rawHost = url?.host else { return false }
         let host = HostNormalizer.normalizedHost(rawHost)
@@ -407,20 +429,7 @@ final class SettingsManager {
         // Privacy
         self.adBlockEnabled = defaults.object(forKey: Keys.adBlockEnabled) as? Bool ?? true
         let savedDomains = defaults.stringArray(forKey: Keys.adBlockWhitelistedDomains) ?? []
-        // Drop entries that are public suffixes. Older builds derived the
-        // entry with "last two labels", so a user who paused the blocker on
-        // bbc.co.uk has `co.uk` stored — which silently disables blocking on
-        // every .co.uk site.
-        //
-        // Purging uses the explicit TABLE only (`isKnownPublicSuffix`), never
-        // the `<generic>.<ccTLD>` heuristic: the heuristic reads real sites
-        // like `web.de` and `in.gr` as suffixes, and deleting a pause the user
-        // deliberately set is worse than keeping a narrow one.
-        let cleaned = Set(
-            savedDomains
-                .map(HostNormalizer.normalizedHost)
-                .filter { !$0.isEmpty && !HostNormalizer.isKnownPublicSuffix($0) }
-        )
+        let cleaned = Self.sanitizedWhitelist(savedDomains)
         self.adBlockWhitelistedDomains = cleaned
         // `didSet` does not fire during `init`, so write the repaired set back
         // by hand — otherwise the stale entry is re-read on every launch and

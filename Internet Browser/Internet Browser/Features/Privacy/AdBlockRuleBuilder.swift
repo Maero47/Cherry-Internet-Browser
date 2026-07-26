@@ -84,27 +84,33 @@ enum AdBlockRuleBuilder {
 
     /// Blocks a first-party script whose *path* ends in a known ad-script
     /// filename (`/ads.js`, `/pagead2.js`, …).
-    static func scriptPathBlockRule(for filename: String) -> [String: Any] {
+    ///
+    /// Two rules rather than one, because the filename has to be the end of
+    /// the path — either the URL stops there, or a query/fragment follows.
+    /// Expressing that as one pattern needs alternation, which WebKit's
+    /// `url-filter` parser rejects, and a rejected pattern takes the entire
+    /// rule list down with it (see `AdBlockRuleCompilationTests`). Every
+    /// construct used here — `^`, `$`, `[^…]`, `(…)?`, `*` — is verified
+    /// against a real `WKContentRuleListStore`.
+    ///
+    /// Without the end anchor the pattern also matched `/ads.jsonp`,
+    /// `/ads.jsx` and `/ads.js2`; JSONP endpoints do load via `<script src>`,
+    /// so `resource-type` would not have excluded them.
+    static func scriptPathBlockRules(for filename: String) -> [[String: Any]] {
         let escaped = filename.replacingOccurrences(of: ".", with: "\\.")
-        return [
-            "trigger": [
-                // Anchored to a path segment boundary, so `/ads.js` cannot be
-                // matched by a query parameter that happens to contain it.
-                //
-                // Deliberately built from the same constructs the shipped
-                // domain rules already use — `^`, `[^…]`, `(…)?`, `*` — and
-                // nothing else. `url-filter` is parsed by WebKit's own
-                // restricted regex engine, not NSRegularExpression: an
-                // unsupported construct (alternation, say) makes WebKit reject
-                // the ENTIRE rule list, which would silently turn the blocker
-                // off. `AdBlockRuleCompilationTests` compiles the real output
-                // through WKContentRuleListStore to keep that honest.
-                "url-filter": "^https?://[^/]+(/[^?#]*)?/" + escaped,
-                "url-filter-is-case-insensitive": true,
-                "resource-type": ["script"],
-            ],
-            "action": ["type": "block"],
-        ]
+        // Anchored to a path segment boundary, so the filename cannot be
+        // matched from a query parameter that happens to contain it.
+        let pathPrefix = "^https?://[^/]+(/[^?#]*)?/" + escaped
+        return [pathPrefix + "$", pathPrefix + "[?#]"].map { pattern in
+            [
+                "trigger": [
+                    "url-filter": pattern,
+                    "url-filter-is-case-insensitive": true,
+                    "resource-type": ["script"],
+                ],
+                "action": ["type": "block"],
+            ]
+        }
     }
 
     // MARK: - Whole rule sets

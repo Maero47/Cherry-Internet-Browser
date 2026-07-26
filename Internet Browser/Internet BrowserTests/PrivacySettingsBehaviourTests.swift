@@ -76,6 +76,27 @@ final class PrivacySettingsBehaviourTests: XCTestCase {
         XCTAssertTrue(settings.isAdBlockPaused(for: URL(string: "https://web.de/")))
     }
 
+    /// `sanitizedWhitelist` is exactly what runs at launch, and its result is
+    /// written back to disk — so anything it drops is gone for good.
+    func testPausesOnRealSitesSurviveARelaunch() {
+        let survivors = SettingsManager.sanitizedWhitelist([
+            "medium.com", "wordpress.com", "netlify.com", "squarespace.com",
+            "zendesk.com", "supabase.co", "railway.app", "statuspage.io",
+            "web.de", "in.gr", "bbc.co.uk", "attacker.github.io",
+        ])
+        XCTAssertEqual(survivors.count, 12, "a pause the user set was deleted: \(survivors)")
+        XCTAssertTrue(survivors.contains("medium.com"))
+        XCTAssertTrue(survivors.contains("web.de"))
+    }
+
+    /// …while the entries the old base-domain bug wrote are still purged.
+    func testPublicSuffixEntriesAreStillPurgedAtLaunch() {
+        let survivors = SettingsManager.sanitizedWhitelist([
+            "co.uk", "com.au", "com", "", "  ", "bbc.co.uk",
+        ])
+        XCTAssertEqual(survivors, ["bbc.co.uk"])
+    }
+
     func testPauseIgnoresURLsWithoutAHost() {
         let settings = SettingsManager.shared
         settings.toggleAdBlockPause(for: URL(string: "about:blank"))

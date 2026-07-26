@@ -44,6 +44,17 @@ enum DownloadQuarantine {
             properties[kLSQuarantineOriginURLKey as String] = sourceURL.absoluteString
         }
 
+        if isPrivate {
+            // Drop whatever is already on the file before writing our sanitized
+            // dictionary. WebKit may have attached its own quarantine record
+            // (with the origin URL, and an event id) while writing the temp
+            // file; overwriting the xattr in place would keep that id, so the
+            // file would keep pointing at any row LaunchServices had already
+            // written for it. See the report — whether WKDownload actually
+            // does this could not be determined without running the app.
+            removeExistingQuarantine(from: fileURL)
+        }
+
         var url = fileURL
         var values = URLResourceValues()
         values.quarantineProperties = properties
@@ -59,6 +70,16 @@ enum DownloadQuarantine {
             it will open WITHOUT a Gatekeeper check. \(error.localizedDescription)
             """)
             return false
+        }
+    }
+
+    /// Removes any existing `com.apple.quarantine` xattr, so the dictionary
+    /// written afterwards is the whole record rather than an edit of someone
+    /// else's.
+    private static func removeExistingQuarantine(from fileURL: URL) {
+        fileURL.withUnsafeFileSystemRepresentation { path in
+            guard let path else { return }
+            removexattr(path, "com.apple.quarantine", 0)
         }
     }
 

@@ -24,16 +24,18 @@ struct PrivacySettingsView: View {
                 // A rule list WebKit refuses to compile is invisible at
                 // runtime — the requests it would have blocked simply go
                 // through. Say so instead of showing a switch that reads "on".
-                if settings.adBlockEnabled, let failure = adBlocker.compileFailureSummary {
+                if settings.adBlockEnabled, let title = adBlocker.blockingWarningTitle {
                     HStack(alignment: .top, spacing: 6) {
                         Image(systemName: "exclamationmark.triangle.fill")
                             .foregroundStyle(.orange)
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("Some blocking rules could not be loaded")
+                            Text(title)
                                 .font(.system(size: 11, weight: .medium))
-                            Text("Those requests are not being blocked. \(failure)")
-                                .font(.system(size: 10))
-                                .foregroundStyle(.secondary)
+                            if let detail = adBlocker.blockingWarningDetail {
+                                Text(detail)
+                                    .font(.system(size: 10))
+                                    .foregroundStyle(.secondary)
+                            }
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)

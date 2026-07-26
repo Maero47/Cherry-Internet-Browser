@@ -74,12 +74,14 @@ final class AdBlockRuleCompilationTests: XCTestCase {
     /// time so a failure names the pattern that broke rather than "something
     /// in a 45,000-rule list".
     func testEveryTriggerShapeCompilesIndividually() async {
-        let shapes: [(String, [String: Any])] = [
+        var shapes: [(String, [String: Any])] = [
             ("block", AdBlockRuleBuilder.blockRule(for: "doubleclick.net")),
             ("exception", AdBlockRuleBuilder.exceptionRule(for: "optanon.blob.core.windows.net")),
             ("cdn-cgi", AdBlockRuleBuilder.cdnCGIExceptionRule()),
-            ("script-path", AdBlockRuleBuilder.scriptPathBlockRule(for: "ads.js")),
         ]
+        for (index, rule) in AdBlockRuleBuilder.scriptPathBlockRules(for: "ads.js").enumerated() {
+            shapes.append(("script-path-\(index)", rule))
+        }
         for (name, rule) in shapes {
             let json = AdBlockRuleBuilder.json(from: [rule])
             let error = await compileError(json, identifier: "CherryTest_Shape_\(name)")
@@ -106,6 +108,64 @@ final class AdBlockRuleCompilationTests: XCTestCase {
             identifier: "CherryTest_NegativeControl"
         )
         XCTAssertNotNil(error, "WebKit accepted alternation — the compile harness is not proving anything")
+    }
+
+    /// Probe: does WebKit's parser accept an end-of-URL anchor? If it does,
+    /// the ad-script rule can be split into "path ends here" + "path followed
+    /// by ?/#" and stop matching `/ads.jsonp`.
+    func testEndOfURLAnchorIsAcceptedByWebKit() async {
+        let rule: [String: Any] = [
+            "trigger": [
+                "url-filter": "^https?://[^/]+(/[^?#]*)?/ads\\.js$",
+                "resource-type": ["script"],
+            ],
+            "action": ["type": "block"],
+        ]
+        let error = await compileError(
+            AdBlockRuleBuilder.json(from: [rule]),
+            identifier: "CherryTest_EndAnchor"
+        )
+        XCTAssertNil(error, "end-of-URL anchor rejected: \(error ?? "")")
+    }
+
+    // MARK: - Every list arrival announces itself
+
+    /// The second-launch path: the list is already in `WKContentRuleListStore`,
+    /// so `AdBlockManager` takes it from `lookUpContentRuleList` rather than
+    /// compiling. That branch used to assign `compiledLists` directly and post
+    /// nothing, so tabs restored at launch got the 45k-rule EasyList only by
+    /// winning a race — or not at all if the supplementary compile failed.
+    ///
+    /// Announcing is now a property of the mutation (`setCompiledList`), which
+    /// is what this asserts: pre-compile a list into the store exactly as the
+    /// app would, ask the manager to load it from cache, and require the
+    /// notification.
+    @MainActor
+    func testLoadingAListFromTheStoreAnnouncesIt() async throws {
+        let identifier = "CherryTest_CachedAnnounce"
+        let json = AdBlockRuleBuilder.domainRulesJSON(for: ["doubleclick.net"])
+        // Seed the store, mimicking a previous launch.
+        _ = await compileError(json, identifier: identifier)
+        _ = await withCheckedContinuation { continuation in
+            WKContentRuleListStore.default()?.compileContentRuleList(
+                forIdentifier: identifier, encodedContentRuleList: json
+            ) { list, _ in continuation.resume(returning: list) }
+        }
+
+        var announced = false
+        let token = NotificationCenter.default.addObserver(
+            forName: .cherryContentRuleListsChanged, object: nil, queue: .main
+        ) { _ in announced = true }
+        defer {
+            NotificationCenter.default.removeObserver(token)
+            WKContentRuleListStore.default()?.removeContentRuleList(forIdentifier: identifier) { _ in }
+        }
+
+        AdBlockManager.shared.loadCachedList(identifier: identifier, name: "testCached")
+        for _ in 0..<100 where !announced {
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+        XCTAssertTrue(announced, "a list taken from the store told nobody — restored tabs would never attach it")
     }
 
     // MARK: - The cookie list actually becomes available
@@ -184,9 +244,10 @@ final class AdBlockRuleCompilationTests: XCTestCase {
             AdBlockRuleBuilder.cdnCGIPathPattern,
         ]
         for filename in AdBlockRuleBuilder.blockedScriptFilenames {
-            let rule = AdBlockRuleBuilder.scriptPathBlockRule(for: filename)
-            let trigger = rule["trigger"] as? [String: Any]
-            patterns.append(trigger?["url-filter"] as? String ?? "")
+            for rule in AdBlockRuleBuilder.scriptPathBlockRules(for: filename) {
+                let trigger = rule["trigger"] as? [String: Any]
+                patterns.append(trigger?["url-filter"] as? String ?? "")
+            }
         }
         for pattern in patterns {
             XCTAssertFalse(pattern.contains("|"), "alternation is not part of WebKit's url-filter subset: \(pattern)")

@@ -113,6 +113,16 @@ final class WebSearchService {
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .nonPersistent()
         configuration.applicationNameForUserAgent = "Version/18.3 Safari/605.1.15"
+        // This page still makes real third-party requests, so it gets the same
+        // network-level blocking a visible tab would. Cosmetic filtering is
+        // skipped — nothing is displayed. Whatever is compiled at this moment
+        // is what this one-shot load gets; there is no coordinator to pick up
+        // a list that finishes compiling later.
+        let adBlocker = AdBlockManager.shared
+        if SettingsManager.shared.adBlockEnabled, adBlocker.rulesReady {
+            adBlocker.applyRules(to: configuration)
+        }
+        CookiePolicyManager.shared.apply(to: configuration)
         let webView = WKWebView(frame: CGRect(x: 0, y: 0, width: 1024, height: 768), configuration: configuration)
 
         // `navigationDelegate` is weak — the local strong reference keeps the

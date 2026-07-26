@@ -20,16 +20,39 @@ final class AdBlockManager {
     /// through — so this is surfaced in Settings rather than swallowed.
     private(set) var compileFailures: [String: String] = [:]
 
-    /// True when some part of the blocklist is not in force.
-    var hasCompileFailure: Bool { !compileFailures.isEmpty }
+    /// Rule lists that are absent for a reason other than rejection: the
+    /// filter lists could not be downloaded and there was no cache to fall
+    /// back on. Tracked separately because "we could not fetch the blocklist"
+    /// and "WebKit rejected our rules" need different words — and because
+    /// absence used to be reported nowhere at all, leaving Settings showing a
+    /// clean "Block Ads & Trackers: on" with no main blocklist behind it.
+    private(set) var unavailableLists: [String: String] = [:]
 
-    /// Human-readable summary for the Settings warning row.
-    var compileFailureSummary: String? {
-        guard !compileFailures.isEmpty else { return nil }
-        return compileFailures
-            .sorted { $0.key < $1.key }
-            .map { "\($0.key): \($0.value)" }
-            .joined(separator: "\n")
+    /// True when some part of the blocklist is not in force.
+    var hasCompileFailure: Bool { !compileFailures.isEmpty || !unavailableLists.isEmpty }
+
+    /// Headline for the Settings warning row, or nil when everything that
+    /// should be loaded is loaded.
+    var blockingWarningTitle: String? {
+        if !compileFailures.isEmpty { return "Some blocking rules could not be loaded" }
+        if !unavailableLists.isEmpty { return "The main blocklist could not be downloaded" }
+        return nil
+    }
+
+    /// Detail line for the Settings warning row.
+    var blockingWarningDetail: String? {
+        var parts: [String] = []
+        if !compileFailures.isEmpty {
+            parts.append(compileFailures.sorted { $0.key < $1.key }
+                .map { "\($0.key): \($0.value)" }.joined(separator: "\n"))
+        }
+        if !unavailableLists.isEmpty {
+            parts.append(unavailableLists.sorted { $0.key < $1.key }
+                .map { "\($0.key): \($0.value)" }.joined(separator: "\n"))
+        }
+        guard !parts.isEmpty else { return nil }
+        return "Requests those rules would have blocked are getting through. "
+            + parts.joined(separator: "\n")
     }
 
     /// Whether any ad blocker rules are ready to use
@@ -117,7 +140,11 @@ final class AdBlockManager {
             Task { @MainActor in
                 guard let self else { return }
                 if let cached {
-                    self.compiledLists["easyDomains"] = cached
+                    // This is the NORMAL path on every launch after the first.
+                    // It must announce like any other write, or tabs restored
+                    // at launch get the 45k-rule list only by winning a race
+                    // against the supplementary compile's notification.
+                    self.setCompiledList(cached, for: "easyDomains")
                     print("[AdBlocker] ✅ Loaded cached EasyList domain rules")
                     self.isCompiling = false
                     self.notifyWaiters()
@@ -151,7 +178,13 @@ final class AdBlockManager {
                 if let result {
                     self.compileList(name: "easyDomains", identifier: "CherryEasyDomains_V13", json: result.domainJSON)
                 } else {
-                    print("[AdBlocker] ⚠️ Download failed, supplementary rules only")
+                    // Absence, not rejection — and just as invisible to the
+                    // user unless we say so. `rulesReady` is still true
+                    // because the supplementary list compiled.
+                    self.unavailableLists["easyDomains"] =
+                        "The EasyList/EasyPrivacy filter lists could not be downloaded and no cached copy was available."
+                    print("[AdBlocker] ⚠️⚠️ Download failed — MAIN BLOCKLIST ABSENT, supplementary rules only")
+                    NotificationCenter.default.post(name: .cherryContentRuleListsChanged, object: nil)
                 }
                 self.isCompiling = false
                 self.notifyWaiters()
@@ -190,15 +223,40 @@ final class AdBlockManager {
                     self.notifyWaiters()
                     return
                 }
-                self.compileFailures.removeValue(forKey: name)
-                self.compiledLists[name] = ruleList
+                self.setCompiledList(ruleList, for: name)
                 print("[AdBlocker] ✅ Compiled \(name) successfully")
                 self.notifyWaiters()
-                // Web views created before this finished compiling have no
-                // rules attached — tell them to pick the list up.
-                NotificationCenter.default.post(name: .cherryContentRuleListsChanged, object: nil)
             }
         }
+    }
+
+    /// Adopts a rule list that is already in `WKContentRuleListStore` — the
+    /// second-launch path, where nothing needs compiling. Goes through
+    /// `setCompiledList` like every other arrival, so it announces.
+    /// Exposed so `AdBlockRuleCompilationTests` can drive that path.
+    func loadCachedList(identifier: String, name: String) {
+        WKContentRuleListStore.default().lookUpContentRuleList(forIdentifier: identifier) { [weak self] cached, _ in
+            Task { @MainActor in
+                guard let self, let cached else { return }
+                self.setCompiledList(cached, for: name)
+            }
+        }
+    }
+
+    /// The ONLY place `compiledLists` is written.
+    ///
+    /// Announcing is a property of the mutation, not of the call site: the
+    /// cached-lookup branch used to assign directly and never post, so on the
+    /// common second-launch path the EasyList rules reached an already-built
+    /// web view only by luck. Clearing the failure/absence entries here for
+    /// the same reason — a list that just arrived is no longer missing.
+    private func setCompiledList(_ list: WKContentRuleList?, for name: String) {
+        compileFailures.removeValue(forKey: name)
+        unavailableLists.removeValue(forKey: name)
+        compiledLists[name] = list
+        // Web views created before this list existed have nothing attached —
+        // tell every coordinator to rebuild its set.
+        NotificationCenter.default.post(name: .cherryContentRuleListsChanged, object: nil)
     }
 
     private func notifyWaiters() {
@@ -823,7 +881,7 @@ final class AdBlockManager {
 
         // Block common ad script filenames (catches first-party served ad scripts)
         for filename in AdBlockRuleBuilder.blockedScriptFilenames {
-            rules.append(AdBlockRuleBuilder.scriptPathBlockRule(for: filename))
+            rules.append(contentsOf: AdBlockRuleBuilder.scriptPathBlockRules(for: filename))
         }
 
         // Exception rules: NEVER block requests to consent management platforms,

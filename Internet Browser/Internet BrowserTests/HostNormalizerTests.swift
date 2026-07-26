@@ -106,8 +106,27 @@ final class HostNormalizerTests: XCTestCase {
     }
 
     func testLongestSuffixWins() {
-        // `amazonaws.com` alone is not the suffix that matters here.
-        XCTAssertEqual(HostNormalizer.baseDomain("a.b.bucket.s3.amazonaws.com"), "bucket.s3.amazonaws.com")
+        // `github.io` is the suffix, not `io` — so the tenant label is kept
+        // and the deeper labels below it are dropped.
+        XCTAssertEqual(HostNormalizer.baseDomain("a.b.tenant.github.io"), "tenant.github.io")
+        XCTAssertEqual(HostNormalizer.baseDomain("a.b.site.co.uk"), "site.co.uk")
+    }
+
+    /// Regional cloud forms are open-ended — `s3.<region>`, `s3-website-<region>`,
+    /// `execute-api.<region>`, `<account>.blob.core.windows.net`. Enumerating
+    /// them is a losing game, so anything under a tenancy root is its own site.
+    /// Collapsing these to `amazonaws.com` would be the `co.uk` hole again.
+    func testRegionalCloudHostsAreTreatedAsTheirOwnSite() {
+        let hosts = [
+            "bucket.s3.eu-west-1.amazonaws.com",
+            "bucket.s3-website-us-east-1.amazonaws.com",
+            "api.execute-api.us-east-1.amazonaws.com",
+            "account.blob.core.windows.net",
+            "project.firebasestorage.googleapis.com",
+        ]
+        for host in hosts {
+            XCTAssertEqual(HostNormalizer.baseDomain(host), host, host)
+        }
     }
 
     func testBaseDomainLeavesIPLiteralsAlone() {
@@ -133,12 +152,28 @@ final class HostNormalizerTests: XCTestCase {
     func testKnownPublicSuffixIsTableDrivenAndSpareTheseRealSites() {
         XCTAssertTrue(HostNormalizer.isKnownPublicSuffix("co.uk"))
         XCTAssertTrue(HostNormalizer.isKnownPublicSuffix("com.au"))
-        XCTAssertTrue(HostNormalizer.isKnownPublicSuffix("github.io"))
         XCTAssertTrue(HostNormalizer.isKnownPublicSuffix("com"))
+        // Registry suffixes only. `github.io` IS a public suffix for deriving
+        // a base domain, but it is not purgeable — see
+        // testSharedHostingSuffixesAreNotPurgeable.
+        XCTAssertFalse(HostNormalizer.isKnownPublicSuffix("github.io"))
         // Registrable sites the heuristic misreads — must survive the purge.
         XCTAssertFalse(HostNormalizer.isKnownPublicSuffix("web.de"))
         XCTAssertFalse(HostNormalizer.isKnownPublicSuffix("in.gr"))
         XCTAssertFalse(HostNormalizer.isKnownPublicSuffix("bbc.co.uk"))
+    }
+
+    /// Shared-hosting suffixes are *also* sites people browse. They belong in
+    /// the suffix set for base-domain derivation (one tenant is not another),
+    /// and must stay OUT of the purge table (deleting a pause the user set on
+    /// medium.com every launch is worse than any hole it would close).
+    func testSharedHostingSuffixesAreNotPurgeable() {
+        for host in ["medium.com", "wordpress.com", "tumblr.com", "netlify.com",
+                     "squarespace.com", "zendesk.com", "statuspage.io",
+                     "supabase.co", "railway.app", "github.io"] {
+            XCTAssertTrue(HostNormalizer.isPublicSuffix(host), "\(host) should be a suffix for derivation")
+            XCTAssertFalse(HostNormalizer.isKnownPublicSuffix(host), "\(host) must never be purged")
+        }
     }
 
     func testOnlyRegistrableHostsCanEnterAWhitelist() {

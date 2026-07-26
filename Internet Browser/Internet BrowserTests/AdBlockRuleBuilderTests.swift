@@ -105,13 +105,34 @@ final class AdBlockRuleBuilderTests: XCTestCase {
 
     // MARK: - First-party ad scripts
 
-    func testScriptBlockRuleMatchesThePathNotTheQuery() {
-        let rule = AdBlockRuleBuilder.scriptPathBlockRule(for: "ads.js")
-        XCTAssertEqual(trigger(of: rule)["resource-type"] as? [String], ["script"])
-        let filter = urlFilter(of: rule)
-        XCTAssertTrue(AdBlockRuleBuilder.pattern(filter, matches: "https://example.com/ads.js"))
-        XCTAssertTrue(AdBlockRuleBuilder.pattern(filter, matches: "https://example.com/static/js/ads.js?v=3"))
-        XCTAssertFalse(AdBlockRuleBuilder.pattern(filter, matches: "https://example.com/app.js?from=/ads.js"))
+    func testScriptBlockRulesMatchThePathNotTheQuery() {
+        let rules = AdBlockRuleBuilder.scriptPathBlockRules(for: "ads.js")
+        XCTAssertEqual(rules.count, 2, "one rule for end-of-URL, one for a following ?/#")
+        for rule in rules {
+            XCTAssertEqual(trigger(of: rule)["resource-type"] as? [String], ["script"])
+        }
+        let filters = rules.map(urlFilter(of:))
+        func anyMatches(_ url: String) -> Bool {
+            filters.contains { AdBlockRuleBuilder.pattern($0, matches: url) }
+        }
+        XCTAssertTrue(anyMatches("https://example.com/ads.js"))
+        XCTAssertTrue(anyMatches("https://example.com/static/js/ads.js?v=3"))
+        XCTAssertTrue(anyMatches("https://example.com/ads.js#x"))
+        XCTAssertFalse(anyMatches("https://example.com/app.js?from=/ads.js"))
+    }
+
+    /// The filename has to END the path. Without the anchor these all matched,
+    /// and a JSONP endpoint does load via `<script src>`.
+    func testScriptBlockRulesDoNotMatchLongerFilenames() {
+        let filters = AdBlockRuleBuilder.scriptPathBlockRules(for: "ads.js").map(urlFilter(of:))
+        for url in ["https://example.com/ads.jsonp?cb=x",
+                    "https://example.com/ads.jsx",
+                    "https://example.com/ads.js2"] {
+            XCTAssertFalse(
+                filters.contains { AdBlockRuleBuilder.pattern($0, matches: url) },
+                url
+            )
+        }
     }
 
     // MARK: - The list as a whole
