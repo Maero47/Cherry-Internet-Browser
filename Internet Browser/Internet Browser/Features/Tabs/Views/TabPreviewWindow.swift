@@ -28,7 +28,7 @@ final class TabPreviewWindow: NSWindow {
     private static let screenMargin: CGFloat = 6
 
     init(tab: Tab) {
-        let hostingView = NSHostingView(rootView: TabPreviewChipView(tab: tab))
+        let hostingView = cherryHostingView(TabPreviewChipView(tab: tab))
         let fitting = hostingView.fittingSize
         let size = NSSize(
             width: fitting.width > 0 ? fitting.width : TabPreviewChipView.width,

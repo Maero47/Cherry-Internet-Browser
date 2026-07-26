@@ -1,0 +1,65 @@
+//
+//  CherryWindowRoot.swift
+//  Cherry Browser
+//
+
+import SwiftUI
+import AppKit
+
+/// The appearance every Cherry window inherits: the user's accent colour as
+/// the SwiftUI tint, and the chosen light/dark override.
+///
+/// This is applied ONCE per window root — the `WindowGroup` scene and each
+/// `NSHostingView` the app builds by hand (detached windows, tear-off windows,
+/// incognito windows, the tab ghost/preview chips). Everything those windows
+/// contain, including sheets, popovers and alerts presented from them,
+/// inherits it through the environment.
+///
+/// It deliberately replaces the seven scattered `.tint(...)` calls that used
+/// to sit on individual controls: a new prominent button, switch or progress
+/// bar anywhere in the app is accent-tinted with nothing to remember. Views
+/// that paint the accent as an explicit *fill* (icon chips, selection rings)
+/// still read `SettingsManager.shared.accentColor` directly — `.tint` only
+/// governs what SwiftUI's own controls use.
+///
+/// What this CANNOT reach is anything macOS draws from
+/// `NSColor.controlAccentColor`: focus rings, `NSAlert` buttons,
+/// `NSOpenPanel`/`NSSavePanel`, menu highlights, and selection inside web page
+/// content. There is no runtime API to retint those.
+///
+/// Selection and the insertion point in Cherry's OWN text fields are NOT in
+/// that list — `NSTextView` exposes both, and `AccentTextSelection` sets them
+/// on each window's field editor.
+///
+/// They resolve to the accent the user picked in System Settings ▸ Appearance;
+/// only while that is "Multicolour" (the macOS default) do they fall back to
+/// the app's compile-time `AccentColor` asset. That asset is deliberately left
+/// at Cherry red `DB283C`: it can't change at runtime, and red is exactly
+/// right for the default accent — dropping the asset would make those surfaces
+/// the stock macOS blue for *every* user, including the majority who never
+/// leave the default. A user who wants them to match a non-default Cherry
+/// accent sets the macOS accent, which overrides the asset either way.
+struct CherryWindowRoot: ViewModifier {
+    private var settings: SettingsManager { .shared }
+
+    func body(content: Content) -> some View {
+        content
+            .tint(settings.accentColor)
+            .preferredColorScheme(settings.resolvedColorScheme)
+    }
+}
+
+extension View {
+    /// Marks this view as a Cherry window's root content. See `CherryWindowRoot`.
+    func cherryWindowRoot() -> ModifiedContent<Self, CherryWindowRoot> {
+        modifier(CherryWindowRoot())
+    }
+}
+
+/// Builds the `NSHostingView` for a hand-made Cherry window, with the window
+/// root appearance already applied. Every `NSHostingView(rootView:)` in the
+/// app goes through here so no window can be created untinted.
+@MainActor
+func cherryHostingView<Content: View>(_ content: Content) -> NSHostingView<ModifiedContent<Content, CherryWindowRoot>> {
+    NSHostingView(rootView: content.cherryWindowRoot())
+}

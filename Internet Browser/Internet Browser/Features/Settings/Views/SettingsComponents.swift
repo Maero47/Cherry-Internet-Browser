@@ -93,7 +93,6 @@ struct SettingsToggleRow: View {
                 .labelsHidden()
                 .toggleStyle(.switch)
                 .controlSize(.small)
-                .tint(SettingsManager.shared.accentColor)
         }
     }
 }
@@ -160,11 +159,24 @@ struct AccentSwatch: View {
     }
 }
 
-/// Homepage-background tile: a mini gradient preview with a caption, an
-/// accent selection ring, and an optional overlay icon (used by "Auto").
+/// What a `HomepageSwatch` shows in its tile — the same three background
+/// kinds the homepage itself can paint, so a swatch always previews what the
+/// user will actually get.
+enum HomepageSwatchPreview {
+    /// A mini version of a mesh-gradient background.
+    case gradient([Color])
+    /// A thumbnail of the real wallpaper image the homepage would draw.
+    case wallpaper(assetName: String)
+    /// A flat fill — an imported Firefox theme's `ntp_background`.
+    case flat(Color)
+}
+
+/// Homepage-background tile: a preview of the actual background with a
+/// caption, an accent selection ring, and an optional overlay icon (used by
+/// "Auto").
 struct HomepageSwatch: View {
     let name: String
-    let colors: [Color]
+    let preview: HomepageSwatchPreview
     let isSelected: Bool
     var icon: String? = nil
     let action: () -> Void
@@ -175,9 +187,9 @@ struct HomepageSwatch: View {
     var body: some View {
         Button(action: action) {
             VStack(spacing: 6) {
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(LinearGradient(colors: colors, startPoint: .topLeading, endPoint: .bottomTrailing))
+                previewTile
                     .frame(height: 46)
+                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                     .overlay {
                         if let icon {
                             Image(systemName: icon)
@@ -208,5 +220,26 @@ struct HomepageSwatch: View {
         .help(name)
         .accessibilityLabel(name)
         .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+
+    /// Each case draws what the homepage draws, *including* the wash or scrim
+    /// the homepage lays on top — a swatch showing the raw gradient or the raw
+    /// wallpaper reads far more saturated than the background it stands for.
+    /// The flat case is the one that gets neither, because an imported theme's
+    /// absolute `ntp_background` gets neither on the homepage either.
+    @ViewBuilder
+    private var previewTile: some View {
+        switch preview {
+        case .gradient(let colors):
+            LinearGradient(colors: colors, startPoint: .topLeading, endPoint: .bottomTrailing)
+                .overlay { HomepageGradientWash() }
+        case .wallpaper(let assetName):
+            Image(assetName)
+                .resizable()
+                .scaledToFill()
+                .overlay { HomepageWallpaperScrim(startRadius: 8, endRadius: 72) }
+        case .flat(let color):
+            color
+        }
     }
 }

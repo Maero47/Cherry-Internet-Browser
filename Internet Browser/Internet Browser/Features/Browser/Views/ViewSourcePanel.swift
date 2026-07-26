@@ -396,7 +396,7 @@ struct ViewSourcePanel: View {
                     range: found)
                 mutable.addAttribute(.backgroundColor,
                     value: isActive
-                        ? NSColor.controlAccentColor
+                        ? NSColor(SettingsManager.shared.accentColor)
                         : NSColor.systemOrange.withAlphaComponent(0.22),
                     range: found)
 

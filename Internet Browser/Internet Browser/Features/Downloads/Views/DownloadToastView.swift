@@ -81,7 +81,6 @@ struct DownloadToastView: View {
             if !isCompleted, let prog = progress, prog.total > 0 {
                 ProgressView(value: Double(prog.downloaded), total: Double(prog.total))
                     .progressViewStyle(.linear)
-                    .tint(SettingsManager.shared.accentColor)
             }
 
             // Show All button

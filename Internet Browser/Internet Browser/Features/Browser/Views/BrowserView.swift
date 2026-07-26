@@ -136,8 +136,6 @@ struct BrowserView: View {
             .background(Color(nsColor: .windowBackgroundColor))
             .background { WindowConfigurator() }
             .background { WindowRegistrar(viewModel: viewModel) }
-            .preferredColorScheme(SettingsManager.shared.resolvedColorScheme)
-            .tint(SettingsManager.shared.accentColor)
             .focusable()
             .focusEffectDisabled()
             .onKeyPress(.return) { .ignored }
@@ -907,6 +905,7 @@ struct BrowserContentView: View {
             } else if tab.showHomePage {
                 HomePageView(
                     repository: viewModel.shortcutRepository,
+                    isPrivateMode: viewModel.isPrivateMode,
                     onShortcutClick: { url in
                         onNavigate(url.absoluteString)
                     },

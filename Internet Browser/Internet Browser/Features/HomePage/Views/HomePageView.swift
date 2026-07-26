@@ -8,33 +8,27 @@ import SwiftUI
 // MARK: - Animated background
 
 private struct HomepageBackground: View {
+    /// Private windows are never themed, so an imported theme's
+    /// `ntp_background` never reaches an incognito homepage. Keyed on the
+    /// window, matching every other themed surface — see `HomePageView`.
+    let isPrivateMode: Bool
+
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isDrifting = false
 
     private var settings: SettingsManager { SettingsManager.shared }
-    private var firefoxThemeHasHomepageBackground: Bool {
-        FirefoxThemeManager.shared.homepageBackground != nil
+
+    /// What is actually being painted. See `HomepageBackgroundResolver`.
+    private var source: HomepageBackgroundSource {
+        settings.homepageBackgroundSource(isPrivate: isPrivateMode)
     }
 
-    private var wallpaperName: String? {
-        guard settings.homepageMatchesAccent, !firefoxThemeHasHomepageBackground else {
-            return nil
-        }
+    private var themeBackgroundIsActive: Bool { source == .themeBackground }
 
-        // Locale-independent: an identifier, not prose. (Hex digits happen to
-        // dodge the Turkish I/ı mapping today, but only by accident.)
-        switch settings.accentColorHex.uppercased(with: Locale(identifier: "en_US_POSIX")) {
-        case "DB283C": return "HomepageWallpaperDB283C"
-        case "2563EB": return "HomepageWallpaper2563EB"
-        case "059669": return "HomepageWallpaper059669"
-        case "7C3AED": return "HomepageWallpaper7C3AED"
-        case "EA580C": return "HomepageWallpaperEA580C"
-        case "DB2777": return "HomepageWallpaperDB2777"
-        case "0D9488": return "HomepageWallpaper0D9488"
-        case "6B7280": return "HomepageWallpaper6B7280"
-        default: return nil
-        }
+    private var wallpaperName: String? {
+        guard case .accentWallpaper(let assetName) = source else { return nil }
+        return assetName
     }
 
     var body: some View {
@@ -46,7 +40,7 @@ private struct HomepageBackground: View {
                     .id(wallpaperName)
                     .transition(.opacity)
 
-                wallpaperLegibilityScrim
+                HomepageWallpaperScrim()
             } else {
                 fallbackGradient
                     .transition(.opacity)
@@ -74,20 +68,54 @@ private struct HomepageBackground: View {
                 [1.0, 0.5],
                 [0.0, 1.0], [0.5, 1.0], [1.0, 1.0]
             ],
-            colors: settings.homepageGradientColors
+            colors: settings.homepageGradientColors(isPrivate: isPrivateMode)
         )
         .overlay {
-            // The existing themes are intentionally deep. This wash turns them
-            // into soft, legible pastels in light mode without changing a theme's hue.
             // An imported Firefox theme's ntp_background is an absolute color
             // (not light/dark adaptive), so it gets no wash at all.
-            if !firefoxThemeHasHomepageBackground {
-                Color.white.opacity(colorScheme == .light ? 0.7 : 0.035)
+            if !themeBackgroundIsActive {
+                HomepageGradientWash()
             }
         }
     }
 
-    private var wallpaperLegibilityScrim: some View {
+}
+
+/// The wash the homepage lays over a gradient background.
+///
+/// The curated themes and the accent-derived palette are intentionally deep;
+/// this turns them into soft, legible pastels in light mode without changing a
+/// hue. Shared with the Settings ▸ Homepage Background swatches, which preview
+/// those same gradients — at 0.7 opacity in light mode it is the difference
+/// between a swatch that matches the homepage and one that reads far more
+/// saturated than anything the user will see.
+struct HomepageGradientWash: View {
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        Color.white
+            .opacity(colorScheme == .light ? 0.7 : 0.035)
+            .allowsHitTesting(false)
+    }
+}
+
+/// The wash the homepage lays over a wallpaper so text stays legible.
+///
+/// Shared with the Settings ▸ Homepage Background "Auto" thumbnail, which
+/// previews the same wallpaper: without it the swatch reads noticeably more
+/// saturated than what the homepage actually paints. One definition, so the
+/// two can't drift apart.
+struct HomepageWallpaperScrim: View {
+    /// Radii of the centre highlight, in points. The homepage uses the
+    /// defaults, sized for a window; the Settings thumbnail scales them down
+    /// to its ~1/10-scale tile so the highlight falls off inside the tile
+    /// instead of flooding it.
+    var startRadius: CGFloat = 80
+    var endRadius: CGFloat = 720
+
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
         ZStack {
             (colorScheme == .light ? Color.white : Color.black)
                 .opacity(colorScheme == .light ? 0.32 : 0.28)
@@ -98,8 +126,8 @@ private struct HomepageBackground: View {
                     .clear
                 ],
                 center: .center,
-                startRadius: 80,
-                endRadius: 720
+                startRadius: startRadius,
+                endRadius: endRadius
             )
         }
         .allowsHitTesting(false)
@@ -110,6 +138,12 @@ private struct HomepageBackground: View {
 
 struct HomePageView: View {
     @Bindable var repository: ShortcutRepository
+    /// Private windows are never themed by an imported Firefox theme. Keyed on
+    /// the WINDOW, like every other themed surface (`NavigationBarView`,
+    /// `OmniboxView`, `BookmarkBarView`, both tab bars, both sidebars) — a tab's
+    /// own `isPrivate` can diverge from its window's inside a private window,
+    /// which would theme the homepage while the chrome around it stayed plain.
+    var isPrivateMode: Bool = false
     let onShortcutClick: (URL) -> Void
     let onSearch: (String) -> Void
 
@@ -122,8 +156,13 @@ struct HomePageView: View {
     private var accent: Color { SettingsManager.shared.accentColor }
     private var foreground: Color {
         // An active Firefox theme's ntp_text keeps text legible against its
-        // absolute ntp_background; otherwise stay scheme-adaptive as before.
-        if let themeText = FirefoxThemeManager.shared.homepageText {
+        // absolute ntp_background — but only while that background is the one
+        // being painted. Against Cherry's own wallpaper it would be a colour
+        // chosen for a surface that isn't there, so we stay scheme-adaptive.
+        // In a private window the source is never `.themeBackground`, so this
+        // is also the incognito gate.
+        if SettingsManager.shared.homepageBackgroundSource(isPrivate: isPrivateMode) == .themeBackground,
+           let themeText = FirefoxThemeManager.shared.homepageText {
             return themeText
         }
         return colorScheme == .dark ? .white : Color(red: 0.09, green: 0.08, blue: 0.11)
@@ -149,7 +188,7 @@ struct HomePageView: View {
             .scrollIndicators(.hidden)
         }
         .foregroundStyle(foreground)
-        .background(HomepageBackground())
+        .background(HomepageBackground(isPrivateMode: isPrivateMode))
         .onAppear {
             DispatchQueue.main.async { isSearchFocused = true }
         }
@@ -450,7 +489,6 @@ private struct ShortcutForm: View {
                 Button(actionTitle, action: onCommit)
                     .keyboardShortcut(.defaultAction)
                     .buttonStyle(.borderedProminent)
-                    .tint(SettingsManager.shared.accentColor)
                     .disabled(!canCommit)
             }
         }

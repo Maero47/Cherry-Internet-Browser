@@ -17,6 +17,7 @@ struct Internet_BrowserApp: App {
     var body: some Scene {
         WindowGroup {
             BrowserView()
+                .cherryWindowRoot()
         }
         .windowStyle(.hiddenTitleBar)
         .commands {
@@ -232,7 +233,7 @@ private struct CommandItem: View {
 /// copies, one of which (the ⌘N menu item) was an empty closure.
 @MainActor
 func openBrowserWindow(isPrivate: Bool) {
-    let hostingView = NSHostingView(rootView: BrowserView(isPrivate: isPrivate))
+    let hostingView = cherryHostingView(BrowserView(isPrivate: isPrivate))
 
     let window = DetachedWindow(
         contentRect: NSRect(x: 0, y: 0, width: 1000, height: 700),
@@ -268,6 +269,11 @@ func configureBrowserWindow(_ window: NSWindow) {
     window.standardWindowButton(.closeButton)?.isHidden = false
     window.standardWindowButton(.miniaturizeButton)?.isHidden = false
     window.standardWindowButton(.zoomButton)?.isHidden = false
+
+    // The caret/selection colour for every text field in this window; see
+    // AccentTextSelection. Here rather than per field, for the same reason
+    // the tint lives at the window root.
+    AccentTextSelection.apply(to: window)
 }
 
 // MARK: - Load Extension…
@@ -359,6 +365,29 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             configureWindow(window)
         }
 
+        // AppKit hands the shared field editor from control to control and
+        // reconfigures it on the way (`NSCell.setUpFieldEditorAttributes`), so
+        // re-assert the accent caret/selection each time editing starts rather
+        // than trusting the once-per-window pass to survive.
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(textDidBeginEditing(_:)),
+            name: NSControl.textDidBeginEditingNotification,
+            object: nil
+        )
+
+        // Sheets are their own NSWindow with their own field editor, so
+        // `configureBrowserWindow` never sees one. Becoming key is what a sheet
+        // does the instant it is presented, and is the only thing a window must
+        // do before it can receive typing — so this is the general catch for
+        // every window Cherry doesn't build itself.
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(windowDidBecomeKey(_:)),
+            name: NSWindow.didBecomeKeyNotification,
+            object: nil
+        )
+
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(windowDidEnterFullScreen(_:)),
@@ -415,6 +444,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func configureWindow(_ window: NSWindow) {
         configureBrowserWindow(window)
+    }
+
+    @objc private func windowDidBecomeKey(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow else { return }
+        MainActor.assumeIsolated { AccentTextSelection.apply(to: window) }
+    }
+
+    /// `NSControl` puts the field editor it is about to use in the
+    /// notification's user info under `"NSFieldEditor"` (an AppKit string key
+    /// with no Swift symbol).
+    @objc private func textDidBeginEditing(_ notification: Notification) {
+        guard let editor = notification.userInfo?["NSFieldEditor"] as? NSTextView else { return }
+        MainActor.assumeIsolated { AccentTextSelection.apply(to: editor) }
     }
 
     @objc private func windowDidEnterFullScreen(_ notification: Notification) {

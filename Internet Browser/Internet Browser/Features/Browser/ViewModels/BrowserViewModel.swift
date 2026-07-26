@@ -611,7 +611,7 @@ final class BrowserViewModel {
 
         // Create a new window with the existing tab (no reload)
         let newBrowserView = BrowserView(existingTab: tab)
-        let hostingView = NSHostingView(rootView: newBrowserView)
+        let hostingView = cherryHostingView(newBrowserView)
 
         let windowWidth: CGFloat = 1000
         let windowHeight: CGFloat = 700

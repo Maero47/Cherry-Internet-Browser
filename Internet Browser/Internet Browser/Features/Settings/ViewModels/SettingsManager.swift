@@ -213,7 +213,13 @@ final class SettingsManager {
     }
 
     var accentColorHex: String {
-        didSet { UserDefaults.standard.set(accentColorHex, forKey: Keys.accentColorHex) }
+        didSet {
+            UserDefaults.standard.set(accentColorHex, forKey: Keys.accentColorHex)
+            applyAppIcon()
+            // SwiftUI redraws everything `.tint` reaches on its own; the field
+            // editor is an AppKit object outside that, so it needs telling.
+            onMainActor { AccentTextSelection.refreshOpenWindows() }
+        }
     }
 
     var homepageTheme: HomepageTheme {
@@ -227,6 +233,20 @@ final class SettingsManager {
         didSet { UserDefaults.standard.set(homepageMatchesAccent, forKey: Keys.homepageMatchesAccent) }
     }
 
+    /// Whether an imported Firefox theme's `ntp_background` is allowed to take
+    /// over the homepage. Set when a theme is imported (so a fresh theme shows
+    /// its own new-tab background, as Firefox does) and cleared the moment the
+    /// user picks a background swatch in Settings.
+    ///
+    /// This flag is the way out of the lock-out: the theme background used to
+    /// outrank the user's "Auto" choice unconditionally, so once a theme with
+    /// `ntp_background` was active the accent wallpaper could never be shown
+    /// again short of deleting the theme — while Settings still drew "Auto" as
+    /// the selected swatch.
+    var homepageUsesThemeBackground: Bool {
+        didSet { UserDefaults.standard.set(homepageUsesThemeBackground, forKey: Keys.homepageUsesThemeBackground) }
+    }
+
     var accentColor: Color {
         Color(hex: accentColorHex)
     }
@@ -234,18 +254,43 @@ final class SettingsManager {
     // MARK: - Homepage appearance
     // Single source of truth for the homepage background: views read these
     // instead of `homepageTheme` directly, so the active source (imported
-    // Firefox theme vs. accent-derived vs. curated theme) stays an
-    // implementation detail.
+    // Firefox theme vs. accent wallpaper vs. accent-derived vs. curated theme)
+    // stays an implementation detail — and Settings' selection state is
+    // derived from the same value the homepage paints.
 
-    var homepageGradientColors: [Color] {
-        // An imported Firefox theme's ntp_background wins outright while
-        // active — a flat fill, matching how Firefox renders its new-tab page.
-        if let themeBackground = FirefoxThemeManager.shared.homepageBackground {
+    /// - Parameter isPrivate: whether the asking window is a private one; see
+    ///   `HomepageBackgroundResolver.resolve`.
+    func homepageBackgroundSource(isPrivate: Bool) -> HomepageBackgroundSource {
+        HomepageBackgroundResolver.resolve(
+            matchesAccent: homepageMatchesAccent,
+            prefersThemeBackground: homepageUsesThemeBackground,
+            themeHasBackground: FirefoxThemeManager.shared.homepageBackground != nil,
+            isPrivate: isPrivate,
+            accentHex: accentColorHex,
+            curatedTheme: homepageTheme
+        )
+    }
+
+    func homepageGradientColors(isPrivate: Bool) -> [Color] {
+        switch homepageBackgroundSource(isPrivate: isPrivate) {
+        case .themeBackground:
+            // Flat, matching how Firefox renders its new-tab page.
+            let themeBackground = FirefoxThemeManager.shared.homepageBackground ?? .clear
             return Array(repeating: themeBackground, count: 9)
+        case .accentWallpaper, .accentGradient:
+            return AccentDerivedPalette.gradientColors(fromHex: accentColorHex)
+        case .curatedTheme(let theme):
+            return theme.gradientColors
         }
-        return homepageMatchesAccent
-            ? AccentDerivedPalette.gradientColors(fromHex: accentColorHex)
-            : homepageTheme.gradientColors
+    }
+
+    /// True while an imported theme's `ntp_background` is what an ordinary
+    /// window's homepage shows — not merely that the active theme defines one.
+    /// Settings reads this: it configures the app, not one window, so it
+    /// deliberately reports the non-private answer even when opened in a
+    /// private tab.
+    var homepageThemeBackgroundIsActive: Bool {
+        homepageBackgroundSource(isPrivate: false) == .themeBackground
     }
 
     var resolvedColorScheme: ColorScheme? {
@@ -440,6 +485,9 @@ final class SettingsManager {
             self.homepageTheme = .cherry
         }
         self.homepageMatchesAccent = defaults.object(forKey: Keys.homepageMatchesAccent) as? Bool ?? true
+        // Defaults to true so an already-imported theme keeps the homepage
+        // background it has been painting across the upgrade.
+        self.homepageUsesThemeBackground = defaults.object(forKey: Keys.homepageUsesThemeBackground) as? Bool ?? true
 
         // Downloads
         let defaultDownloadsPath = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first!.path
@@ -491,6 +539,32 @@ final class SettingsManager {
         // from `blockCookies.didSet`, so a policy chosen in an earlier session
         // was never in force again until the user re-picked it.
         applyCookiePolicy()
+        // Same reason, for the Dock icon: `didSet` doesn't fire during `init`,
+        // so without this the icon would only follow the accent from the first
+        // time the user re-picked it in a session.
+        applyAppIcon()
+    }
+
+    // MARK: - App Icon
+
+    /// Points the running app's Dock/⌘-Tab icon at the artwork for the current
+    /// accent. Called from `accentColorHex.didSet` and once from `init`, so
+    /// this is the only place the icon is ever set. Falls back to the bundled
+    /// icon when the accent has no artwork — see `AccentAppIcon`.
+    func applyAppIcon() {
+        let hex = accentColorHex
+        onMainActor { AccentAppIcon.apply(accentHex: hex) }
+    }
+
+    /// Runs AppKit work synchronously when we're already on the main actor —
+    /// which is every real call site — mirroring `applyCookiePolicy`'s reason
+    /// for not always hopping through a `Task`.
+    private func onMainActor(_ work: @escaping @MainActor () -> Void) {
+        if Thread.isMainThread {
+            MainActor.assumeIsolated(work)
+        } else {
+            Task { @MainActor in work() }
+        }
     }
 
     // MARK: - Cookie Policy
@@ -588,6 +662,7 @@ final class SettingsManager {
         static let accentColorHex = "accentColorHex"
         static let homepageTheme = "homepageTheme"
         static let homepageMatchesAccent = "homepageMatchesAccent"
+        static let homepageUsesThemeBackground = "homepageUsesThemeBackground"
         static let downloadDirectory = "downloadDirectory"
         static let adBlockEnabled = "adBlockEnabled"
         static let adBlockWhitelistedDomains = "adBlockWhitelistedDomains"
