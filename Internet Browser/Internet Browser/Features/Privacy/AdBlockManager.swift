@@ -58,6 +58,11 @@ final class AdBlockManager {
     /// Whether any ad blocker rules are ready to use
     var rulesReady: Bool { !compiledLists.isEmpty }
 
+    /// Bumped whenever the compiled set changes identity. Lets a web view tell
+    /// "the same lists I already have" from "a different set", so an unchanged
+    /// rebuild can be skipped.
+    private(set) var generation = 0
+
     /// Continuations waiting for rules to be ready, keyed so a timeout can
     /// retire exactly one of them.
     private var waiters: [UUID: CheckedContinuation<Void, Never>] = [:]
@@ -66,6 +71,26 @@ final class AdBlockManager {
     /// or not. Without it, a caller that arrives *after* the last compile
     /// failed would park on a continuation nothing is left to resume.
     private var compilationSettled = false
+
+    /// Lookups, downloads and compiles still running. Compilation has only
+    /// "settled" when this reaches zero — one list failing while another is
+    /// still downloading is not the end of the story, and treating it as one
+    /// released waiters early, letting a caller proceed as though blocking
+    /// were ready.
+    private var outstandingWork = 0
+
+    private func beginWork() {
+        outstandingWork += 1
+    }
+
+    private func endWork() {
+        outstandingWork = max(0, outstandingWork - 1)
+        guard outstandingWork == 0 else { return }
+        compilationSettled = true
+        // Nothing further is coming — release anyone still waiting, even if
+        // nothing compiled.
+        notifyWaiters()
+    }
 
     /// For backward compatibility
     var compiledRuleList: WKContentRuleList? { compiledLists.values.first }
@@ -157,6 +182,9 @@ final class AdBlockManager {
         // 2) Try loading cached EasyList domain rules
         let domainCacheURL = Self.cacheDir.appendingPathComponent("easylist_domains_v13.json")
 
+        // The lookup itself counts as work in flight: until it returns we do
+        // not yet know whether a compile or a download is still to come.
+        beginWork()
         WKContentRuleListStore.default().lookUpContentRuleList(forIdentifier: "CherryEasyDomains_V13") { [weak self] cached, _ in
             Task { @MainActor in
                 guard let self else { return }
@@ -175,11 +203,14 @@ final class AdBlockManager {
                     print("[AdBlocker] Compiling EasyList domains from local cache...")
                     self.compileList(name: "easyDomains", identifier: "CherryEasyDomains_V13", json: json)
                     self.isCompiling = false
-                    self.notifyWaiters()
                 } else {
                     print("[AdBlocker] No cache, downloading filter lists...")
                     self.downloadAndCompile()
                 }
+                // Always AFTER the branch above: the successor work registers
+                // itself first, so the counter can never dip to zero — and
+                // settle — between the two.
+                self.endWork()
             }
         }
     }
@@ -193,6 +224,7 @@ final class AdBlockManager {
     }
 
     private func downloadAndCompile() {
+        beginWork()
         Task {
             let result = await Self.downloadAndExtract()
             await MainActor.run {
@@ -208,22 +240,25 @@ final class AdBlockManager {
                     ContentRuleListKind.adBlock.post()
                 }
                 self.isCompiling = false
-                self.notifyWaiters()
+                self.endWork()
             }
         }
     }
 
     private func downloadAndCompileInBackground() async {
+        await MainActor.run { self.beginWork() }
         let result = await Self.downloadAndExtract()
-        if let result {
-            await MainActor.run {
+        await MainActor.run {
+            if let result {
                 self.compileList(name: "easyDomains", identifier: "CherryEasyDomains_V13", json: result.domainJSON)
             }
+            self.endWork()
         }
     }
 
     /// Compile a rule list and store it
     private func compileList(name: String, identifier: String, json: String) {
+        beginWork()
         WKContentRuleListStore.default().compileContentRuleList(
             forIdentifier: identifier,
             encodedContentRuleList: json
@@ -241,12 +276,18 @@ final class AdBlockManager {
                     [AdBlocker] ❌❌❌ RULE LIST "\(name)" FAILED TO COMPILE — \
                     NO NETWORK-LEVEL BLOCKING FROM THIS LIST. \(message)
                     """)
-                    self.notifyWaiters()
+                    // Deliberately no `notifyWaiters()` here: this list failing
+                    // says nothing about the others still in flight. `endWork`
+                    // releases waiters if this was the last one.
+                    self.endWork()
                     return
                 }
                 self.setCompiledList(ruleList, for: name)
                 print("[AdBlocker] ✅ Compiled \(name) successfully")
+                // A usable list exists — release waiters now, whether or not
+                // other compiles are still running.
                 self.notifyWaiters()
+                self.endWork()
             }
         }
     }
@@ -275,16 +316,18 @@ final class AdBlockManager {
         compileFailures.removeValue(forKey: name)
         unavailableLists.removeValue(forKey: name)
         compiledLists[name] = list
+        generation += 1
         // Web views created before this list existed have nothing attached —
         // tell every coordinator to rebuild its set.
         ContentRuleListKind.adBlock.post()
     }
 
+    /// Releases anyone waiting for rules. Called when a list becomes usable,
+    /// and by `endWork()` when nothing further is coming.
+    ///
+    /// Deliberately does NOT mark compilation settled: that belongs to
+    /// `endWork`, which knows whether other compiles are still running.
     private func notifyWaiters() {
-        // Every terminal branch — success, rejection, download failure — funnels
-        // through here, so this is also where "nothing further is coming" is
-        // recorded for callers that arrive later.
-        compilationSettled = true
         let pending = waiters
         waiters.removeAll()
         for continuation in pending.values {
@@ -294,6 +337,7 @@ final class AdBlockManager {
 
     func invalidate() {
         compiledLists.removeAll()
+        generation += 1
         for id in ["CherryAdBlocker", "CherryAdBlockerV2", "CherryAdBlockerV3",
                     "CherryAdBlockerV4", "CherryAdBlockerV5", "CherrySupplementaryV1",
                     "CherrySupp_V2", "CherrySupp_V4", "CherrySupp_V6", "CherrySupp_V7",

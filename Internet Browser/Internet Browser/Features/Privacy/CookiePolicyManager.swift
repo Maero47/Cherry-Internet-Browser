@@ -72,6 +72,10 @@ final class CookiePolicyManager {
     /// because Allow All" apart from "no list yet".
     private(set) var activeLevel: CookieBlockingLevel = .none
 
+    /// Bumped whenever the compiled list changes identity, so a web view can
+    /// skip a rebuild that would install exactly what it already has.
+    private(set) var generation = 0
+
     /// Identifier is versioned so a previously compiled list is never reused
     /// for different rules.
     private static func identifier(for level: CookieBlockingLevel) -> String {
@@ -102,6 +106,7 @@ final class CookiePolicyManager {
         guard let json = Self.ruleJSON(for: level) else {
             activeLevel = level
             compiledList = nil
+            generation += 1
             ContentRuleListKind.cookiePolicy.post()
             return
         }
@@ -128,6 +133,7 @@ final class CookiePolicyManager {
                 self.compileFailure = nil
                 self.activeLevel = level
                 self.compiledList = ruleList
+                self.generation += 1
                 print("[Cookies] ✅ Applied policy: \(level.rawValue)")
                 ContentRuleListKind.cookiePolicy.post()
             }

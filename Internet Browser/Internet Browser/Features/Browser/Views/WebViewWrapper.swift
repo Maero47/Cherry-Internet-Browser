@@ -347,6 +347,17 @@ struct WebViewWrapper: NSViewRepresentable {
         return !settings.isAdBlockPaused(for: pageURL)
     }
 
+    /// Everything that determines which lists a page gets: the blocking
+    /// decision plus the identity of each manager's currently compiled set.
+    /// Equal signatures mean an identical install, so the rebuild can be
+    /// skipped — and any real change (a pause, a policy switch, a list
+    /// finishing its compile) changes it.
+    static func contentRuleListSignature(for pageURL: URL?) -> String {
+        "\(adBlockActive(for: pageURL))"
+            + "|\(AdBlockManager.shared.generation)"
+            + "|\(CookiePolicyManager.shared.generation)"
+    }
+
     // MARK: - Core user scripts / message handlers
 
     /// Handler names the core scripts post to — one list so registration and
@@ -545,11 +556,37 @@ struct WebViewWrapper: NSViewRepresentable {
             }
         }
 
-        /// Attaches exactly the content rule lists the tab in this web view
+        /// The page this web view is actually showing.
+        ///
+        /// `webView.url` is WebKit's committed main-frame URL. `tab?.url` is
+        /// written asynchronously by the KVO observer, so during a navigation
+        /// it still holds the *previous* page — deriving blocking from it is
+        /// exactly the staleness that let a paused site's decision follow the
+        /// tab to the next site. It is only a fallback for a web view that has
+        /// committed nothing yet.
+        private var currentPageURL: URL? {
+            webView?.url ?? tab?.url
+        }
+
+        /// Signature of the rule-list set currently installed, so an unchanged
+        /// rebuild can be skipped.
+        private var appliedRuleListSignature: String?
+
+        /// Attaches exactly the content rule lists the page in this web view
         /// should be carrying right now.
+        ///
+        /// Skips the work when nothing that feeds the decision has changed:
+        /// `didCommit` runs on every navigation, and the overwhelmingly common
+        /// protected → protected case would otherwise pay a
+        /// `removeAllContentRuleLists()` plus a re-add — two IPC round trips to
+        /// the web process — for an identical result.
         func rebuildContentRuleLists() {
             guard let webView else { return }
-            WebViewWrapper.applyContentRuleLists(to: webView.configuration, pageURL: tab?.url)
+            let pageURL = currentPageURL
+            let signature = WebViewWrapper.contentRuleListSignature(for: pageURL)
+            guard signature != appliedRuleListSignature else { return }
+            appliedRuleListSignature = signature
+            WebViewWrapper.applyContentRuleLists(to: webView.configuration, pageURL: pageURL)
         }
 
         /// Called when UserDefaults change — re-apply the privacy settings that
@@ -557,7 +594,9 @@ struct WebViewWrapper: NSViewRepresentable {
         private func applyLivePrivacySettings() {
             guard let webView else { return }
             let settings = SettingsManager.shared
-            let shouldBeEnabled = WebViewWrapper.adBlockActive(for: tab?.url)
+            // From the committed URL, like every other derivation — `tab?.url`
+            // lags a navigation in progress.
+            let shouldBeEnabled = WebViewWrapper.adBlockActive(for: currentPageURL)
             let cookiePolicy = settings.blockCookies
             let gpcEnabled = settings.sendGlobalPrivacyControl
 
@@ -764,6 +803,14 @@ struct WebViewWrapper: NSViewRepresentable {
         }
 
         func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+            // This coordinator is also the navigation delegate of any popup it
+            // opens, until that popup's own tab adopts it. Everything below
+            // mutates state belonging to *this* coordinator's tab and web view,
+            // so a commit in someone else's web view must not reach it —
+            // otherwise a popup's navigation would reset the opener's mute
+            // frames and re-derive the opener's blocking from the popup's URL.
+            guard webView === self.webView else { return }
+
             // Main-frame navigation invalidates previously-registered sub-frames;
             // drop them (iframes re-register as they load), then re-apply the
             // tab's mute state to the fresh main-frame JS context.
@@ -776,14 +823,9 @@ struct WebViewWrapper: NSViewRepresentable {
             // blocking OFF for every site it navigated to next — while the
             // shield, which recomputes from the new URL, said "active". This is
             // the one place that knows a *different site* is now loaded.
-            //
-            // `webView.url` — the committed URL — not `tab?.url`, which is
-            // written asynchronously by the KVO observer and still holds the
-            // previous page at this point.
-            let committedURL = webView.url
-            WebViewWrapper.applyContentRuleLists(to: webView.configuration, pageURL: committedURL)
+            rebuildContentRuleLists()
 
-            let adBlockActive = WebViewWrapper.adBlockActive(for: committedURL)
+            let adBlockActive = WebViewWrapper.adBlockActive(for: currentPageURL)
             if adBlockActive != cosmeticAdBlockEnabled {
                 cosmeticAdBlockEnabled = adBlockActive
                 rebuildUserScripts(adBlockActive: adBlockActive)
@@ -1187,8 +1229,7 @@ struct WebViewWrapper: NSViewRepresentable {
                 isMuted: tab?.isMuted ?? false
             )
             WebViewWrapper.applyContentRuleLists(to: configuration, pageURL: url)
-            if SettingsManager.shared.adBlockEnabled,
-               !SettingsManager.shared.isAdBlockPaused(for: url) {
+            if WebViewWrapper.adBlockActive(for: url) {
                 AdBlockManager.shared.applyCosmeticRules(to: configuration)
             }
 

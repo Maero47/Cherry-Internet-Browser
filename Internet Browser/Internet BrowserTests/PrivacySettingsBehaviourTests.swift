@@ -186,6 +186,27 @@ final class PrivacySettingsBehaviourTests: XCTestCase {
         XCTAssertTrue(WebViewWrapper.adBlockActive(for: nil))
     }
 
+    /// `didCommit` runs on every navigation, so an unchanged rebuild is
+    /// skipped by comparing signatures. The skip is only safe if the signature
+    /// changes whenever the installed set would differ — this pins the case
+    /// that matters: navigating between a paused and a protected site.
+    @MainActor
+    func testRuleListSignatureDistinguishesPausedFromProtected() {
+        let settings = SettingsManager.shared
+        settings.toggleAdBlockPause(for: URL(string: "https://news.example.com/story"))
+
+        let paused = WebViewWrapper.contentRuleListSignature(for: URL(string: "https://news.example.com/x"))
+        let protected = WebViewWrapper.contentRuleListSignature(for: URL(string: "https://cnn.com/"))
+        XCTAssertNotEqual(paused, protected)
+
+        // Same page, nothing changed → identical signature, so the rebuild is
+        // skipped rather than paying two IPC round trips per navigation.
+        XCTAssertEqual(
+            protected,
+            WebViewWrapper.contentRuleListSignature(for: URL(string: "https://cnn.com/other"))
+        )
+    }
+
     func testGlobalSwitchStillWins() {
         let settings = SettingsManager.shared   // restored by tearDown
         settings.adBlockEnabled = false
