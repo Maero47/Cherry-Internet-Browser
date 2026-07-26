@@ -3,6 +3,7 @@
 //  Cherry Browser
 //
 
+import AppKit
 import Foundation
 
 /// Every user-invocable browser command, declared exactly once.
@@ -132,5 +133,29 @@ extension BrowserCommand {
         guard let raw = notification.userInfo?[Self.userInfoKey] as? String,
               let command = BrowserCommand(rawValue: raw) else { return nil }
         self = command
+    }
+}
+
+// MARK: - Routing
+
+/// Decides which window a broadcast command belongs to.
+enum CommandRouting {
+
+    /// Whether the browser hosted by `window` should run a command, given the
+    /// app's current `keyWindow`.
+    ///
+    /// Fails **closed** on a nil window. Writing this as
+    /// `window === NSApp.keyWindow` looks equivalent but is not: Swift's `===`
+    /// on optionals makes `nil === nil` **true**, so the guard would pass
+    /// whenever the app has no key window and the view model isn't registered
+    /// yet — `WindowRegistrar` assigns `associatedWindow` from a
+    /// `DispatchQueue.main.async`, and a closed window's weak reference goes
+    /// nil too. In that state a command would run in a window that is
+    /// explicitly not key, and in EVERY such window if more than one existed:
+    /// exactly the multi-window bug the check exists to prevent.
+    @MainActor
+    static func shouldRun(in window: NSWindow?, keyWindow: NSWindow?) -> Bool {
+        guard let window, let keyWindow else { return false }
+        return window === keyWindow
     }
 }

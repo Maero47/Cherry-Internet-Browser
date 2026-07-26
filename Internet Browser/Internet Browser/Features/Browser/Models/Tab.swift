@@ -41,6 +41,13 @@ final class Tab: NSObject, Identifiable {
     var lastActiveDate: Date
     var isPrivate: Bool
 
+    /// This tab's page-zoom level (View ▸ Zoom In / Zoom Out / Actual Size).
+    /// Owned by the Tab, not the `WKWebView`, so it survives every web-view
+    /// recreation — sleep/wake, Home, popup adoption — and so ⌘+ still records
+    /// a level on a tab whose web view doesn't exist yet (it's applied the
+    /// moment one does). See `applyZoomLevel()`.
+    var zoomLevel: Double = PageZoom.defaultLevel
+
     /// Whether `window.__cherryFind` has been injected into this tab's
     /// current page. Per-tab (not a shared view-model flag) so each
     /// split-view pane's page tracks its own injection independently —
@@ -135,6 +142,7 @@ final class Tab: NSObject, Identifiable {
         // User agent is set via applicationNameForUserAgent on the configuration in WebViewWrapper
         self.webView = wv
         applyMuteState()
+        applyZoomLevel()
         return wv
     }
 
@@ -142,6 +150,14 @@ final class Tab: NSObject, Identifiable {
     func adoptWebView(_ wv: WKWebView) {
         self.webView = wv
         applyMuteState()
+        applyZoomLevel()
+    }
+
+    /// Pushes `zoomLevel` onto the live web view. Must be called wherever a
+    /// tab's WKWebView is (re)created or adopted — the same requirement
+    /// `applyMuteState()` has, and the same call sites.
+    func applyZoomLevel() {
+        webView?.pageZoom = zoomLevel
     }
 
     /// Sub-frames (iframes) that registered themselves via the mute install

@@ -186,8 +186,12 @@ struct BrowserView: View {
     /// Menu-bar commands are broadcast app-wide, so only the key window's
     /// browser reacts — otherwise every open window would run the command
     /// (e.g. navigate its tab to an internal page) at once.
+    ///
+    /// `CommandRouting.shouldRun` rather than a bare `===` so an unregistered
+    /// or closed window fails CLOSED; see its doc comment for why the obvious
+    /// spelling is wrong.
     private var isKeyBrowserWindow: Bool {
-        viewModel.associatedWindow === NSApp.keyWindow
+        CommandRouting.shouldRun(in: viewModel.associatedWindow, keyWindow: NSApp.keyWindow)
     }
 
     /// The one and only place a menu command turns into an action. Kept out of

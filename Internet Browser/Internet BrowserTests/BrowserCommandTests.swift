@@ -9,6 +9,7 @@
 //
 
 import XCTest
+import AppKit
 @testable import Cherry
 
 final class BrowserCommandTests: XCTestCase {
@@ -62,5 +63,45 @@ final class BrowserCommandTests: XCTestCase {
     func testEveryTabSelectionCommandIsReachableByRawValue() {
         let byRawValue = (1...9).compactMap { BrowserCommand(rawValue: "selectTab\($0)") }
         XCTAssertEqual(byRawValue.count, 9)
+    }
+
+    // MARK: - Key-window routing
+    //
+    // Commands are broadcast to every window, so this predicate is the only
+    // thing keeping a command from running in all of them at once.
+
+    @MainActor
+    func testRunsOnlyInTheKeyWindow() {
+        let key = NSWindow()
+        let other = NSWindow()
+
+        XCTAssertTrue(CommandRouting.shouldRun(in: key, keyWindow: key))
+        XCTAssertFalse(CommandRouting.shouldRun(in: other, keyWindow: key))
+    }
+
+    /// The bug this predicate exists to avoid: `nil === nil` is **true** in
+    /// Swift, so the obvious `window === NSApp.keyWindow` spelling passes when
+    /// the app has no key window and the view model isn't registered yet —
+    /// running the command in a window that is explicitly not key, and in every
+    /// such window if more than one exists.
+    @MainActor
+    func testFailsClosedWhenEitherWindowIsMissing() {
+        let window = NSWindow()
+
+        XCTAssertFalse(
+            CommandRouting.shouldRun(in: nil, keyWindow: nil),
+            "an unregistered window with no key window must NOT run commands"
+        )
+        XCTAssertFalse(CommandRouting.shouldRun(in: nil, keyWindow: window))
+        XCTAssertFalse(CommandRouting.shouldRun(in: window, keyWindow: nil))
+    }
+
+    /// Two unregistered windows must not BOTH pass — the multi-window failure
+    /// the nil-equality bug produced.
+    @MainActor
+    func testTwoUnregisteredWindowsBothFail() {
+        let candidates: [NSWindow?] = [nil, nil]
+        let passing = candidates.filter { CommandRouting.shouldRun(in: $0, keyWindow: nil) }
+        XCTAssertTrue(passing.isEmpty)
     }
 }

@@ -99,6 +99,12 @@ struct Internet_BrowserApp: App {
         Divider()
 
         CommandItem("Actual Size", .actualSize, "0")
+        // Two entries, ONE command: `+` is ⌘⇧= on most layouts, so binding it
+        // alone leaves the ⌘= that Chrome, Safari and Firefox all accept doing
+        // nothing. SwiftUI can't hang an alternate key equivalent off a single
+        // item, so the alias is its own row — the command is still declared
+        // once, only the key equivalent is doubled.
+        CommandItem("Zoom In", .zoomIn, "=")
         CommandItem("Zoom In", .zoomIn, "+")
         CommandItem("Zoom Out", .zoomOut, "-")
 
@@ -167,7 +173,13 @@ struct Internet_BrowserApp: App {
 
     @ViewBuilder
     private var toolsMenuItems: some View {
-        CommandItem("Take Screenshot", .captureScreenshot, "4", [.command, .shift])
+        // ⌘⌥4, not ⌘⇧4: macOS reserves ⇧⌘3/4/5/6 (and their ⌃ variants) for
+        // system screen capture and consumes them before the app ever sees the
+        // event, so the old binding could never fire. ⌘⌥4 keeps the "4" muscle
+        // memory and is unclaimed both by the system and by Cherry. ⌘⇧S was the
+        // other candidate, rejected because it's universally Save As — the kind
+        // of latent collision this whole task exists to remove.
+        CommandItem("Take Screenshot", .captureScreenshot, "4", [.command, .option])
         CommandItem("Toggle Focus Mode", .toggleFocusMode, "f", [.command, .shift])
         CommandItem("Ask This Page", .askThisPage, "k", [.command, .shift])
     }

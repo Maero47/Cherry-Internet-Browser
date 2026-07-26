@@ -70,4 +70,39 @@ final class DataExportTests: XCTestCase {
             XCTAssertNotNil(item["visitCount"])
         }
     }
+
+    /// `encodeToJSON` is `nonisolated` and takes a snapshot by value so
+    /// `DataExportService` can run it off the main actor — a long history froze
+    /// the window before the save panel appeared. Encoding a known snapshot
+    /// also pins the field names and the ISO-8601 date format, which used to
+    /// come from a formatter allocated once PER ROW.
+    func testEncodesAKnownSnapshotWithISO8601Dates() throws {
+        let when = Date(timeIntervalSince1970: 1_700_000_000)
+        let snapshot: [(url: URL, title: String, visitDate: Date, visitCount: Int)] = [
+            (URL(string: "https://swift.org")!, "Swift", when, 3),
+            (URL(string: "https://example.com/a?b=c")!, "Ünïcode & <tags>", when, 1)
+        ]
+
+        let data = try XCTUnwrap(HistoryRepository.encodeToJSON(snapshot))
+        let items = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [[String: Any]])
+
+        XCTAssertEqual(items.count, 2)
+        XCTAssertEqual(items[0]["url"] as? String, "https://swift.org")
+        XCTAssertEqual(items[0]["title"] as? String, "Swift")
+        XCTAssertEqual(items[0]["visitCount"] as? Int, 3)
+        // JSON carries text verbatim — no HTML escaping here, unlike the
+        // bookmark export.
+        XCTAssertEqual(items[1]["title"] as? String, "Ünïcode & <tags>")
+
+        let stamp = try XCTUnwrap(items[0]["visitDate"] as? String)
+        XCTAssertEqual(ISO8601DateFormatter().date(from: stamp), when)
+        // Every row shares one formatter, so every row shares one format.
+        XCTAssertEqual(items[1]["visitDate"] as? String, stamp)
+    }
+
+    func testEncodingAnEmptyHistoryYieldsAnEmptyArray() throws {
+        let data = try XCTUnwrap(HistoryRepository.encodeToJSON([]))
+        let items = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [[String: Any]])
+        XCTAssertTrue(items.isEmpty)
+    }
 }

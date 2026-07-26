@@ -274,12 +274,17 @@ final class BrowserViewModel {
     }
 
     private func currentZoom(for tab: Tab?) -> Double {
-        guard let webView = tab?.webView else { return PageZoom.defaultLevel }
-        return webView.pageZoom
+        tab?.zoomLevel ?? PageZoom.defaultLevel
     }
 
+    /// Records the level on the TAB, then pushes it to the live web view. Going
+    /// through the tab means zooming works on a tab whose web view doesn't
+    /// exist yet (sleeping, or just sent Home) and survives every web-view
+    /// recreation instead of snapping back to 100%.
     private func applyZoom(_ level: Double, to tab: Tab?) {
-        tab?.webView?.pageZoom = level
+        guard let tab else { return }
+        tab.zoomLevel = level
+        tab.applyZoomLevel()
     }
 
     func stopLoading() {
@@ -749,15 +754,37 @@ final class BrowserViewModel {
     /// "Open in New Tab" / ⌘-click / middle-click on a bookmark. Opens in the
     /// BACKGROUND (the current tab keeps focus), like every other browser.
     func openBookmarkInNewTab(_ bookmark: Bookmark) {
-        openInBackgroundTab(bookmark.url)
+        openInBackgroundTab(bookmark.url, title: bookmark.title, favicon: bookmark.favicon)
         bookmarkRepository.incrementVisitCount(for: bookmark)
     }
 
     /// Shared by the bookmark and history "Open in New Tab" paths.
-    private func openInBackgroundTab(_ url: URL) {
+    ///
+    /// Background tabs stay LAZY: only the displayed tab gets a
+    /// `WebViewWrapper`, and the wrapper is what creates the web view, so
+    /// there's nothing to load into yet and the page loads when the tab is
+    /// first selected. (Eager loading is possible — `TabManager`'s research
+    /// tabs do it — but it needs an off-screen host window and a hand-built
+    /// configuration, which is a lot of machinery to spend on ⌘-clicking a
+    /// bookmark, and it would let a stack of middle-clicks load in parallel
+    /// behind the user's back.)
+    ///
+    /// What matters is that the tab is IDENTIFIABLE while it waits: the
+    /// bookmark's / history entry's own title and favicon are seeded here, the
+    /// same way session restore seeds a restored-but-unloaded tab, so
+    /// ⌘-clicking three rows gives three labelled tabs rather than three
+    /// indistinguishable "New Tab"s. The page's real title and icon take over
+    /// via KVO once it loads.
+    private func openInBackgroundTab(_ url: URL, title: String, favicon: NSImage?) {
         let tab = tabManager.newTab(url: url, switchTo: false)
         tab.isPrivate = isPrivateMode
-        tab.loadURL(url)
+        tab.showHomePage = false
+        if !title.isEmpty {
+            tab.title = title
+        } else {
+            tab.title = url.host ?? url.absoluteString
+        }
+        tab.favicon = favicon
     }
 
     // MARK: - Sidebar
@@ -854,7 +881,7 @@ final class BrowserViewModel {
 
     /// "Open in New Tab" / ⌘-click / middle-click on a history row.
     func openHistoryItemInNewTab(_ item: HistoryItem) {
-        openInBackgroundTab(item.url)
+        openInBackgroundTab(item.url, title: item.title, favicon: item.favicon)
     }
 
     // MARK: - Find in Page

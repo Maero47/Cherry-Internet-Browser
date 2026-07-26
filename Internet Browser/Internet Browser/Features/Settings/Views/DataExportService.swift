@@ -26,21 +26,33 @@ enum DataExportService {
 
     /// One JSON array of `{url, title, visitDate, visitCount}`. There's no
     /// cross-browser history interchange format, so this is the archival one.
+    ///
+    /// Encoding runs off the main actor: a long history takes real time to
+    /// serialize, and doing it inline froze the window before the save panel
+    /// even appeared. Only the snapshot read and the panel stay on the main
+    /// actor.
     static func exportHistory() {
-        guard let data = HistoryRepository.shared.exportToJSON() else {
-            presentAlert(
-                title: "Couldn't Export History",
-                message: "Your history couldn't be encoded.",
-                style: .warning
+        let snapshot = HistoryRepository.shared.exportSnapshot()
+        Task {
+            let data = await Task.detached(priority: .userInitiated) {
+                HistoryRepository.encodeToJSON(snapshot)
+            }.value
+
+            guard let data else {
+                presentAlert(
+                    title: "Couldn't Export History",
+                    message: "Your history couldn't be encoded.",
+                    style: .warning
+                )
+                return
+            }
+            save(
+                data: data,
+                suggestedName: "cherry-history.json",
+                contentType: .json,
+                message: "Export your browsing history as JSON"
             )
-            return
         }
-        save(
-            data: data,
-            suggestedName: "cherry-history.json",
-            contentType: .json,
-            message: "Export your browsing history as JSON"
-        )
     }
 
     private static func save(
