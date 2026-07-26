@@ -222,15 +222,18 @@ struct HomepageSwatch: View {
         .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 
+    /// Each case draws what the homepage draws, *including* the wash or scrim
+    /// the homepage lays on top — a swatch showing the raw gradient or the raw
+    /// wallpaper reads far more saturated than the background it stands for.
+    /// The flat case is the one that gets neither, because an imported theme's
+    /// absolute `ntp_background` gets neither on the homepage either.
     @ViewBuilder
     private var previewTile: some View {
         switch preview {
         case .gradient(let colors):
             LinearGradient(colors: colors, startPoint: .topLeading, endPoint: .bottomTrailing)
+                .overlay { HomepageGradientWash() }
         case .wallpaper(let assetName):
-            // The homepage draws this same image edge to edge under the same
-            // legibility scrim, so the tile does both — without the scrim the
-            // preview reads noticeably more saturated than the real thing.
             Image(assetName)
                 .resizable()
                 .scaledToFill()

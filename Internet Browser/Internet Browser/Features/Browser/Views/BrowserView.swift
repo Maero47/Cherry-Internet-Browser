@@ -905,7 +905,7 @@ struct BrowserContentView: View {
             } else if tab.showHomePage {
                 HomePageView(
                     repository: viewModel.shortcutRepository,
-                    isPrivate: tab.isPrivate,
+                    isPrivateMode: viewModel.isPrivateMode,
                     onShortcutClick: { url in
                         onNavigate(url.absoluteString)
                     },

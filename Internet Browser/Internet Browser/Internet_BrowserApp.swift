@@ -376,6 +376,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             object: nil
         )
 
+        // Sheets are their own NSWindow with their own field editor, so
+        // `configureBrowserWindow` never sees one. Becoming key is what a sheet
+        // does the instant it is presented, and is the only thing a window must
+        // do before it can receive typing — so this is the general catch for
+        // every window Cherry doesn't build itself.
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(windowDidBecomeKey(_:)),
+            name: NSWindow.didBecomeKeyNotification,
+            object: nil
+        )
+
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(windowDidEnterFullScreen(_:)),
@@ -432,6 +444,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func configureWindow(_ window: NSWindow) {
         configureBrowserWindow(window)
+    }
+
+    @objc private func windowDidBecomeKey(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow else { return }
+        MainActor.assumeIsolated { AccentTextSelection.apply(to: window) }
     }
 
     /// `NSControl` puts the field editor it is about to use in the

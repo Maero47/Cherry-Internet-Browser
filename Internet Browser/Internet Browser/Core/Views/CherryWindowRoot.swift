@@ -23,9 +23,13 @@ import AppKit
 /// governs what SwiftUI's own controls use.
 ///
 /// What this CANNOT reach is anything macOS draws from
-/// `NSColor.controlAccentColor`: focus rings, text selection and the
-/// insertion point, `NSAlert` buttons, `NSOpenPanel`/`NSSavePanel`, and menu
-/// highlights. There is no runtime API to retint those.
+/// `NSColor.controlAccentColor`: focus rings, `NSAlert` buttons,
+/// `NSOpenPanel`/`NSSavePanel`, menu highlights, and selection inside web page
+/// content. There is no runtime API to retint those.
+///
+/// Selection and the insertion point in Cherry's OWN text fields are NOT in
+/// that list — `NSTextView` exposes both, and `AccentTextSelection` sets them
+/// on each window's field editor.
 ///
 /// They resolve to the accent the user picked in System Settings ▸ Appearance;
 /// only while that is "Multicolour" (the macOS default) do they fall back to

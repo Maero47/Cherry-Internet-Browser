@@ -22,8 +22,13 @@ import SwiftUI
 /// through that one `NSTextView` (which is why `OmniboxView` can send
 /// `NSText.selectAll(_:)` to the window's first responder and have it work).
 /// So one call per window covers the omnibox, the homepage search field,
-/// find-in-page, every Settings field and every sheet — with nothing to
-/// remember at each field, matching how `CherryWindowRoot` handles tint.
+/// find-in-page and every Settings field, with nothing to remember at each
+/// field — matching how `CherryWindowRoot` handles tint.
+///
+/// A macOS sheet is its OWN `NSWindow` with its own field editor, so the
+/// browser-window pass never reaches one. `AppDelegate` therefore also applies
+/// this when any window becomes key, which is what a sheet does the moment it
+/// is presented.
 ///
 /// Not covered, and can't be from here: text inside web pages (WebKit draws
 /// that from the system colour) and `TextEditor`-backed views such as the dev
@@ -33,8 +38,8 @@ import SwiftUI
 enum AccentTextSelection {
 
     /// Tints `window`'s shared field editor, creating it if this is the first
-    /// ask. Called from `configureBrowserWindow`, so every window Cherry makes
-    /// or adopts gets it.
+    /// ask. Called from `configureBrowserWindow` for the windows Cherry builds,
+    /// and from the key-window observer for the ones it doesn't (sheets).
     static func apply(to window: NSWindow) {
         guard let editor = window.fieldEditor(true, for: nil) as? NSTextView else { return }
         apply(to: editor)

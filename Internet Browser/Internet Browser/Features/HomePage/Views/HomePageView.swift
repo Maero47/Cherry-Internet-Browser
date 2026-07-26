@@ -9,8 +9,9 @@ import SwiftUI
 
 private struct HomepageBackground: View {
     /// Private windows are never themed, so an imported theme's
-    /// `ntp_background` never reaches an incognito homepage.
-    let isPrivate: Bool
+    /// `ntp_background` never reaches an incognito homepage. Keyed on the
+    /// window, matching every other themed surface — see `HomePageView`.
+    let isPrivateMode: Bool
 
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -20,7 +21,7 @@ private struct HomepageBackground: View {
 
     /// What is actually being painted. See `HomepageBackgroundResolver`.
     private var source: HomepageBackgroundSource {
-        settings.homepageBackgroundSource(isPrivate: isPrivate)
+        settings.homepageBackgroundSource(isPrivate: isPrivateMode)
     }
 
     private var themeBackgroundIsActive: Bool { source == .themeBackground }
@@ -67,19 +68,35 @@ private struct HomepageBackground: View {
                 [1.0, 0.5],
                 [0.0, 1.0], [0.5, 1.0], [1.0, 1.0]
             ],
-            colors: settings.homepageGradientColors(isPrivate: isPrivate)
+            colors: settings.homepageGradientColors(isPrivate: isPrivateMode)
         )
         .overlay {
-            // The existing themes are intentionally deep. This wash turns them
-            // into soft, legible pastels in light mode without changing a theme's hue.
             // An imported Firefox theme's ntp_background is an absolute color
             // (not light/dark adaptive), so it gets no wash at all.
             if !themeBackgroundIsActive {
-                Color.white.opacity(colorScheme == .light ? 0.7 : 0.035)
+                HomepageGradientWash()
             }
         }
     }
 
+}
+
+/// The wash the homepage lays over a gradient background.
+///
+/// The curated themes and the accent-derived palette are intentionally deep;
+/// this turns them into soft, legible pastels in light mode without changing a
+/// hue. Shared with the Settings ▸ Homepage Background swatches, which preview
+/// those same gradients — at 0.7 opacity in light mode it is the difference
+/// between a swatch that matches the homepage and one that reads far more
+/// saturated than anything the user will see.
+struct HomepageGradientWash: View {
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        Color.white
+            .opacity(colorScheme == .light ? 0.7 : 0.035)
+            .allowsHitTesting(false)
+    }
 }
 
 /// The wash the homepage lays over a wallpaper so text stays legible.
@@ -121,8 +138,12 @@ struct HomepageWallpaperScrim: View {
 
 struct HomePageView: View {
     @Bindable var repository: ShortcutRepository
-    /// Private windows are never themed by an imported Firefox theme.
-    var isPrivate: Bool = false
+    /// Private windows are never themed by an imported Firefox theme. Keyed on
+    /// the WINDOW, like every other themed surface (`NavigationBarView`,
+    /// `OmniboxView`, `BookmarkBarView`, both tab bars, both sidebars) — a tab's
+    /// own `isPrivate` can diverge from its window's inside a private window,
+    /// which would theme the homepage while the chrome around it stayed plain.
+    var isPrivateMode: Bool = false
     let onShortcutClick: (URL) -> Void
     let onSearch: (String) -> Void
 
@@ -140,7 +161,7 @@ struct HomePageView: View {
         // chosen for a surface that isn't there, so we stay scheme-adaptive.
         // In a private window the source is never `.themeBackground`, so this
         // is also the incognito gate.
-        if SettingsManager.shared.homepageBackgroundSource(isPrivate: isPrivate) == .themeBackground,
+        if SettingsManager.shared.homepageBackgroundSource(isPrivate: isPrivateMode) == .themeBackground,
            let themeText = FirefoxThemeManager.shared.homepageText {
             return themeText
         }
@@ -167,7 +188,7 @@ struct HomePageView: View {
             .scrollIndicators(.hidden)
         }
         .foregroundStyle(foreground)
-        .background(HomepageBackground(isPrivate: isPrivate))
+        .background(HomepageBackground(isPrivateMode: isPrivateMode))
         .onAppear {
             DispatchQueue.main.async { isSearchFocused = true }
         }
