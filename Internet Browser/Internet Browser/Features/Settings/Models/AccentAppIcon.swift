@@ -21,22 +21,28 @@ import AppKit
 /// only change by shipping a different bundle.
 enum AccentAppIcon {
 
-    /// The image-set name for an accent hex. Pure, so it is unit-testable
-    /// without touching `NSApplication`.
+    /// The image-set name for an accent hex, or nil when the hex isn't one —
+    /// see `AccentHex.canonical`. Pure, so it is unit-testable without
+    /// touching `NSApplication`.
     ///
-    /// The hex is normalised the same way `HomepageBackgroundResolver` does
-    /// it — `#` stripped, upper-cased against a fixed locale so a Turkish
-    /// system locale can't map an "i" out from under us — because both names
-    /// are looked up against literal asset names.
-    static func imageName(forAccentHex hex: String) -> String {
-        "AppIconAccent" + AccentHex.normalized(hex)
+    /// Nil rather than a best-effort name on purpose: unvalidated
+    /// concatenation turns an empty or punctuation-only `accentColorHex` into
+    /// the bare prefix `"AppIconAccent"`, which resolves to nil today only
+    /// because no such asset exists. The artwork branch is landing a whole
+    /// `AppIconAccent*` family, so a bare-prefix lookup is a landmine; make
+    /// the fallback deliberate instead of accidental.
+    static func imageName(forAccentHex hex: String) -> String? {
+        guard let canonical = AccentHex.canonical(hex) else { return nil }
+        return "AppIconAccent" + canonical
     }
 
     /// Points `NSApplication.applicationIconImage` at the artwork for `hex`,
-    /// falling back to the bundled icon when that artwork isn't in the bundle.
+    /// falling back to the bundled icon when that artwork isn't in the bundle
+    /// (or the hex isn't usable).
     @MainActor
     static func apply(accentHex: String) {
-        NSApplication.shared.applicationIconImage = NSImage(named: imageName(forAccentHex: accentHex))
+        NSApplication.shared.applicationIconImage = imageName(forAccentHex: accentHex)
+            .flatMap { NSImage(named: $0) }
     }
 }
 
@@ -52,5 +58,16 @@ enum AccentHex {
         hex
             .trimmingCharacters(in: CharacterSet.alphanumerics.inverted)
             .uppercased(with: Locale(identifier: "en_US_POSIX"))
+    }
+
+    /// `normalized`, but only for a string that really is a six-digit hex —
+    /// the shape every palette accent and every accent-keyed asset uses. The
+    /// 3- and 8-digit forms `Color(hex:)` also accepts have no artwork, so
+    /// they get the same nil as garbage does.
+    static func canonical(_ hex: String) -> String? {
+        let normalized = normalized(hex)
+        guard normalized.count == 6,
+              normalized.allSatisfy(\.isHexDigit) else { return nil }
+        return normalized
     }
 }

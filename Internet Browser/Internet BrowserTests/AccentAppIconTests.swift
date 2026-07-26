@@ -51,6 +51,22 @@ final class AccentAppIconTests: XCTestCase {
     func testAnAccentWithNoArtworkResolvesToNoImage() {
         let name = AccentAppIcon.imageName(forAccentHex: "123456")
         XCTAssertEqual(name, "AppIconAccent123456")
-        XCTAssertNil(NSImage(named: name))
+        XCTAssertNil(name.flatMap { NSImage(named: $0) })
+    }
+
+    /// A malformed hex must name nothing at all, rather than the bare
+    /// `"AppIconAccent"` prefix — which would collide with the artwork family
+    /// the moment an asset with that exact name existed.
+    func testAMalformedHexNamesNoAssetAtAll() {
+        for junk in ["", "#", "   ", "!!!", "DB283", "DB283CC", "GGGGGG", "DB283G"] {
+            XCTAssertNil(AccentAppIcon.imageName(forAccentHex: junk), "junk \(junk.debugDescription)")
+        }
+    }
+
+    /// The 3- and 8-digit forms `Color(hex:)` accepts have no artwork, so they
+    /// fall back deliberately rather than naming an asset that can't exist.
+    func testShortAndAlphaHexFormsAreNotTreatedAsArtworkNames() {
+        XCTAssertNil(AccentAppIcon.imageName(forAccentHex: "F00"))
+        XCTAssertNil(AccentAppIcon.imageName(forAccentHex: "FFDB283C"))
     }
 }

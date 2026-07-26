@@ -228,11 +228,13 @@ struct HomepageSwatch: View {
         case .gradient(let colors):
             LinearGradient(colors: colors, startPoint: .topLeading, endPoint: .bottomTrailing)
         case .wallpaper(let assetName):
-            // The homepage draws this same image edge to edge, so the tile
-            // fills the same way rather than letter-boxing it.
+            // The homepage draws this same image edge to edge under the same
+            // legibility scrim, so the tile does both — without the scrim the
+            // preview reads noticeably more saturated than the real thing.
             Image(assetName)
                 .resizable()
                 .scaledToFill()
+                .overlay { HomepageWallpaperScrim(startRadius: 8, endRadius: 72) }
         case .flat(let color):
             color
         }

@@ -58,6 +58,7 @@ final class HomepageBackgroundSourceTests: XCTestCase {
         matchesAccent: Bool,
         prefersThemeBackground: Bool,
         themeHasBackground: Bool,
+        isPrivate: Bool = false,
         accentHex: String = "2563EB",
         curatedTheme: HomepageTheme = .midnight
     ) -> HomepageBackgroundSource {
@@ -65,6 +66,7 @@ final class HomepageBackgroundSourceTests: XCTestCase {
             matchesAccent: matchesAccent,
             prefersThemeBackground: prefersThemeBackground,
             themeHasBackground: themeHasBackground,
+            isPrivate: isPrivate,
             accentHex: accentHex,
             curatedTheme: curatedTheme
         )
@@ -132,6 +134,47 @@ final class HomepageBackgroundSourceTests: XCTestCase {
             ),
             .curatedTheme(.slate)
         )
+    }
+
+    // MARK: - Private windows are never themed
+
+    func testAPrivateWindowNeverGetsTheThemeBackground() {
+        // Same inputs as testAFreshlyImportedThemeBackgroundTakesOver, which is
+        // .themeBackground in an ordinary window.
+        XCTAssertEqual(
+            resolve(
+                matchesAccent: true,
+                prefersThemeBackground: true,
+                themeHasBackground: true,
+                isPrivate: true
+            ),
+            .accentWallpaper(assetName: "HomepageWallpaper2563EB")
+        )
+        XCTAssertEqual(
+            resolve(
+                matchesAccent: false,
+                prefersThemeBackground: true,
+                themeHasBackground: true,
+                isPrivate: true,
+                curatedTheme: .forest
+            ),
+            .curatedTheme(.forest)
+        )
+    }
+
+    func testPrivacyGateChangesNothingWhenNoThemeBackgroundIsWinning() {
+        for isPrivate in [false, true] {
+            XCTAssertEqual(
+                resolve(
+                    matchesAccent: true,
+                    prefersThemeBackground: false,
+                    themeHasBackground: true,
+                    isPrivate: isPrivate
+                ),
+                .accentWallpaper(assetName: "HomepageWallpaper2563EB"),
+                "isPrivate \(isPrivate)"
+            )
+        }
     }
 
     func testPreferringAThemeBackgroundIsInertWithoutOne() {

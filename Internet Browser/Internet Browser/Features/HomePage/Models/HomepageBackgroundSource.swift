@@ -52,14 +52,20 @@ enum HomepageBackgroundResolver {
     ///     imported theme's background take over (`homepageUsesThemeBackground`).
     ///     Set on import, cleared the moment the user picks a swatch.
     ///   - themeHasBackground: whether the active Firefox theme defines `ntp_background`.
+    ///   - isPrivate: whether the asking window is a private one. Private
+    ///     windows are never themed — the rule the toolbar, tab strip, omnibox,
+    ///     bookmark bar and both sidebars all enforce — so an imported theme's
+    ///     background can never win in one. Part of the pure decision rather
+    ///     than a check at the call site, so it is covered by the same table.
     static func resolve(
         matchesAccent: Bool,
         prefersThemeBackground: Bool,
         themeHasBackground: Bool,
+        isPrivate: Bool,
         accentHex: String,
         curatedTheme: HomepageTheme
     ) -> HomepageBackgroundSource {
-        if themeHasBackground && prefersThemeBackground {
+        if themeHasBackground && prefersThemeBackground && !isPrivate {
             return .themeBackground
         }
         guard matchesAccent else {

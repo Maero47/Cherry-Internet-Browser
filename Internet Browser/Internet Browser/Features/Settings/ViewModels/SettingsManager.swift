@@ -216,6 +216,9 @@ final class SettingsManager {
         didSet {
             UserDefaults.standard.set(accentColorHex, forKey: Keys.accentColorHex)
             applyAppIcon()
+            // SwiftUI redraws everything `.tint` reaches on its own; the field
+            // editor is an AppKit object outside that, so it needs telling.
+            onMainActor { AccentTextSelection.refreshOpenWindows() }
         }
     }
 
@@ -255,31 +258,21 @@ final class SettingsManager {
     // stays an implementation detail — and Settings' selection state is
     // derived from the same value the homepage paints.
 
-    var homepageBackgroundSource: HomepageBackgroundSource {
+    /// - Parameter isPrivate: whether the asking window is a private one; see
+    ///   `HomepageBackgroundResolver.resolve`.
+    func homepageBackgroundSource(isPrivate: Bool) -> HomepageBackgroundSource {
         HomepageBackgroundResolver.resolve(
             matchesAccent: homepageMatchesAccent,
             prefersThemeBackground: homepageUsesThemeBackground,
             themeHasBackground: FirefoxThemeManager.shared.homepageBackground != nil,
+            isPrivate: isPrivate,
             accentHex: accentColorHex,
             curatedTheme: homepageTheme
         )
     }
 
-    /// True while an imported theme's `ntp_background` is what the homepage
-    /// actually shows — not merely that the active theme defines one.
-    var homepageThemeBackgroundIsActive: Bool {
-        homepageBackgroundSource == .themeBackground
-    }
-
-    /// The wallpaper image set the homepage should draw, or nil when the
-    /// background comes from a gradient instead.
-    var homepageWallpaperAssetName: String? {
-        guard case .accentWallpaper(let assetName) = homepageBackgroundSource else { return nil }
-        return assetName
-    }
-
-    var homepageGradientColors: [Color] {
-        switch homepageBackgroundSource {
+    func homepageGradientColors(isPrivate: Bool) -> [Color] {
+        switch homepageBackgroundSource(isPrivate: isPrivate) {
         case .themeBackground:
             // Flat, matching how Firefox renders its new-tab page.
             let themeBackground = FirefoxThemeManager.shared.homepageBackground ?? .clear
@@ -289,6 +282,15 @@ final class SettingsManager {
         case .curatedTheme(let theme):
             return theme.gradientColors
         }
+    }
+
+    /// True while an imported theme's `ntp_background` is what an ordinary
+    /// window's homepage shows — not merely that the active theme defines one.
+    /// Settings reads this: it configures the app, not one window, so it
+    /// deliberately reports the non-private answer even when opened in a
+    /// private tab.
+    var homepageThemeBackgroundIsActive: Bool {
+        homepageBackgroundSource(isPrivate: false) == .themeBackground
     }
 
     var resolvedColorScheme: ColorScheme? {
@@ -551,12 +553,17 @@ final class SettingsManager {
     /// icon when the accent has no artwork — see `AccentAppIcon`.
     func applyAppIcon() {
         let hex = accentColorHex
-        // Synchronously when already on the main actor (every real call site),
-        // mirroring `applyCookiePolicy`.
+        onMainActor { AccentAppIcon.apply(accentHex: hex) }
+    }
+
+    /// Runs AppKit work synchronously when we're already on the main actor —
+    /// which is every real call site — mirroring `applyCookiePolicy`'s reason
+    /// for not always hopping through a `Task`.
+    private func onMainActor(_ work: @escaping @MainActor () -> Void) {
         if Thread.isMainThread {
-            MainActor.assumeIsolated { AccentAppIcon.apply(accentHex: hex) }
+            MainActor.assumeIsolated(work)
         } else {
-            Task { @MainActor in AccentAppIcon.apply(accentHex: hex) }
+            Task { @MainActor in work() }
         }
     }
 

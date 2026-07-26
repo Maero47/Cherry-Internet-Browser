@@ -269,6 +269,11 @@ func configureBrowserWindow(_ window: NSWindow) {
     window.standardWindowButton(.closeButton)?.isHidden = false
     window.standardWindowButton(.miniaturizeButton)?.isHidden = false
     window.standardWindowButton(.zoomButton)?.isHidden = false
+
+    // The caret/selection colour for every text field in this window; see
+    // AccentTextSelection. Here rather than per field, for the same reason
+    // the tint lives at the window root.
+    AccentTextSelection.apply(to: window)
 }
 
 // MARK: - Load Extension…
@@ -360,6 +365,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             configureWindow(window)
         }
 
+        // AppKit hands the shared field editor from control to control and
+        // reconfigures it on the way (`NSCell.setUpFieldEditorAttributes`), so
+        // re-assert the accent caret/selection each time editing starts rather
+        // than trusting the once-per-window pass to survive.
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(textDidBeginEditing(_:)),
+            name: NSControl.textDidBeginEditingNotification,
+            object: nil
+        )
+
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(windowDidEnterFullScreen(_:)),
@@ -416,6 +432,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func configureWindow(_ window: NSWindow) {
         configureBrowserWindow(window)
+    }
+
+    /// `NSControl` puts the field editor it is about to use in the
+    /// notification's user info under `"NSFieldEditor"` (an AppKit string key
+    /// with no Swift symbol).
+    @objc private func textDidBeginEditing(_ notification: Notification) {
+        guard let editor = notification.userInfo?["NSFieldEditor"] as? NSTextView else { return }
+        MainActor.assumeIsolated { AccentTextSelection.apply(to: editor) }
     }
 
     @objc private func windowDidEnterFullScreen(_ notification: Notification) {

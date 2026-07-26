@@ -8,17 +8,27 @@ import SwiftUI
 // MARK: - Animated background
 
 private struct HomepageBackground: View {
+    /// Private windows are never themed, so an imported theme's
+    /// `ntp_background` never reaches an incognito homepage.
+    let isPrivate: Bool
+
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isDrifting = false
 
     private var settings: SettingsManager { SettingsManager.shared }
-    /// Whether the theme background is what's actually being painted — not
-    /// merely that the active theme defines one. See
-    /// `HomepageBackgroundResolver`.
-    private var themeBackgroundIsActive: Bool { settings.homepageThemeBackgroundIsActive }
 
-    private var wallpaperName: String? { settings.homepageWallpaperAssetName }
+    /// What is actually being painted. See `HomepageBackgroundResolver`.
+    private var source: HomepageBackgroundSource {
+        settings.homepageBackgroundSource(isPrivate: isPrivate)
+    }
+
+    private var themeBackgroundIsActive: Bool { source == .themeBackground }
+
+    private var wallpaperName: String? {
+        guard case .accentWallpaper(let assetName) = source else { return nil }
+        return assetName
+    }
 
     var body: some View {
         ZStack {
@@ -29,7 +39,7 @@ private struct HomepageBackground: View {
                     .id(wallpaperName)
                     .transition(.opacity)
 
-                wallpaperLegibilityScrim
+                HomepageWallpaperScrim()
             } else {
                 fallbackGradient
                     .transition(.opacity)
@@ -57,7 +67,7 @@ private struct HomepageBackground: View {
                 [1.0, 0.5],
                 [0.0, 1.0], [0.5, 1.0], [1.0, 1.0]
             ],
-            colors: settings.homepageGradientColors
+            colors: settings.homepageGradientColors(isPrivate: isPrivate)
         )
         .overlay {
             // The existing themes are intentionally deep. This wash turns them
@@ -70,7 +80,25 @@ private struct HomepageBackground: View {
         }
     }
 
-    private var wallpaperLegibilityScrim: some View {
+}
+
+/// The wash the homepage lays over a wallpaper so text stays legible.
+///
+/// Shared with the Settings ▸ Homepage Background "Auto" thumbnail, which
+/// previews the same wallpaper: without it the swatch reads noticeably more
+/// saturated than what the homepage actually paints. One definition, so the
+/// two can't drift apart.
+struct HomepageWallpaperScrim: View {
+    /// Radii of the centre highlight, in points. The homepage uses the
+    /// defaults, sized for a window; the Settings thumbnail scales them down
+    /// to its ~1/10-scale tile so the highlight falls off inside the tile
+    /// instead of flooding it.
+    var startRadius: CGFloat = 80
+    var endRadius: CGFloat = 720
+
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
         ZStack {
             (colorScheme == .light ? Color.white : Color.black)
                 .opacity(colorScheme == .light ? 0.32 : 0.28)
@@ -81,8 +109,8 @@ private struct HomepageBackground: View {
                     .clear
                 ],
                 center: .center,
-                startRadius: 80,
-                endRadius: 720
+                startRadius: startRadius,
+                endRadius: endRadius
             )
         }
         .allowsHitTesting(false)
@@ -93,6 +121,8 @@ private struct HomepageBackground: View {
 
 struct HomePageView: View {
     @Bindable var repository: ShortcutRepository
+    /// Private windows are never themed by an imported Firefox theme.
+    var isPrivate: Bool = false
     let onShortcutClick: (URL) -> Void
     let onSearch: (String) -> Void
 
@@ -108,7 +138,9 @@ struct HomePageView: View {
         // absolute ntp_background — but only while that background is the one
         // being painted. Against Cherry's own wallpaper it would be a colour
         // chosen for a surface that isn't there, so we stay scheme-adaptive.
-        if SettingsManager.shared.homepageThemeBackgroundIsActive,
+        // In a private window the source is never `.themeBackground`, so this
+        // is also the incognito gate.
+        if SettingsManager.shared.homepageBackgroundSource(isPrivate: isPrivate) == .themeBackground,
            let themeText = FirefoxThemeManager.shared.homepageText {
             return themeText
         }
@@ -135,7 +167,7 @@ struct HomePageView: View {
             .scrollIndicators(.hidden)
         }
         .foregroundStyle(foreground)
-        .background(HomepageBackground())
+        .background(HomepageBackground(isPrivate: isPrivate))
         .onAppear {
             DispatchQueue.main.async { isSearchFocused = true }
         }

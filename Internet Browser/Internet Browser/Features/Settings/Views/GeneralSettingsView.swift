@@ -108,10 +108,12 @@ struct GeneralSettingsView: View {
                         }
                     }
 
-                    // Said plainly rather than left as a mystery: macOS draws
-                    // these itself from its own accent colour and gives apps no
-                    // way to override it at runtime.
-                    Text("Focus rings, text selection, save panels and alerts are drawn by macOS and follow System Settings ▸ Appearance ▸ Accent colour.")
+                    // Said plainly rather than left as a mystery — and BOTH
+                    // cases, because the default one is the surprising one:
+                    // while the system accent is "Multicolour" these surfaces
+                    // fall back to Cherry's built-in red, which is exactly the
+                    // configuration that makes them look stuck.
+                    Text("Focus rings, alerts, save panels and selection inside web pages are drawn by macOS: they follow the accent colour you pick in System Settings ▸ Appearance, and stay Cherry red while that is set to Multicolour.")
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
