@@ -32,6 +32,19 @@ struct PasswordsSettingsView: View {
         .onAppear {
             authenticate()
         }
+        // Re-lock the list when Cherry stops being the front app, matching the
+        // vault's own session invalidation — leaving an unlocked password list
+        // on screen while the user is elsewhere is the whole thing this gate
+        // is meant to prevent.
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in
+            // Not while ANY prompt is up — including the reveal/copy/edit ones
+            // raised from a row. The LocalAuthentication panel takes focus, so
+            // re-locking here would tear down the row that is waiting for the
+            // answer. The flag lives on PasswordManager for exactly that
+            // reason: a view-local one only ever covered this gate.
+            guard !PasswordManager.shared.isPrompting else { return }
+            isAuthenticated = false
+        }
     }
 
     private var authGateView: some View {
@@ -349,7 +362,11 @@ struct PasswordRowView: View {
         }
 
         if requireTouchID {
-            PasswordManager.shared.authenticateWithTouchID(reason: "Edit password for \(item.domain)") { success in
+            // requireFresh: editing reveals the stored secret in the field.
+            PasswordManager.shared.authenticateWithTouchID(
+                reason: "Edit password for \(item.domain)",
+                requireFresh: true
+            ) { success in
                 if success { doEdit() }
             }
         } else {
@@ -369,7 +386,11 @@ struct PasswordRowView: View {
 
     private func revealPassword() {
         if requireTouchID {
-            PasswordManager.shared.authenticateWithTouchID(reason: "View password for \(item.domain)") { success in
+            // requireFresh: never ride an existing session to show a secret.
+            PasswordManager.shared.authenticateWithTouchID(
+                reason: "View password for \(item.domain)",
+                requireFresh: true
+            ) { success in
                 if success {
                     revealedPassword = PasswordRepository.shared.fetchPassword(for: item.id)
                 }
@@ -388,7 +409,11 @@ struct PasswordRowView: View {
         }
 
         if requireTouchID {
-            PasswordManager.shared.authenticateWithTouchID(reason: "Copy password for \(item.domain)") { success in
+            // requireFresh: copying puts the secret on the system pasteboard.
+            PasswordManager.shared.authenticateWithTouchID(
+                reason: "Copy password for \(item.domain)",
+                requireFresh: true
+            ) { success in
                 if success { doCopy() }
             }
         } else {

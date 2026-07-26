@@ -407,17 +407,12 @@ final class BrowserViewModel {
         guard let tab = tabManager.focusedTab, let webView = tab.webView else { return }
         SettingsManager.shared.toggleAdBlockPause(for: tab.url)
 
-        // Actually add/remove content blocker rules on the existing webview
-        let controller = webView.configuration.userContentController
-        let isPaused = SettingsManager.shared.isAdBlockPaused(for: tab.url)
-
-        if isPaused {
-            // Remove all content rule lists to disable ad blocking
-            controller.removeAllContentRuleLists()
-        } else {
-            // Re-apply ad blocker rules
-            AdBlockManager.shared.applyRules(to: webView.configuration)
-        }
+        // Reinstall the whole set through the one function that owns it, rather
+        // than editing the lists here. Removing them directly wiped the cookie
+        // policy's block-cookies list off the web view with nothing to re-add
+        // it — pausing ads on one site quietly stopped blocking cookies there
+        // too.
+        WebViewWrapper.applyContentRuleLists(to: webView.configuration, pageURL: tab.url)
 
         // Reload so the page reflects the change
         tab.reload()

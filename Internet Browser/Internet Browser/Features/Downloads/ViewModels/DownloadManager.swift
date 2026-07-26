@@ -15,6 +15,26 @@ final class DownloadManager: NSObject {
     /// Active WKDownload instances keyed by DownloadItem id
     private var activeDownloads: [UUID: WKDownload] = [:]
 
+    /// Downloads started from a private window. Kept for the whole session
+    /// (not just while active) so the quarantine step, which runs after the
+    /// download finishes, still knows not to record the origin on disk.
+    private var privateDownloadIDs: Set<UUID> = []
+
+    /// Downloads whose quarantine metadata could not be written — the file
+    /// will open with no Gatekeeper check, so the sidebar badges it and
+    /// `openFile` confirms whatever its extension is.
+    private(set) var unquarantinedDownloadIDs: Set<UUID> = []
+
+    /// Whether this download came from a private window.
+    func isPrivateDownload(id: UUID) -> Bool {
+        privateDownloadIDs.contains(id)
+    }
+
+    /// Whether macOS refused to mark this download as downloaded-from-the-internet.
+    func isUnquarantined(id: UUID) -> Bool {
+        unquarantinedDownloadIDs.contains(id)
+    }
+
     /// KVO observations for download progress
     private var progressObservations: [UUID: NSKeyValueObservation] = [:]
 
@@ -63,9 +83,17 @@ final class DownloadManager: NSObject {
 
     // MARK: - Start Download
 
-    func startDownload(_ download: WKDownload, suggestedFilename: String, sourceURL: URL?) {
+    /// - Parameter isPrivate: the download was started from a private window.
+    ///   Its source URL is then never written to Core Data — history already
+    ///   guards private tabs this way, downloads did not, which quietly left a
+    ///   permanent record of every private-window download on disk. The item
+    ///   still shows up in the sidebar and the toast for this session.
+    func startDownload(_ download: WKDownload, suggestedFilename: String, sourceURL: URL?, isPrivate: Bool) {
         let url = sourceURL ?? URL(string: "about:blank")!
-        let item = repository.addDownload(url: url, filename: suggestedFilename)
+        let item = isPrivate
+            ? repository.addEphemeralDownload(url: url, filename: suggestedFilename)
+            : repository.addDownload(url: url, filename: suggestedFilename)
+        if isPrivate { privateDownloadIDs.insert(item.id) }
 
         activeDownloads[item.id] = download
         progressMap[item.id] = (0, 0)
@@ -134,6 +162,33 @@ final class DownloadManager: NSObject {
         guard let item = repository.downloads.first(where: { $0.id == id }),
               let filePath = item.filePath else { return }
         let url = URL(fileURLWithPath: filePath)
+
+        // An installer or executable is one double-click away in the downloads
+        // sidebar. Confirm before handing it to LaunchServices — Gatekeeper's
+        // own prompt doesn't cover every one of these types, and if the
+        // quarantine flag could not be written it covers NONE of them, so an
+        // unquarantined file is treated as risky whatever its extension.
+        let missingQuarantine = isUnquarantined(id: id)
+        if DownloadQuarantine.isRisky(url) || missingQuarantine {
+            let source = item.url.host ?? item.url.absoluteString
+            let alert = NSAlert()
+            alert.messageText = "Open “\(item.filename)”?"
+            alert.informativeText = missingQuarantine
+                ? """
+                  macOS could not mark this file as downloaded from the internet, so it will open \
+                  WITHOUT the usual Gatekeeper check. It came from \(source). Only open it if you \
+                  trust that source.
+                  """
+                : """
+                  This file can run programs on your Mac. It was downloaded from \(source). \
+                  Only open it if you trust that source.
+                  """
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: "Open")
+            alert.addButton(withTitle: "Cancel")
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+        }
+
         NSWorkspace.shared.open(url)
     }
 
@@ -164,9 +219,18 @@ final class DownloadManager: NSObject {
 
     func downloadDidFinish(id: UUID, at location: URL, finalFilename: String) {
         let destination = uniqueDestination(for: finalFilename)
+        let sourceURL = repository.downloads.first(where: { $0.id == id })?.url
 
         do {
             try FileManager.default.moveItem(at: location, to: destination)
+            noteQuarantineResult(
+                id: id,
+                succeeded: DownloadQuarantine.apply(
+                    to: destination,
+                    sourceURL: sourceURL,
+                    isPrivate: isPrivateDownload(id: id)
+                )
+            )
             repository.completeDownload(id: id, filePath: destination.path)
         } catch {
             print("Failed to move downloaded file: \(error)")
@@ -180,6 +244,17 @@ final class DownloadManager: NSObject {
 
         lastCompletedDownloadID = id
         downloadCompletedTrigger += 1
+    }
+
+    /// Records whether the finished file actually carries quarantine metadata.
+    /// Called from both move sites — this one and the save-panel path in
+    /// `WebViewWrapper`.
+    func noteQuarantineResult(id: UUID, succeeded: Bool) {
+        if succeeded {
+            unquarantinedDownloadIDs.remove(id)
+        } else {
+            unquarantinedDownloadIDs.insert(id)
+        }
     }
 
     /// Clean up active download state after the file has been moved externally (e.g. NSSavePanel flow)

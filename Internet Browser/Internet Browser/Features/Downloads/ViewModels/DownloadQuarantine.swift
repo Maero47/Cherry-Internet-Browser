@@ -1,0 +1,106 @@
+//
+//  DownloadQuarantine.swift
+//  Cherry Browser
+//
+
+import CoreServices
+import Foundation
+
+/// Marks finished downloads as "downloaded from the internet".
+///
+/// Cherry moves every download into place itself, and nothing was setting
+/// `NSURLQuarantinePropertiesKey` on the result. A `.dmg`, `.pkg` or `.app`
+/// that arrives without the quarantine xattr is not a download as far as
+/// LaunchServices is concerned: opening it skips Gatekeeper's "downloaded
+/// from the internet — are you sure?" prompt entirely, and on an unnotarized
+/// bundle skips the Gatekeeper check with it. `LSFileQuarantineEnabled` in
+/// Info.plist covers files the frameworks write on our behalf; this covers the
+/// ones we move ourselves.
+enum DownloadQuarantine {
+
+    /// Attaches quarantine metadata to a finished download.
+    ///
+    /// - Parameter sourceURL: where the bytes came from, recorded so Gatekeeper
+    ///   and the Finder can tell the user which site they trusted.
+    /// - Parameter isPrivate: the download came from a private window. The
+    ///   origin is then **omitted**: LaunchServices copies `LSQuarantineDataURL`
+    ///   and `LSQuarantineOriginURL` into
+    ///   `~/Library/Preferences/com.apple.LaunchServices.QuarantineEventsV2`,
+    ///   a permanent on-disk SQLite log. Keeping the Core Data row out of a
+    ///   private download while writing the same URL there instead would be no
+    ///   privacy at all. Type/agent/timestamp alone still set the quarantine
+    ///   bit, which is what makes Gatekeeper prompt.
+    /// - Returns: `false` if the metadata could not be written — the file is
+    ///   then NOT quarantined and must be treated as unverified.
+    @discardableResult
+    static func apply(to fileURL: URL, sourceURL: URL?, isPrivate: Bool) -> Bool {
+        var properties: [String: Any] = [
+            kLSQuarantineTypeKey as String: kLSQuarantineTypeWebDownload as String,
+            kLSQuarantineAgentNameKey as String: "Cherry",
+            kLSQuarantineTimeStampKey as String: Date(),
+        ]
+        if let sourceURL, !isPrivate {
+            properties[kLSQuarantineDataURLKey as String] = sourceURL.absoluteString
+            properties[kLSQuarantineOriginURLKey as String] = sourceURL.absoluteString
+        }
+
+        if isPrivate {
+            // Drop whatever is already on the file before writing our sanitized
+            // dictionary. WebKit may have attached its own quarantine record
+            // (with the origin URL, and an event id) while writing the temp
+            // file; overwriting the xattr in place would keep that id, so the
+            // file would keep pointing at any row LaunchServices had already
+            // written for it. See the report — whether WKDownload actually
+            // does this could not be determined without running the app.
+            removeExistingQuarantine(from: fileURL)
+        }
+
+        var url = fileURL
+        var values = URLResourceValues()
+        values.quarantineProperties = properties
+        do {
+            try url.setResourceValues(values)
+            return true
+        } catch {
+            // Filesystems without extended attributes (exFAT, some network
+            // shares) land here. Silently failing would leave a file that
+            // looks quarantined but opens with no Gatekeeper prompt at all.
+            print("""
+            [Downloads] ⚠️ Could not quarantine \(fileURL.lastPathComponent) — \
+            it will open WITHOUT a Gatekeeper check. \(error.localizedDescription)
+            """)
+            return false
+        }
+    }
+
+    /// Removes any existing `com.apple.quarantine` xattr, so the dictionary
+    /// written afterwards is the whole record rather than an edit of someone
+    /// else's.
+    private static func removeExistingQuarantine(from fileURL: URL) {
+        fileURL.withUnsafeFileSystemRepresentation { path in
+            guard let path else { return }
+            removexattr(path, "com.apple.quarantine", 0)
+        }
+    }
+
+    /// File types macOS will execute, install, or run a script from. Opening
+    /// one of these from inside Cherry asks first — the Gatekeeper prompt only
+    /// appears for some of them, and a double-click in a browser sidebar is
+    /// too small a gesture to launch an installer on its own.
+    static let riskyExtensions: Set<String> = [
+        "app", "dmg", "pkg", "mpkg", "iso", "xip", "mobileconfig", "appex",
+        "command", "sh", "bash", "zsh", "csh", "tool",
+        "scpt", "scptd", "applescript", "workflow", "action",
+        "jar", "pl", "py", "rb", "php",
+        "exe", "msi", "bat", "cmd", "scr", "vbs",
+        "deb", "rpm", "run", "bin", "apk",
+        "prefpane", "kext", "dylib", "so", "plugin", "bundle", "qlgenerator",
+        "terminal", "webloc", "inetloc", "fileloc", "url", "shortcut",
+    ]
+
+    static func isRisky(_ fileURL: URL) -> Bool {
+        riskyExtensions.contains(
+            HostNormalizer.foldedASCII(fileURL.pathExtension)
+        )
+    }
+}

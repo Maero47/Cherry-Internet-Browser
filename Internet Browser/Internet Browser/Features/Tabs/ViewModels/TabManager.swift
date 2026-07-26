@@ -362,12 +362,14 @@ final class TabManager {
         if settings.httpsOnlyMode {
             configuration.upgradeKnownHostsToHTTPS = true
         }
-        if settings.adBlockEnabled && !settings.isAdBlockPaused(for: url) {
-            let adBlocker = AdBlockManager.shared
-            if adBlocker.rulesReady {
-                adBlocker.applyRules(to: configuration)
-            }
-            adBlocker.applyCosmeticRules(to: configuration)
+        // Same rule-list set a visible tab gets, installed by the one function
+        // that owns it. This web view loads immediately and has no
+        // WebViewWrapper.Coordinator until the user selects the tab, so it
+        // never hears about a list that compiles later — whatever is compiled
+        // NOW is what this page gets.
+        WebViewWrapper.applyContentRuleLists(to: configuration, pageURL: url)
+        if WebViewWrapper.adBlockActive(for: url) {
+            AdBlockManager.shared.applyCosmeticRules(to: configuration)
         }
 
         // A real (off-screen) viewport, never `.zero`: WebKit lays the page

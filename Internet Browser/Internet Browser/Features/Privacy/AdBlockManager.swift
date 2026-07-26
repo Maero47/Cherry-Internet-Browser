@@ -7,6 +7,7 @@ import WebKit
 import Foundation
 
 @MainActor
+@Observable
 final class AdBlockManager {
     static let shared = AdBlockManager()
 
@@ -14,11 +15,82 @@ final class AdBlockManager {
     private var compiledLists: [String: WKContentRuleList] = [:]
     private var isCompiling = false
 
+    /// Rule lists WebKit refused to compile, keyed by name. A rejected list is
+    /// invisible at runtime — the requests it would have blocked simply go
+    /// through — so this is surfaced in Settings rather than swallowed.
+    private(set) var compileFailures: [String: String] = [:]
+
+    /// Rule lists that are absent for a reason other than rejection: the
+    /// filter lists could not be downloaded and there was no cache to fall
+    /// back on. Tracked separately because "we could not fetch the blocklist"
+    /// and "WebKit rejected our rules" need different words — and because
+    /// absence used to be reported nowhere at all, leaving Settings showing a
+    /// clean "Block Ads & Trackers: on" with no main blocklist behind it.
+    private(set) var unavailableLists: [String: String] = [:]
+
+    /// True when some part of the blocklist is not in force.
+    var hasCompileFailure: Bool { !compileFailures.isEmpty || !unavailableLists.isEmpty }
+
+    /// Headline for the Settings warning row, or nil when everything that
+    /// should be loaded is loaded.
+    var blockingWarningTitle: String? {
+        if !compileFailures.isEmpty { return "Some blocking rules could not be loaded" }
+        if !unavailableLists.isEmpty { return "The main blocklist could not be downloaded" }
+        return nil
+    }
+
+    /// Detail line for the Settings warning row.
+    var blockingWarningDetail: String? {
+        var parts: [String] = []
+        if !compileFailures.isEmpty {
+            parts.append(compileFailures.sorted { $0.key < $1.key }
+                .map { "\($0.key): \($0.value)" }.joined(separator: "\n"))
+        }
+        if !unavailableLists.isEmpty {
+            parts.append(unavailableLists.sorted { $0.key < $1.key }
+                .map { "\($0.key): \($0.value)" }.joined(separator: "\n"))
+        }
+        guard !parts.isEmpty else { return nil }
+        return "Requests those rules would have blocked are getting through. "
+            + parts.joined(separator: "\n")
+    }
+
     /// Whether any ad blocker rules are ready to use
     var rulesReady: Bool { !compiledLists.isEmpty }
 
-    /// Continuations waiting for rules to be ready
-    private var waiters: [CheckedContinuation<Void, Never>] = []
+    /// Bumped whenever the compiled set changes identity. Lets a web view tell
+    /// "the same lists I already have" from "a different set", so an unchanged
+    /// rebuild can be skipped.
+    private(set) var generation = 0
+
+    /// Continuations waiting for rules to be ready, keyed so a timeout can
+    /// retire exactly one of them.
+    private var waiters: [UUID: CheckedContinuation<Void, Never>] = [:]
+
+    /// True once every compile attempt this launch has finished, successfully
+    /// or not. Without it, a caller that arrives *after* the last compile
+    /// failed would park on a continuation nothing is left to resume.
+    private var compilationSettled = false
+
+    /// Lookups, downloads and compiles still running. Compilation has only
+    /// "settled" when this reaches zero — one list failing while another is
+    /// still downloading is not the end of the story, and treating it as one
+    /// released waiters early, letting a caller proceed as though blocking
+    /// were ready.
+    private var outstandingWork = 0
+
+    private func beginWork() {
+        outstandingWork += 1
+    }
+
+    private func endWork() {
+        outstandingWork = max(0, outstandingWork - 1)
+        guard outstandingWork == 0 else { return }
+        compilationSettled = true
+        // Nothing further is coming — release anyone still waiting, even if
+        // nothing compiled.
+        notifyWaiters()
+    }
 
     /// For backward compatibility
     var compiledRuleList: WKContentRuleList? { compiledLists.values.first }
@@ -38,7 +110,7 @@ final class AdBlockManager {
         return dir
     }
 
-    nonisolated private static let lastUpdateKey = "adblock_lastFilterUpdate_v12"
+    nonisolated private static let lastUpdateKey = "adblock_lastFilterUpdate_v13"
 
     private init() {
         compileRulesFromScratch()
@@ -57,11 +129,26 @@ final class AdBlockManager {
         }
     }
 
-    /// Await until at least one rule list is compiled
-    func ensureRulesCompiled() async {
-        if !compiledLists.isEmpty { return }
+    /// Await until at least one rule list is compiled.
+    ///
+    /// Returns immediately once compilation has settled, even with nothing
+    /// compiled — a caller arriving after the last attempt failed must not be
+    /// parked on a continuation nobody is left to resume. Bounded by `timeout`
+    /// as a second line of defence, so a WebKit callback that never fires
+    /// cannot hang the caller either. Both matter now that `WebSearchService`
+    /// blocks its search on this.
+    func ensureRulesCompiled(timeout: TimeInterval = 5) async {
+        if !compiledLists.isEmpty || compilationSettled { return }
+        let id = UUID()
         await withCheckedContinuation { continuation in
-            waiters.append(continuation)
+            waiters[id] = continuation
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: UInt64(max(0, timeout) * 1_000_000_000))
+                if let pending = self.waiters.removeValue(forKey: id) {
+                    print("[AdBlocker] ⚠️ Timed out waiting for rules to compile")
+                    pending.resume()
+                }
+            }
         }
     }
 
@@ -75,8 +162,10 @@ final class AdBlockManager {
         for id in ["CherryAdBlocker", "CherryAdBlockerV2", "CherryAdBlockerV3",
                     "CherryAdBlockerV4", "CherryAdBlockerV5", "CherrySupplementaryV1",
                     "CherrySupp_V2", "CherrySupp_V4", "CherrySupp_V5", "CherrySupp_V6",
+                    "CherrySupp_V7",
                     "CherryEasyDomains_V6", "CherryEasyDomains_V7",
                     "CherryEasyDomains_V9", "CherryEasyDomains_V10", "CherryEasyDomains_V11",
+                    "CherryEasyDomains_V12",
                     "CherryEasyCSS_V6", "CherryEasyCSS_V7", "CherryEasyCSS_V8",
                     "CherryEasyCSS_V9", "CherryEasyCSS_V10"] {
             WKContentRuleListStore.default().removeContentRuleList(forIdentifier: id) { _ in }
@@ -85,18 +174,26 @@ final class AdBlockManager {
         try? FileManager.default.removeItem(at: Self.cacheDir.appendingPathComponent("easylist_domains_v9.json"))
         try? FileManager.default.removeItem(at: Self.cacheDir.appendingPathComponent("easylist_domains_v10.json"))
         try? FileManager.default.removeItem(at: Self.cacheDir.appendingPathComponent("easylist_domains_v11.json"))
+        try? FileManager.default.removeItem(at: Self.cacheDir.appendingPathComponent("easylist_domains_v12.json"))
 
         // 1) Compile supplementary rules (hardcoded, guaranteed to work)
-        compileList(name: "supplementary", identifier: "CherrySupp_V7", json: Self.buildSupplementaryJSON())
+        compileList(name: "supplementary", identifier: "CherrySupp_V8", json: Self.buildSupplementaryJSON())
 
         // 2) Try loading cached EasyList domain rules
-        let domainCacheURL = Self.cacheDir.appendingPathComponent("easylist_domains_v12.json")
+        let domainCacheURL = Self.cacheDir.appendingPathComponent("easylist_domains_v13.json")
 
-        WKContentRuleListStore.default().lookUpContentRuleList(forIdentifier: "CherryEasyDomains_V12") { [weak self] cached, _ in
+        // The lookup itself counts as work in flight: until it returns we do
+        // not yet know whether a compile or a download is still to come.
+        beginWork()
+        WKContentRuleListStore.default().lookUpContentRuleList(forIdentifier: "CherryEasyDomains_V13") { [weak self] cached, _ in
             Task { @MainActor in
                 guard let self else { return }
                 if let cached {
-                    self.compiledLists["easyDomains"] = cached
+                    // This is the NORMAL path on every launch after the first.
+                    // It must announce like any other write, or tabs restored
+                    // at launch get the 45k-rule list only by winning a race
+                    // against the supplementary compile's notification.
+                    self.setCompiledList(cached, for: "easyDomains")
                     print("[AdBlocker] ✅ Loaded cached EasyList domain rules")
                     self.isCompiling = false
                     self.notifyWaiters()
@@ -104,13 +201,16 @@ final class AdBlockManager {
                 } else if FileManager.default.fileExists(atPath: domainCacheURL.path),
                           let json = try? String(contentsOf: domainCacheURL, encoding: .utf8), json.count > 100 {
                     print("[AdBlocker] Compiling EasyList domains from local cache...")
-                    self.compileList(name: "easyDomains", identifier: "CherryEasyDomains_V12", json: json)
+                    self.compileList(name: "easyDomains", identifier: "CherryEasyDomains_V13", json: json)
                     self.isCompiling = false
-                    self.notifyWaiters()
                 } else {
                     print("[AdBlocker] No cache, downloading filter lists...")
                     self.downloadAndCompile()
                 }
+                // Always AFTER the branch above: the successor work registers
+                // itself first, so the counter can never dip to zero — and
+                // settle — between the two.
+                self.endWork()
             }
         }
     }
@@ -124,31 +224,41 @@ final class AdBlockManager {
     }
 
     private func downloadAndCompile() {
+        beginWork()
         Task {
             let result = await Self.downloadAndExtract()
             await MainActor.run {
                 if let result {
-                    self.compileList(name: "easyDomains", identifier: "CherryEasyDomains_V12", json: result.domainJSON)
+                    self.compileList(name: "easyDomains", identifier: "CherryEasyDomains_V13", json: result.domainJSON)
                 } else {
-                    print("[AdBlocker] ⚠️ Download failed, supplementary rules only")
+                    // Absence, not rejection — and just as invisible to the
+                    // user unless we say so. `rulesReady` is still true
+                    // because the supplementary list compiled.
+                    self.unavailableLists["easyDomains"] =
+                        "The EasyList/EasyPrivacy filter lists could not be downloaded and no cached copy was available."
+                    print("[AdBlocker] ⚠️⚠️ Download failed — MAIN BLOCKLIST ABSENT, supplementary rules only")
+                    ContentRuleListKind.adBlock.post()
                 }
                 self.isCompiling = false
-                self.notifyWaiters()
+                self.endWork()
             }
         }
     }
 
     private func downloadAndCompileInBackground() async {
+        await MainActor.run { self.beginWork() }
         let result = await Self.downloadAndExtract()
-        if let result {
-            await MainActor.run {
-                self.compileList(name: "easyDomains", identifier: "CherryEasyDomains_V12", json: result.domainJSON)
+        await MainActor.run {
+            if let result {
+                self.compileList(name: "easyDomains", identifier: "CherryEasyDomains_V13", json: result.domainJSON)
             }
+            self.endWork()
         }
     }
 
     /// Compile a rule list and store it
     private func compileList(name: String, identifier: String, json: String) {
+        beginWork()
         WKContentRuleListStore.default().compileContentRuleList(
             forIdentifier: identifier,
             encodedContentRuleList: json
@@ -156,38 +266,93 @@ final class AdBlockManager {
             Task { @MainActor in
                 guard let self else { return }
                 if let error {
-                    print("[AdBlocker] ❌ Compile error for \(name): \(error.localizedDescription)")
+                    // A rejected rule list means this whole set of block rules
+                    // is simply absent, while the UI still says blocking is
+                    // on. Never let that pass quietly: record it so Settings
+                    // can show it, and shout in the log.
+                    let message = error.localizedDescription
+                    self.compileFailures[name] = message
+                    print("""
+                    [AdBlocker] ❌❌❌ RULE LIST "\(name)" FAILED TO COMPILE — \
+                    NO NETWORK-LEVEL BLOCKING FROM THIS LIST. \(message)
+                    """)
+                    // Deliberately no `notifyWaiters()` here: this list failing
+                    // says nothing about the others still in flight. `endWork`
+                    // releases waiters if this was the last one.
+                    self.endWork()
                     return
                 }
-                self.compiledLists[name] = ruleList
+                self.setCompiledList(ruleList, for: name)
                 print("[AdBlocker] ✅ Compiled \(name) successfully")
+                // A usable list exists — release waiters now, whether or not
+                // other compiles are still running.
                 self.notifyWaiters()
+                self.endWork()
             }
         }
     }
 
+    /// Adopts a rule list that is already in `WKContentRuleListStore` — the
+    /// second-launch path, where nothing needs compiling. Goes through
+    /// `setCompiledList` like every other arrival, so it announces.
+    /// Exposed so `AdBlockRuleCompilationTests` can drive that path.
+    func loadCachedList(identifier: String, name: String) {
+        WKContentRuleListStore.default().lookUpContentRuleList(forIdentifier: identifier) { [weak self] cached, _ in
+            Task { @MainActor in
+                guard let self, let cached else { return }
+                self.setCompiledList(cached, for: name)
+            }
+        }
+    }
+
+    /// The ONLY place `compiledLists` is written.
+    ///
+    /// Announcing is a property of the mutation, not of the call site: the
+    /// cached-lookup branch used to assign directly and never post, so on the
+    /// common second-launch path the EasyList rules reached an already-built
+    /// web view only by luck. Clearing the failure/absence entries here for
+    /// the same reason — a list that just arrived is no longer missing.
+    private func setCompiledList(_ list: WKContentRuleList?, for name: String) {
+        compileFailures.removeValue(forKey: name)
+        unavailableLists.removeValue(forKey: name)
+        compiledLists[name] = list
+        generation += 1
+        // Web views created before this list existed have nothing attached —
+        // tell every coordinator to rebuild its set.
+        ContentRuleListKind.adBlock.post()
+    }
+
+    /// Releases anyone waiting for rules. Called when a list becomes usable,
+    /// and by `endWork()` when nothing further is coming.
+    ///
+    /// Deliberately does NOT mark compilation settled: that belongs to
+    /// `endWork`, which knows whether other compiles are still running.
     private func notifyWaiters() {
         let pending = waiters
         waiters.removeAll()
-        for continuation in pending {
+        for continuation in pending.values {
             continuation.resume()
         }
     }
 
     func invalidate() {
         compiledLists.removeAll()
+        generation += 1
         for id in ["CherryAdBlocker", "CherryAdBlockerV2", "CherryAdBlockerV3",
                     "CherryAdBlockerV4", "CherryAdBlockerV5", "CherrySupplementaryV1",
                     "CherrySupp_V2", "CherrySupp_V4", "CherrySupp_V6", "CherrySupp_V7",
+                    "CherrySupp_V8",
                     "CherryEasyDomains_V6", "CherryEasyDomains_V7",
                     "CherryEasyDomains_V9", "CherryEasyDomains_V11", "CherryEasyDomains_V12",
+                    "CherryEasyDomains_V13",
                     "CherryEasyCSS_V6", "CherryEasyCSS_V7", "CherryEasyCSS_V8",
                     "CherryEasyCSS_V9", "CherryEasyCSS_V10"] {
             WKContentRuleListStore.default().removeContentRuleList(forIdentifier: id) { _ in }
         }
         // Clean up all cached JSON files
         for name in ["easylist_domains_v9.json", "easylist_domains_v10.json",
-                     "easylist_domains_v11.json", "easylist_domains_v12.json"] {
+                     "easylist_domains_v11.json", "easylist_domains_v12.json",
+                     "easylist_domains_v13.json"] {
             try? FileManager.default.removeItem(at: Self.cacheDir.appendingPathComponent(name))
         }
         UserDefaults.standard.removeObject(forKey: Self.lastUpdateKey)
@@ -196,6 +361,9 @@ final class AdBlockManager {
     func forceUpdate() {
         invalidate()
         isCompiling = false
+        // A fresh round of compiles is about to start, so callers may legitimately
+        // wait again.
+        compilationSettled = false
         compileRulesFromScratch()
     }
 
@@ -336,74 +504,14 @@ final class AdBlockManager {
 
         print("[AdBlocker] Extracted \(domains.count) unique domains from EasyList")
 
-        var domainRules: [[String: Any]] = []
-        for domain in domains.sorted() {
-            let escaped = domain.replacingOccurrences(of: ".", with: "\\.")
-            // Anchor to the host portion of the URL to prevent false matches in paths/query strings
-            let pattern = "^https?://([^/]+\\.)?" + escaped + "[/:]"
-            domainRules.append([
-                "trigger": [
-                    "url-filter": pattern,
-                    "url-filter-is-case-insensitive": true,
-                    // CRITICAL: Only block these domains as third-party requests.
-                    // When the user navigates directly to a site, all its own
-                    // resources (CSS, JS, images) must load normally. We only want
-                    // to block these domains when they appear as embedded trackers
-                    // on OTHER sites.
-                    "load-type": ["third-party"]
-                ],
-                "action": ["type": "block"]
-            ])
-            if domainRules.count >= 45000 { break }
-        }
+        // Block rules, then the never-block exceptions (host-anchored — see
+        // AdBlockRuleBuilder: an unanchored substring let any tracker cancel
+        // the whole blocklist for its own request), then the Cloudflare
+        // /cdn-cgi/ path exception. Assembled by the same builder the
+        // compile test exercises.
+        let domainJSON = AdBlockRuleBuilder.domainRulesJSON(for: domains.sorted())
 
-        // Consent platform + Cloudflare + CDN exceptions (ignore-previous-rules)
-        let consentExceptionDomains = [
-            "sp-prod\\.net", "sourcepoint\\.com", "privacy-mgmt\\.com",
-            "onetrust\\.com", "cookielaw\\.org", "cookiepro\\.com",
-            "optanon\\.blob\\.core\\.windows\\.net",
-            "trustarc\\.com", "cookiebot\\.com", "iubenda\\.com",
-            "quantcast\\.com", "consensu\\.org", "didomi\\.io",
-            "osano\\.com", "usercentrics\\.eu", "consentmanager\\.net",
-            "privacymanager\\.io", "transcend\\.io", "termly\\.io",
-            "recaptcha\\.net", "hcaptcha\\.com",
-            // Additional consent platforms
-            "summerhamster\\.com", "tagcommander\\.com",
-            "rlcdn\\.com", "admiral\\.com", "ketchcdn\\.com",
-            // Cloudflare — challenges, beacon, insights (MUST NOT be blocked)
-            "cloudflare\\.com", "cloudflareinsights\\.com",
-            "challenges\\.cloudflare\\.com",
-            // Major CDNs — never block these
-            "cloudfront\\.net", "akamaihd\\.net", "akamaized\\.net",
-            "fastly\\.net",
-            "bootstrapcdn\\.com", "jsdelivr\\.net",
-        ]
-        for pattern in consentExceptionDomains {
-            domainRules.append([
-                "trigger": ["url-filter": pattern],
-                "action": ["type": "ignore-previous-rules"]
-            ])
-        }
-
-        // Never block Cloudflare internal paths (/cdn-cgi/) — these serve challenge
-        // scripts, turnstile captchas, and other essential Cloudflare functionality
-        // from the SITE'S OWN domain
-        domainRules.append([
-            "trigger": ["url-filter": "/cdn-cgi/"],
-            "action": ["type": "ignore-previous-rules"]
-        ])
-
-        print("[AdBlocker] Domain rules: \(domainRules.count)")
-
-        let domainJSON: String
-        if let data = try? JSONSerialization.data(withJSONObject: domainRules, options: []),
-           let json = String(data: data, encoding: .utf8) {
-            domainJSON = json
-        } else {
-            domainJSON = "[]"
-        }
-
-        try? domainJSON.write(to: cacheDir.appendingPathComponent("easylist_domains_v12.json"), atomically: true, encoding: .utf8)
+        try? domainJSON.write(to: cacheDir.appendingPathComponent("easylist_domains_v13.json"), atomically: true, encoding: .utf8)
         UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: lastUpdateKey)
 
         return ExtractedLists(domainJSON: domainJSON)
@@ -745,9 +853,12 @@ final class AdBlockManager {
         """
     }
 
-    // MARK: - Supplementary Rules (hardcoded, guaranteed to compile)
+    // MARK: - Supplementary Rules (hardcoded)
 
-    private static func buildSupplementaryJSON() -> String {
+    /// Exposed (not private) so `AdBlockRuleCompilationTests` can push the
+    /// real output through `WKContentRuleListStore`. A string assertion cannot
+    /// tell you whether WebKit will accept a pattern; only compiling can.
+    static func buildSupplementaryJSON() -> String {
         // Every exact subdomain from the d3host adblock test list
         let exactDomains: [String] = [
             // Ads - Amazon
@@ -837,68 +948,23 @@ final class AdBlockManager {
 
         var rules: [[String: Any]] = []
         for domain in exactDomains {
-            let escaped = domain.replacingOccurrences(of: ".", with: "\\.")
-            // Anchor to host portion of URL to avoid false matches in paths
-            let pattern = "^https?://([^/]+\\.)?" + escaped + "[/:]"
-            rules.append([
-                "trigger": [
-                    "url-filter": pattern,
-                    "url-filter-is-case-insensitive": true,
-                    // Only block as third-party — never block when user visits the domain directly
-                    "load-type": ["third-party"]
-                ],
-                "action": ["type": "block"]
-            ])
+            rules.append(AdBlockRuleBuilder.blockRule(for: domain))
         }
 
         // Block common ad script filenames (catches first-party served ad scripts)
-        for pattern in ["/ads\\.js", "/pagead\\.js", "/pagead2\\.js",
-                        "/adsbygoogle\\.js", "/show_ads\\.js", "/widget/ads\\.js"] {
-            rules.append([
-                "trigger": ["url-filter": pattern, "resource-type": ["script"]],
-                "action": ["type": "block"]
-            ])
+        for filename in AdBlockRuleBuilder.blockedScriptFilenames {
+            rules.append(contentsOf: AdBlockRuleBuilder.scriptPathBlockRules(for: filename))
         }
 
         // Exception rules: NEVER block requests to consent management platforms,
         // Cloudflare, or major CDNs. Must come LAST to override all block rules.
-        let consentExceptions = [
-            "sp-prod\\.net", "sourcepoint\\.com", "privacy-mgmt\\.com",
-            "onetrust\\.com", "cookielaw\\.org", "cookiepro\\.com",
-            "optanon\\.blob\\.core\\.windows\\.net",
-            "trustarc\\.com", "cookiebot\\.com", "iubenda\\.com",
-            "quantcast\\.com", "consensu\\.org", "didomi\\.io",
-            "osano\\.com", "usercentrics\\.eu", "consentmanager\\.net",
-            "privacymanager\\.io", "transcend\\.io", "termly\\.io",
-            "recaptcha\\.net", "hcaptcha\\.com",
-            // Additional consent platforms
-            "summerhamster\\.com", "tagcommander\\.com",
-            "rlcdn\\.com", "admiral\\.com", "ketchcdn\\.com",
-            // Cloudflare — challenges, beacon, insights
-            "cloudflare\\.com", "cloudflareinsights\\.com",
-            "challenges\\.cloudflare\\.com",
-            // Major CDNs
-            "cloudfront\\.net", "akamaihd\\.net", "akamaized\\.net",
-            "fastly\\.net",
-            "bootstrapcdn\\.com", "jsdelivr\\.net",
-        ]
-        for pattern in consentExceptions {
-            rules.append([
-                "trigger": ["url-filter": pattern],
-                "action": ["type": "ignore-previous-rules"]
-            ])
+        for domain in AdBlockRuleBuilder.alwaysAllowedDomains {
+            rules.append(AdBlockRuleBuilder.exceptionRule(for: domain))
         }
         // Never block Cloudflare internal paths (/cdn-cgi/)
-        rules.append([
-            "trigger": ["url-filter": "/cdn-cgi/"],
-            "action": ["type": "ignore-previous-rules"]
-        ])
+        rules.append(AdBlockRuleBuilder.cdnCGIExceptionRule())
 
-        guard let data = try? JSONSerialization.data(withJSONObject: rules, options: []),
-              let json = String(data: data, encoding: .utf8) else {
-            return "[]"
-        }
         print("[AdBlocker] Supplementary: \(rules.count) rules")
-        return json
+        return AdBlockRuleBuilder.json(from: rules)
     }
 }

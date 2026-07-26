@@ -157,18 +157,20 @@ final class PasswordRepository {
     // MARK: - Query
 
     func credentials(for url: URL) -> [PasswordItem] {
-        guard let host = url.host?.lowercased() else { return [] }
+        guard let rawHost = url.host else { return [] }
+        let host = HostNormalizer.foldedASCII(rawHost)
 
         // Match the exact host or a parent/subdomain relationship on a dot
         // boundary (www.example.com <-> example.com). Never match on a naive
         // "last two labels" base domain: for hosts under multi-label public
         // suffixes (example.co.uk) that base is "co.uk", which offered — and
         // could auto-fill — one site's password on every other co.uk site.
+        // The rule itself is unchanged; it now lives in `HostNormalizer` so
+        // the ad-block whitelist and Focus Mode share it, and case folding is
+        // locale-independent (`.lowercased()` maps I to a dotless ı in tr-TR).
         return passwords.filter { item in
-            let itemHost = URL(string: item.url)?.host?.lowercased() ?? item.url.lowercased()
-            return itemHost == host
-                || itemHost.hasSuffix("." + host)
-                || host.hasSuffix("." + itemHost)
+            let itemHost = HostNormalizer.foldedASCII(URL(string: item.url)?.host ?? item.url)
+            return HostNormalizer.hostsAreRelated(itemHost, host)
         }
     }
 

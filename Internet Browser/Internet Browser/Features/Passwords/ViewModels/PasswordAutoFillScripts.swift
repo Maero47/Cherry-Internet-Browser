@@ -101,12 +101,27 @@ enum PasswordAutoFillScripts {
             .replacingOccurrences(of: "\u{2029}", with: "\\u2029")
     }
 
-    static func autoFillScript(username: String, password: String) -> String {
+    /// - Parameter expectedOrigin: `scheme://host` the credential belongs to.
+    ///   When given, the script refuses to fill unless the document it is
+    ///   actually running in matches. `evaluateJavaScript` is asynchronous IPC
+    ///   and is not pinned to the document that was checked on the Swift side,
+    ///   so a navigation committing in the gap would otherwise receive the
+    ///   secret. This check runs in the web content process at the instant the
+    ///   fields are written. `nil` for the password generator, which invents a
+    ///   value rather than replaying a stored one.
+    static func autoFillScript(username: String, password: String, expectedOrigin: String? = nil) -> String {
         let escapedUsername = escapeForJSString(username)
         let escapedPassword = escapeForJSString(password)
+        let originGuard = expectedOrigin.map { origin in
+            """
+                // Last-instant origin check, inside the page itself.
+                if (location.protocol + '//' + location.hostname !== '\(escapeForJSString(origin))') return false;
+            """
+        } ?? ""
 
         return """
         (function() {
+        \(originGuard)
             function fillField(field, value) {
                 if (!field) return;
                 // Focus the field first (some sites listen for focus)
