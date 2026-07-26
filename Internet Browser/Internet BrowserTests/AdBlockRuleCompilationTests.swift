@@ -219,6 +219,42 @@ final class AdBlockRuleCompilationTests: XCTestCase {
         XCTAssertTrue(announced, "nothing told existing web views to attach the new cookie rule list")
     }
 
+    /// Every announcement says which list it is about. A listener waiting for
+    /// the cookie list must not be satisfied by an EasyList compile — that is
+    /// how a deferred reload ended up running under the old cookie policy.
+    @MainActor
+    func testAnnouncementsCarryTheListIdentity() async throws {
+        let settings = SettingsManager.shared
+        let original = settings.blockCookies
+        defer { settings.blockCookies = original }
+        settings.blockCookies = .none
+
+        var kinds: [ContentRuleListKind?] = []
+        let token = NotificationCenter.default.addObserver(
+            forName: .cherryContentRuleListsChanged, object: nil, queue: .main
+        ) { kinds.append(ContentRuleListKind.from($0)) }
+        defer { NotificationCenter.default.removeObserver(token) }
+
+        settings.blockCookies = .thirdParty
+        for _ in 0..<100 where !kinds.contains(.cookiePolicy) {
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+        XCTAssertTrue(kinds.contains(.cookiePolicy))
+        XCTAssertFalse(kinds.contains(nil), "an untagged announcement would be consumed by any waiter")
+        XCTAssertFalse(kinds.contains(.adBlock), "a cookie change must not masquerade as an ad-block change")
+    }
+
+    func testAdBlockAnnouncementsAreTaggedAsSuch() {
+        var kinds: [ContentRuleListKind?] = []
+        let token = NotificationCenter.default.addObserver(
+            forName: .cherryContentRuleListsChanged, object: nil, queue: nil
+        ) { kinds.append(ContentRuleListKind.from($0)) }
+        defer { NotificationCenter.default.removeObserver(token) }
+
+        ContentRuleListKind.adBlock.post()
+        XCTAssertEqual(kinds, [.adBlock])
+    }
+
     /// Selecting "Allow All" must clear the list rather than leave the last
     /// blocking list attached.
     @MainActor

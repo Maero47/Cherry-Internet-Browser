@@ -183,15 +183,6 @@ struct WebViewWrapper: NSViewRepresentable {
 
         context.coordinator.observeWebView(webView)
 
-        // Claim the content controller for rule-list purposes. A fresh web view
-        // has its own; a popup shares its opener's, which stays owned by the
-        // opener's coordinator so the two tabs can't impose their per-site
-        // pause state on each other.
-        Coordinator.claimRuleListOwnership(
-            of: webView.configuration.userContentController,
-            by: context.coordinator
-        )
-
         if isAdoptedWebView {
             // An adopted web view (a popup carrying its opener's configuration,
             // or a background research tab built by TabManager) never went
@@ -253,20 +244,17 @@ struct WebViewWrapper: NSViewRepresentable {
             configuration.websiteDataStore = .nonPersistent()
         }
 
-        // Ad blocker: apply network-level blocking rules
-        // Only applied at webview creation — NOT in updateNSView to prevent reload loops
-        if adBlockActive {
-            let adBlocker = AdBlockManager.shared
-            if adBlocker.rulesReady {
-                adBlocker.applyRules(to: configuration)
-            }
-            // Cosmetic filtering: inject CSS + JS scripts to hide ad DOM elements
-            adBlocker.applyCosmeticRules(to: configuration)
-        }
+        // Network-level rule lists: ad-block (unless off or paused here) plus
+        // the cookie policy, installed as one set by the single function that
+        // owns them. Only applied at webview creation — NOT in updateNSView,
+        // to prevent reload loops; later arrivals come via
+        // `cherryContentRuleListsChanged`.
+        Self.applyContentRuleLists(to: configuration, pageURL: tab.url)
 
-        // Cookie policy: a block-cookies content rule list, the only cookie
-        // control WKWebView actually honours.
-        CookiePolicyManager.shared.apply(to: configuration)
+        // Cosmetic filtering: inject CSS + JS scripts to hide ad DOM elements
+        if adBlockActive {
+            AdBlockManager.shared.applyCosmeticRules(to: configuration)
+        }
 
         // Core page plumbing (password autofill, devtools bridges, per-frame
         // mute) — shared with the adopted-webview path in makeNSView.
@@ -311,6 +299,41 @@ struct WebViewWrapper: NSViewRepresentable {
 
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
+    }
+
+    // MARK: - Content rule lists
+
+    /// Installs exactly the content rule lists a page at `pageURL` should be
+    /// carrying: the ad-block lists, unless blocking is off globally or paused
+    /// for that site, plus the cookie policy list.
+    ///
+    /// **This is the only function in the app that touches the rule-list set.**
+    /// Rule lists can only be removed wholesale, so a caller that removes them
+    /// and re-adds only its own concern drops somebody else's — which is how
+    /// the per-site ad-block pause used to wipe the cookie policy.
+    ///
+    /// Deliberately *static, idempotent, and derived entirely from current
+    /// state*, with no notion of an owning coordinator. The previous version
+    /// let the first coordinator to see a controller claim it through a weak
+    /// map, which failed open twice: when that coordinator deallocated the
+    /// entry became nobody's and the controller froze at whatever was attached
+    /// at the time, and while it lived it decided the policy for every other
+    /// tab sharing the controller. Any caller may now run this at any time and
+    /// the result is the same.
+    ///
+    /// `pageURL == nil` (a tab that has not committed a URL) is treated as
+    /// "protect it": the per-site pause is an opt-out and must never be
+    /// inferred from missing information.
+    static func applyContentRuleLists(to configuration: WKWebViewConfiguration, pageURL: URL?) {
+        let settings = SettingsManager.shared
+        let adBlockActive = settings.adBlockEnabled
+            && !(pageURL.map { settings.isAdBlockPaused(for: $0) } ?? false)
+
+        configuration.userContentController.removeAllContentRuleLists()
+        if adBlockActive, AdBlockManager.shared.rulesReady {
+            AdBlockManager.shared.applyRules(to: configuration)
+        }
+        CookiePolicyManager.shared.apply(to: configuration)
     }
 
     // MARK: - Core user scripts / message handlers
@@ -479,7 +502,8 @@ struct WebViewWrapper: NSViewRepresentable {
                 forName: .cherryContentRuleListsChanged,
                 object: nil,
                 queue: .main
-            ) { [weak self] _ in
+            ) { [weak self] notification in
+                let kind = ContentRuleListKind.from(notification)
                 MainActor.assumeIsolated {
                     guard let self else { return }
                     self.rebuildContentRuleLists()
@@ -488,7 +512,12 @@ struct WebViewWrapper: NSViewRepresentable {
                     // change time re-fetched the page under the old policy,
                     // because a main-actor hop always beats an out-of-process
                     // WebKit compile.
-                    if self.reloadWhenRuleListsChange {
+                    //
+                    // Only the COOKIE list may consume that pending reload: an
+                    // EasyList compile arriving first would otherwise clear the
+                    // flag and reload under the old cookie policy — the same
+                    // race, one level up.
+                    if self.reloadWhenRuleListsChange, kind == .cookiePolicy {
                         self.reloadWhenRuleListsChange = false
                         self.tab?.reload()
                     }
@@ -505,54 +534,11 @@ struct WebViewWrapper: NSViewRepresentable {
             }
         }
 
-        /// Attaches exactly the content rule lists this web view should be
-        /// carrying right now: the ad-block lists if blocking is on for this
-        /// tab, plus the cookie policy list.
-        ///
-        /// **This is the only function allowed to touch the content-rule-list
-        /// set on a web view.** Rule lists can only be removed wholesale, so
-        /// any caller that removes them and re-adds only its own concern drops
-        /// somebody else's — which is exactly how the per-site ad-block pause
-        /// used to wipe the cookie policy. Safe to call at any time; it is what
-        /// the `cherryContentRuleListsChanged` observer runs when a list
-        /// finishes compiling after this web view was created.
+        /// Attaches exactly the content rule lists the tab in this web view
+        /// should be carrying right now.
         func rebuildContentRuleLists() {
             guard let webView else { return }
-            let controller = webView.configuration.userContentController
-            // A popup carries its OPENER's configuration, so two tabs can share
-            // one controller. Only the coordinator that claimed it may rebuild:
-            // otherwise a rebuild triggered by tab A would silently impose tab
-            // A's per-site pause state on tab B, and every compile notification
-            // would start a fight between them.
-            guard Self.ruleListOwner(of: controller) === self else { return }
-
-            let settings = SettingsManager.shared
-            let adBlockActive = settings.adBlockEnabled && !settings.isAdBlockPaused(for: tab?.url)
-
-            controller.removeAllContentRuleLists()
-            if adBlockActive, AdBlockManager.shared.rulesReady {
-                AdBlockManager.shared.applyRules(to: webView.configuration)
-            }
-            CookiePolicyManager.shared.apply(to: webView.configuration)
-        }
-
-        /// Coordinator responsible for the rule-list set on a given content
-        /// controller — the first one to claim it, for as long as it lives.
-        /// Weak on both sides so a closed window releases the entry.
-        private static let ruleListOwners =
-            NSMapTable<WKUserContentController, Coordinator>.weakToWeakObjects()
-
-        static func ruleListOwner(of controller: WKUserContentController) -> Coordinator? {
-            ruleListOwners.object(forKey: controller)
-        }
-
-        /// Claims ownership if the controller has none (or its previous owner
-        /// has been deallocated, e.g. a web view re-wrapped after its window
-        /// closed).
-        static func claimRuleListOwnership(of controller: WKUserContentController, by coordinator: Coordinator) {
-            if ruleListOwners.object(forKey: controller) == nil {
-                ruleListOwners.setObject(coordinator, forKey: controller)
-            }
+            WebViewWrapper.applyContentRuleLists(to: webView.configuration, pageURL: tab?.url)
         }
 
         /// Called when UserDefaults change — re-apply the privacy settings that
@@ -581,13 +567,16 @@ struct WebViewWrapper: NSViewRepresentable {
                 rebuildContentRuleLists()
             }
             if cookiePolicyChanged {
-                // The compiled list for a policy the user just picked does not
-                // exist yet. Ask for it, and defer this tab's reload until the
-                // notification says it is attached — otherwise the reload
-                // (one main-actor hop) beats the compile (an out-of-process
-                // WebKit call) and the page is re-fetched under the OLD policy.
+                // Defer this tab's reload until the notification says the new
+                // list is attached — the reload (one main-actor hop) would
+                // otherwise beat the compile (an out-of-process WebKit call)
+                // and re-fetch the page under the OLD policy.
+                //
+                // The compile itself is NOT kicked off here: `blockCookies`'s
+                // `didSet` already called `updatePolicy` synchronously before
+                // this notification fanned out, and asking again from every
+                // open tab is just N-times-redundant work.
                 reloadWhenRuleListsChange = true
-                CookiePolicyManager.shared.updatePolicy(cookiePolicy)
             }
 
             if adBlockChanged {
@@ -1124,11 +1113,42 @@ struct WebViewWrapper: NSViewRepresentable {
                 }
             }
 
+            // Give the popup its OWN user-content controller before building
+            // it. WebKit hands us a configuration derived from the opener, and
+            // using that object is what preserves the opener relationship
+            // (same process pool and data store, so `window.opener` and named
+            // targets keep working) — but its `userContentController` is a
+            // plain read-write property and nothing about `window.open`
+            // requires the two pages to share one.
+            //
+            // Sharing it is what made rule lists ambiguous: one controller,
+            // two tabs, two different sites, and only one per-site pause state
+            // could win. With one controller per web view, "one web view, one
+            // rule-list set" is true by construction and there is no ownership
+            // to get wrong.
+            configuration.userContentController = WKUserContentController()
+
             let popupWebView = WKWebView(frame: .zero, configuration: configuration)
             popupWebView.allowsBackForwardNavigationGestures = true
             popupWebView.allowsMagnification = true
             popupWebView.navigationDelegate = self
             popupWebView.uiDelegate = self
+
+            // The popup starts loading before the tab adopts it, so set it up
+            // now rather than at adoption — otherwise its first page load runs
+            // with no blocking and no page plumbing at all.
+            let isPrivate = tab?.isPrivate ?? true
+            WebViewWrapper.installCoreUserContent(
+                into: configuration.userContentController,
+                coordinator: self,
+                isPrivate: isPrivate,
+                isMuted: tab?.isMuted ?? false
+            )
+            WebViewWrapper.applyContentRuleLists(to: configuration, pageURL: url)
+            if SettingsManager.shared.adBlockEnabled,
+               !SettingsManager.shared.isAdBlockPaused(for: url) {
+                AdBlockManager.shared.applyCosmeticRules(to: configuration)
+            }
 
             DispatchQueue.main.async { [weak self] in
                 self?.onNewTabWithWebView?(popupWebView, url)

@@ -184,7 +184,7 @@ final class AdBlockManager {
                     self.unavailableLists["easyDomains"] =
                         "The EasyList/EasyPrivacy filter lists could not be downloaded and no cached copy was available."
                     print("[AdBlocker] ⚠️⚠️ Download failed — MAIN BLOCKLIST ABSENT, supplementary rules only")
-                    NotificationCenter.default.post(name: .cherryContentRuleListsChanged, object: nil)
+                    ContentRuleListKind.adBlock.post()
                 }
                 self.isCompiling = false
                 self.notifyWaiters()
@@ -256,7 +256,7 @@ final class AdBlockManager {
         compiledLists[name] = list
         // Web views created before this list existed have nothing attached —
         // tell every coordinator to rebuild its set.
-        NotificationCenter.default.post(name: .cherryContentRuleListsChanged, object: nil)
+        ContentRuleListKind.adBlock.post()
     }
 
     private func notifyWaiters() {

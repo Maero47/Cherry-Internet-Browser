@@ -12,10 +12,37 @@ extension Notification.Name {
     ///
     /// Rule lists compile asynchronously, and a web view only ever holds the
     /// lists that existed when it was built. Without this, tabs restored at
-    /// launch (created before the first compile finishes), background-research
-    /// web views, and adopted popups all run with no rules attached, while the
-    /// settings UI says otherwise. Every coordinator listens and re-attaches.
+    /// launch (created before the first compile finishes) and background web
+    /// views all run with no rules attached, while the settings UI says
+    /// otherwise. Every coordinator listens and re-attaches.
+    ///
+    /// `userInfo[ContentRuleListKind.userInfoKey]` names which list arrived —
+    /// a listener waiting on a *specific* one must check it. A pending
+    /// cookie-policy reload used to be consumed by whichever notification came
+    /// first, so an unrelated EasyList compile would reload the page under the
+    /// old cookie policy.
     static let cherryContentRuleListsChanged = Notification.Name("cherryContentRuleListsChanged")
+}
+
+/// Which rule list a `cherryContentRuleListsChanged` notification is about.
+enum ContentRuleListKind: String {
+    case adBlock
+    case cookiePolicy
+
+    static let userInfoKey = "cherryRuleListKind"
+
+    /// Reads the kind out of a notification, or nil if it carried none.
+    static func from(_ notification: Notification) -> ContentRuleListKind? {
+        (notification.userInfo?[userInfoKey] as? String).flatMap(ContentRuleListKind.init(rawValue:))
+    }
+
+    func post() {
+        NotificationCenter.default.post(
+            name: .cherryContentRuleListsChanged,
+            object: nil,
+            userInfo: [Self.userInfoKey: rawValue]
+        )
+    }
 }
 
 /// Enforces the Cookie Policy picker.
@@ -75,7 +102,7 @@ final class CookiePolicyManager {
         guard let json = Self.ruleJSON(for: level) else {
             activeLevel = level
             compiledList = nil
-            NotificationCenter.default.post(name: .cherryContentRuleListsChanged, object: nil)
+            ContentRuleListKind.cookiePolicy.post()
             return
         }
         // Already compiled and in force.
@@ -102,7 +129,7 @@ final class CookiePolicyManager {
                 self.activeLevel = level
                 self.compiledList = ruleList
                 print("[Cookies] ✅ Applied policy: \(level.rawValue)")
-                NotificationCenter.default.post(name: .cherryContentRuleListsChanged, object: nil)
+                ContentRuleListKind.cookiePolicy.post()
             }
         }
     }

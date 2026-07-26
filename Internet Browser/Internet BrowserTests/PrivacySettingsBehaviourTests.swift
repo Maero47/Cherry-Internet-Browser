@@ -97,6 +97,30 @@ final class PrivacySettingsBehaviourTests: XCTestCase {
         XCTAssertEqual(survivors, ["bbc.co.uk"])
     }
 
+    // MARK: - One-time migration of pre-fix data
+
+    /// A pre-fix build stored the "last two labels", so pausing on
+    /// `attacker.github.io` left `github.io` behind — ad-blocking off across
+    /// every GitHub Pages site. The per-launch purge deliberately can't remove
+    /// that; the one-time migration can.
+    func testMigrationRemovesLegacySuffixEntriesThePurgeKeeps() {
+        let stored: Set<String> = ["github.io", "vercel.app", "s3.amazonaws.com",
+                                   "bbc.co.uk", "news.example.com", "web.de"]
+        // The per-launch purge leaves the shared-hosting suffixes alone…
+        XCTAssertEqual(SettingsManager.sanitizedWhitelist(Array(stored)), stored)
+        // …and the one-time migration takes exactly those out.
+        XCTAssertEqual(
+            SettingsManager.migratedWhitelist(stored),
+            ["bbc.co.uk", "news.example.com", "web.de"]
+        )
+    }
+
+    func testMigrationLeavesOrdinaryHostsAlone() {
+        let stored: Set<String> = ["attacker.github.io", "bbc.co.uk", "example.com",
+                                   "shop.example.co.uk", "192.168.1.10"]
+        XCTAssertEqual(SettingsManager.migratedWhitelist(stored), stored)
+    }
+
     func testPauseIgnoresURLsWithoutAHost() {
         let settings = SettingsManager.shared
         settings.toggleAdBlockPause(for: URL(string: "about:blank"))

@@ -155,6 +155,24 @@ enum HostNormalizer {
         return registrySuffixes.contains(host)
     }
 
+    /// Both tables, still no heuristic: every suffix Cherry knows about,
+    /// registry and shared-hosting alike.
+    ///
+    /// Used by the ONE-TIME whitelist migration, not by the per-launch purge.
+    /// Data written by a pre-fix build can contain `github.io` — that build
+    /// derived entries with "last two labels", so pausing on
+    /// `attacker.github.io` stored the suffix and left ad-blocking off for
+    /// every GitHub Pages site. Cleaning that up needs the wide table; doing
+    /// it on every launch would instead keep deleting pauses users set on
+    /// sites that are themselves suffixes (`medium.com`).
+    static func isAnyKnownPublicSuffix(_ host: String) -> Bool {
+        let host = normalizedHost(host)
+        guard !isIPLiteral(host) else { return false }
+        let labels = host.split(separator: ".")
+        if labels.count < 2 { return true }
+        return registrySuffixes.contains(host) || privateHostingSuffixes.contains(host)
+    }
+
     /// True when `host` is something a person can actually own — used to
     /// reject junk before it reaches a whitelist.
     static func isRegistrable(_ host: String) -> Bool {

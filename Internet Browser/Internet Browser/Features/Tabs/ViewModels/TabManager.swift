@@ -222,19 +222,15 @@ final class TabManager {
         if settings.httpsOnlyMode {
             configuration.upgradeKnownHostsToHTTPS = true
         }
+        // Same rule-list set a visible tab gets, installed by the one function
+        // that owns it. This web view loads immediately and has no
+        // WebViewWrapper.Coordinator until the user selects the tab, so it
+        // never hears about a list that compiles later — whatever is compiled
+        // NOW is what this page gets.
+        WebViewWrapper.applyContentRuleLists(to: configuration, pageURL: url)
         if settings.adBlockEnabled && !settings.isAdBlockPaused(for: url) {
-            let adBlocker = AdBlockManager.shared
-            if adBlocker.rulesReady {
-                adBlocker.applyRules(to: configuration)
-            }
-            adBlocker.applyCosmeticRules(to: configuration)
+            AdBlockManager.shared.applyCosmeticRules(to: configuration)
         }
-        // This web view loads immediately and has no WebViewWrapper.Coordinator
-        // until the user selects the tab, so it never hears about a rule list
-        // that compiles later — whatever is compiled NOW is what this page
-        // gets. Attach the cookie policy here for the same reason: without it
-        // a research page ran with no cookie blocking at all.
-        CookiePolicyManager.shared.apply(to: configuration)
 
         // A real (off-screen) viewport, never `.zero`: WebKit lays the page
         // out against the view's size, and at 0×0 every element collapses to

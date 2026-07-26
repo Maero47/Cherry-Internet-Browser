@@ -300,6 +300,25 @@ final class SettingsManager {
         )
     }
 
+    /// One-time cleanup of whitelist data written by a pre-fix build.
+    ///
+    /// Those builds derived the stored entry with "last two labels", so a
+    /// pause on `attacker.github.io` was stored as `github.io` and left
+    /// ad-blocking off across every GitHub Pages site. The per-launch purge
+    /// deliberately cannot remove that — it uses registry suffixes only,
+    /// because running the wide table every launch would keep deleting pauses
+    /// users legitimately set on sites that are themselves suffixes.
+    ///
+    /// So the wide table runs exactly once, keyed on a version flag.
+    ///
+    /// Known cost, accepted: a user who deliberately paused `medium.com` (a
+    /// PSL private-section entry *and* an ordinary site) loses that one pause,
+    /// once. Old data cannot be told apart from a deliberate pause — both are
+    /// the bare string — and leaving the hole open is worse than one re-click.
+    static func migratedWhitelist(_ saved: Set<String>) -> Set<String> {
+        saved.filter { !HostNormalizer.isAnyKnownPublicSuffix($0) }
+    }
+
     func isAdBlockPaused(for url: URL?) -> Bool {
         guard let rawHost = url?.host else { return false }
         let host = HostNormalizer.normalizedHost(rawHost)
@@ -429,7 +448,12 @@ final class SettingsManager {
         // Privacy
         self.adBlockEnabled = defaults.object(forKey: Keys.adBlockEnabled) as? Bool ?? true
         let savedDomains = defaults.stringArray(forKey: Keys.adBlockWhitelistedDomains) ?? []
-        let cleaned = Self.sanitizedWhitelist(savedDomains)
+        var cleaned = Self.sanitizedWhitelist(savedDomains)
+        // One-time, wide-table cleanup of pre-fix data (see migratedWhitelist).
+        if !defaults.bool(forKey: Keys.adBlockWhitelistMigratedV2) {
+            cleaned = Self.migratedWhitelist(cleaned)
+            defaults.set(true, forKey: Keys.adBlockWhitelistMigratedV2)
+        }
         self.adBlockWhitelistedDomains = cleaned
         // `didSet` does not fire during `init`, so write the repaired set back
         // by hand — otherwise the stale entry is re-read on every launch and
@@ -567,6 +591,9 @@ final class SettingsManager {
         static let downloadDirectory = "downloadDirectory"
         static let adBlockEnabled = "adBlockEnabled"
         static let adBlockWhitelistedDomains = "adBlockWhitelistedDomains"
+        /// Marks the one-time cleanup of whitelist entries written by builds
+        /// whose base-domain derivation produced public suffixes.
+        static let adBlockWhitelistMigratedV2 = "adBlockWhitelistMigratedToRegistrableHosts_v2"
         static let requireTouchIDForAutoFill = "requireTouchIDForAutoFill"
         static let requireTouchIDForViewing = "requireTouchIDForViewing"
         static let passwordGeneratorLength = "passwordGeneratorLength"

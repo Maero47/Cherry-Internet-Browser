@@ -127,6 +127,17 @@ struct ReaderWebView: NSViewRepresentable {
 
     func makeNSView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
+        // Reader mode renders extracted HTML, but that HTML keeps the article's
+        // absolute image and iframe URLs, so this web view does make real
+        // third-party requests. It was the one birth path with no rule lists at
+        // all.
+        WebViewWrapper.applyContentRuleLists(to: config, pageURL: nil)
+        // Always ephemeral. Reader mode has no use for persisted cookies or
+        // storage, and this view is built without knowing whether the article
+        // came from a private tab — it previously used the PERSISTENT store
+        // even in a private window, which is a leak. An ephemeral store is
+        // correct for both cases, so there is nothing to get wrong.
+        config.websiteDataStore = .nonPersistent()
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.setValue(false, forKey: "drawsBackground")
         return webView
