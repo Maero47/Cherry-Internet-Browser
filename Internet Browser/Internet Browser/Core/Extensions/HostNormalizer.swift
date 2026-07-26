@@ -155,22 +155,27 @@ enum HostNormalizer {
         return registrySuffixes.contains(host)
     }
 
-    /// Both tables, still no heuristic: every suffix Cherry knows about,
-    /// registry and shared-hosting alike.
+    /// All three tables, still no heuristic: every suffix Cherry knows about —
+    /// registry, shared hosting, and the cloud tenancy roots.
     ///
     /// Used by the ONE-TIME whitelist migration, not by the per-launch purge.
-    /// Data written by a pre-fix build can contain `github.io` — that build
+    /// Data written by a pre-fix build can contain any of them: that build
     /// derived entries with "last two labels", so pausing on
-    /// `attacker.github.io` stored the suffix and left ad-blocking off for
-    /// every GitHub Pages site. Cleaning that up needs the wide table; doing
-    /// it on every launch would instead keep deleting pauses users set on
-    /// sites that are themselves suffixes (`medium.com`).
+    /// `attacker.github.io` stored `github.io`, and pausing on
+    /// `mybucket.s3.eu-west-1.amazonaws.com` stored **`amazonaws.com`** — which
+    /// under today's dot-boundary matching disables blocking for every AWS
+    /// host, a *wider* radius than the entry ever had before. Cleaning that up
+    /// needs the wide table; running it on every launch would instead keep
+    /// deleting pauses users set on sites that are themselves suffixes
+    /// (`medium.com`).
     static func isAnyKnownPublicSuffix(_ host: String) -> Bool {
         let host = normalizedHost(host)
         guard !isIPLiteral(host) else { return false }
         let labels = host.split(separator: ".")
         if labels.count < 2 { return true }
-        return registrySuffixes.contains(host) || privateHostingSuffixes.contains(host)
+        return registrySuffixes.contains(host)
+            || privateHostingSuffixes.contains(host)
+            || opaqueTenancyRoots.contains(host)
     }
 
     /// True when `host` is something a person can actually own — used to

@@ -144,6 +144,11 @@ struct ReaderWebView: NSViewRepresentable {
     }
 
     func updateNSView(_ webView: WKWebView, context: Context) {
+        // This view has no coordinator observing `cherryContentRuleListsChanged`,
+        // so re-derive here: every render reloads the article anyway, and a list
+        // that finished compiling after the overlay opened then applies to that
+        // reload rather than being missed until reader mode is reopened.
+        WebViewWrapper.applyContentRuleLists(to: webView.configuration, pageURL: nil)
         webView.loadHTMLString(html, baseURL: nil)
     }
 }

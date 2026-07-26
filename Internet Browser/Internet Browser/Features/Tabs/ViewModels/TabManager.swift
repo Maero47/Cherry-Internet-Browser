@@ -228,7 +228,7 @@ final class TabManager {
         // never hears about a list that compiles later — whatever is compiled
         // NOW is what this page gets.
         WebViewWrapper.applyContentRuleLists(to: configuration, pageURL: url)
-        if settings.adBlockEnabled && !settings.isAdBlockPaused(for: url) {
+        if WebViewWrapper.adBlockActive(for: url) {
             AdBlockManager.shared.applyCosmeticRules(to: configuration)
         }
 

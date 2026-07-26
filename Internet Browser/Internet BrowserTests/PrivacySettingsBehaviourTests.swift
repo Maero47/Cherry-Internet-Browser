@@ -13,15 +13,22 @@ import XCTest
 final class PrivacySettingsBehaviourTests: XCTestCase {
 
     private var savedWhitelist: Set<String> = []
+    private var savedAdBlockEnabled = true
 
     override func setUp() {
         super.setUp()
+        // These tests read the real singleton, which reads the real
+        // UserDefaults — so pin every input they depend on rather than
+        // inheriting whatever the last run (or the developer) left behind.
         savedWhitelist = SettingsManager.shared.adBlockWhitelistedDomains
+        savedAdBlockEnabled = SettingsManager.shared.adBlockEnabled
         SettingsManager.shared.adBlockWhitelistedDomains = []
+        SettingsManager.shared.adBlockEnabled = true
     }
 
     override func tearDown() {
         SettingsManager.shared.adBlockWhitelistedDomains = savedWhitelist
+        SettingsManager.shared.adBlockEnabled = savedAdBlockEnabled
         super.tearDown()
     }
 
@@ -104,15 +111,33 @@ final class PrivacySettingsBehaviourTests: XCTestCase {
     /// every GitHub Pages site. The per-launch purge deliberately can't remove
     /// that; the one-time migration can.
     func testMigrationRemovesLegacySuffixEntriesThePurgeKeeps() {
-        let stored: Set<String> = ["github.io", "vercel.app", "s3.amazonaws.com",
-                                   "bbc.co.uk", "news.example.com", "web.de"]
-        // The per-launch purge leaves the shared-hosting suffixes alone…
+        let stored: Set<String> = [
+            "github.io", "vercel.app", "s3.amazonaws.com",
+            // Cloud tenancy roots. A pre-fix build's "last two labels" turned a
+            // pause on `mybucket.s3.eu-west-1.amazonaws.com` into
+            // `amazonaws.com`, which under today's dot-boundary matching
+            // disables blocking for EVERY AWS host — wider than it ever was.
+            "amazonaws.com", "googleusercontent.com", "windows.net",
+            "bbc.co.uk", "news.example.com", "web.de",
+        ]
+        // The per-launch purge leaves all of these alone…
         XCTAssertEqual(SettingsManager.sanitizedWhitelist(Array(stored)), stored)
-        // …and the one-time migration takes exactly those out.
+        // …and the one-time migration takes exactly the suffixes out.
         XCTAssertEqual(
             SettingsManager.migratedWhitelist(stored),
             ["bbc.co.uk", "news.example.com", "web.de"]
         )
+    }
+
+    /// The tenancy roots are suffixes for the migration, but a host *under*
+    /// one is a real site the user may have paused deliberately.
+    func testMigrationKeepsHostsUnderATenancyRoot() {
+        let stored: Set<String> = [
+            "mybucket.s3.eu-west-1.amazonaws.com",
+            "account.blob.core.windows.net",
+            "lh3.googleusercontent.com",
+        ]
+        XCTAssertEqual(SettingsManager.migratedWhitelist(stored), stored)
     }
 
     func testMigrationLeavesOrdinaryHostsAlone() {
@@ -135,6 +160,37 @@ final class PrivacySettingsBehaviourTests: XCTestCase {
         XCTAssertEqual(focus.cleanDomain("HTTPS://WWW.Reddit.com/r/swift"), "reddit.com")
         XCTAssertEqual(focus.cleanDomain("  news.ycombinator.com  "), "news.ycombinator.com")
         XCTAssertEqual(focus.cleanDomain("https://WIKI.example.com:8080/"), "wiki.example.com")
+    }
+
+    // MARK: - The blocking decision follows the page, not the tab's history
+
+    /// `adBlockActive(for:)` is the single expression of "does blocking apply
+    /// to this page", shared by web-view creation, navigation commit, and the
+    /// settings observer — so those three cannot disagree about the same URL.
+    ///
+    /// The regression it closes: the set was only ever rebuilt at birth and on
+    /// settings changes, so a tab that had been on a paused site kept blocking
+    /// OFF for every site it navigated to next, while the shield — which
+    /// recomputes from the new URL — showed "active".
+    func testBlockingDecisionIsPerPageNotPerTab() {
+        let settings = SettingsManager.shared
+        settings.toggleAdBlockPause(for: URL(string: "https://news.example.com/story"))
+
+        XCTAssertFalse(WebViewWrapper.adBlockActive(for: URL(string: "https://news.example.com/other")))
+        // Navigating on to another site in the same tab must be protected again.
+        XCTAssertTrue(WebViewWrapper.adBlockActive(for: URL(string: "https://cnn.com/")))
+    }
+
+    /// A URL we don't have must never be read as "the user paused this".
+    func testMissingURLIsTreatedAsProtected() {
+        XCTAssertTrue(WebViewWrapper.adBlockActive(for: nil))
+    }
+
+    func testGlobalSwitchStillWins() {
+        let settings = SettingsManager.shared   // restored by tearDown
+        settings.adBlockEnabled = false
+        XCTAssertFalse(WebViewWrapper.adBlockActive(for: URL(string: "https://cnn.com/")))
+        XCTAssertFalse(WebViewWrapper.adBlockActive(for: nil))
     }
 
     // MARK: - Auto-fill origin guard

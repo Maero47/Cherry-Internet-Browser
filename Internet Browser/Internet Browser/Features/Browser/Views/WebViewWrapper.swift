@@ -131,7 +131,7 @@ struct WebViewWrapper: NSViewRepresentable {
         let settings = SettingsManager.shared
         // Ad blocker state — used for the fresh configuration below and for
         // the coordinator's cosmetic-filter tracking on both paths.
-        let adBlockActive = settings.adBlockEnabled && !settings.isAdBlockPaused(for: tab.url)
+        let adBlockActive = Self.adBlockActive(for: tab.url)
 
         // A tab that already has a webView keeps it (adopted popup or a
         // background research tab); everything else gets a fresh
@@ -325,15 +325,26 @@ struct WebViewWrapper: NSViewRepresentable {
     /// "protect it": the per-site pause is an opt-out and must never be
     /// inferred from missing information.
     static func applyContentRuleLists(to configuration: WKWebViewConfiguration, pageURL: URL?) {
-        let settings = SettingsManager.shared
-        let adBlockActive = settings.adBlockEnabled
-            && !(pageURL.map { settings.isAdBlockPaused(for: $0) } ?? false)
-
         configuration.userContentController.removeAllContentRuleLists()
-        if adBlockActive, AdBlockManager.shared.rulesReady {
+        if adBlockActive(for: pageURL), AdBlockManager.shared.rulesReady {
             AdBlockManager.shared.applyRules(to: configuration)
         }
         CookiePolicyManager.shared.apply(to: configuration)
+    }
+
+    /// Whether ad blocking applies to a page at `pageURL`, right now.
+    ///
+    /// The single expression of that decision — used when a web view is built,
+    /// when a navigation commits, and when the settings change — so those three
+    /// can never disagree about the same page.
+    ///
+    /// `nil` means protected. A per-site pause is an opt-out the user made for
+    /// a specific site; it must never be inferred from a URL we don't have.
+    static func adBlockActive(for pageURL: URL?) -> Bool {
+        let settings = SettingsManager.shared
+        guard settings.adBlockEnabled else { return false }
+        guard let pageURL else { return true }
+        return !settings.isAdBlockPaused(for: pageURL)
     }
 
     // MARK: - Core user scripts / message handlers
@@ -546,7 +557,7 @@ struct WebViewWrapper: NSViewRepresentable {
         private func applyLivePrivacySettings() {
             guard let webView else { return }
             let settings = SettingsManager.shared
-            let shouldBeEnabled = settings.adBlockEnabled && !settings.isAdBlockPaused(for: tab?.url)
+            let shouldBeEnabled = WebViewWrapper.adBlockActive(for: tab?.url)
             let cookiePolicy = settings.blockCookies
             let gpcEnabled = settings.sendGlobalPrivacyControl
 
@@ -566,17 +577,25 @@ struct WebViewWrapper: NSViewRepresentable {
             if adBlockChanged || cookiePolicyChanged {
                 rebuildContentRuleLists()
             }
+            // A cookie-policy change reloads only once its list is actually in
+            // place: reloading at change time (one main-actor hop) would beat
+            // the compile (an out-of-process WebKit call) and re-fetch the page
+            // under the OLD policy.
+            //
+            // The compile itself is NOT kicked off here: `blockCookies`'s
+            // `didSet` already called `updatePolicy` synchronously before this
+            // notification fanned out, and asking again from every open tab is
+            // N-times-redundant work.
+            var reloadNow = adBlockChanged || gpcChanged
             if cookiePolicyChanged {
-                // Defer this tab's reload until the notification says the new
-                // list is attached — the reload (one main-actor hop) would
-                // otherwise beat the compile (an out-of-process WebKit call)
-                // and re-fetch the page under the OLD policy.
-                //
-                // The compile itself is NOT kicked off here: `blockCookies`'s
-                // `didSet` already called `updatePolicy` synchronously before
-                // this notification fanned out, and asking again from every
-                // open tab is just N-times-redundant work.
-                reloadWhenRuleListsChange = true
+                if CookiePolicyManager.shared.activeLevel == cookiePolicy {
+                    // Already compiled and attached by the rebuild above —
+                    // there is nothing to wait for. Arming the flag here would
+                    // latch it until some unrelated cookie notification arrived.
+                    reloadNow = true
+                } else {
+                    reloadWhenRuleListsChange = true
+                }
             }
 
             if adBlockChanged {
@@ -598,8 +617,9 @@ struct WebViewWrapper: NSViewRepresentable {
 
             // The page in front of the user was loaded under the old rules;
             // reload so what it shows matches what the switches now say. A
-            // cookie-only change reloads later, from the rule-list observer.
-            if adBlockChanged || gpcChanged {
+            // cookie change whose list is still compiling reloads later
+            // instead, from the rule-list observer.
+            if reloadNow {
                 reloadWhenRuleListsChange = false
                 Task { @MainActor in self.tab?.reload() }
             }
@@ -749,6 +769,28 @@ struct WebViewWrapper: NSViewRepresentable {
             // tab's mute state to the fresh main-frame JS context.
             tab?.resetMuteFrames()
             tab?.applyMuteState()
+
+            // Re-derive blocking for the page that just committed. The set used
+            // to be built only at web-view birth and on settings/compile
+            // changes, so a tab that had been on an ad-block-paused site kept
+            // blocking OFF for every site it navigated to next — while the
+            // shield, which recomputes from the new URL, said "active". This is
+            // the one place that knows a *different site* is now loaded.
+            //
+            // `webView.url` — the committed URL — not `tab?.url`, which is
+            // written asynchronously by the KVO observer and still holds the
+            // previous page at this point.
+            let committedURL = webView.url
+            WebViewWrapper.applyContentRuleLists(to: webView.configuration, pageURL: committedURL)
+
+            let adBlockActive = WebViewWrapper.adBlockActive(for: committedURL)
+            if adBlockActive != cosmeticAdBlockEnabled {
+                cosmeticAdBlockEnabled = adBlockActive
+                rebuildUserScripts(adBlockActive: adBlockActive)
+            }
+            // No reload here, deliberately: rebuilding rule lists and user
+            // scripts has no side effect on the load in progress, and reloading
+            // from didCommit would loop.
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {

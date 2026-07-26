@@ -58,8 +58,14 @@ final class AdBlockManager {
     /// Whether any ad blocker rules are ready to use
     var rulesReady: Bool { !compiledLists.isEmpty }
 
-    /// Continuations waiting for rules to be ready
-    private var waiters: [CheckedContinuation<Void, Never>] = []
+    /// Continuations waiting for rules to be ready, keyed so a timeout can
+    /// retire exactly one of them.
+    private var waiters: [UUID: CheckedContinuation<Void, Never>] = [:]
+
+    /// True once every compile attempt this launch has finished, successfully
+    /// or not. Without it, a caller that arrives *after* the last compile
+    /// failed would park on a continuation nothing is left to resume.
+    private var compilationSettled = false
 
     /// For backward compatibility
     var compiledRuleList: WKContentRuleList? { compiledLists.values.first }
@@ -98,11 +104,26 @@ final class AdBlockManager {
         }
     }
 
-    /// Await until at least one rule list is compiled
-    func ensureRulesCompiled() async {
-        if !compiledLists.isEmpty { return }
+    /// Await until at least one rule list is compiled.
+    ///
+    /// Returns immediately once compilation has settled, even with nothing
+    /// compiled — a caller arriving after the last attempt failed must not be
+    /// parked on a continuation nobody is left to resume. Bounded by `timeout`
+    /// as a second line of defence, so a WebKit callback that never fires
+    /// cannot hang the caller either. Both matter now that `WebSearchService`
+    /// blocks its search on this.
+    func ensureRulesCompiled(timeout: TimeInterval = 5) async {
+        if !compiledLists.isEmpty || compilationSettled { return }
+        let id = UUID()
         await withCheckedContinuation { continuation in
-            waiters.append(continuation)
+            waiters[id] = continuation
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: UInt64(max(0, timeout) * 1_000_000_000))
+                if let pending = self.waiters.removeValue(forKey: id) {
+                    print("[AdBlocker] ⚠️ Timed out waiting for rules to compile")
+                    pending.resume()
+                }
+            }
         }
     }
 
@@ -260,9 +281,13 @@ final class AdBlockManager {
     }
 
     private func notifyWaiters() {
+        // Every terminal branch — success, rejection, download failure — funnels
+        // through here, so this is also where "nothing further is coming" is
+        // recorded for callers that arrive later.
+        compilationSettled = true
         let pending = waiters
         waiters.removeAll()
-        for continuation in pending {
+        for continuation in pending.values {
             continuation.resume()
         }
     }
@@ -292,6 +317,9 @@ final class AdBlockManager {
     func forceUpdate() {
         invalidate()
         isCompiling = false
+        // A fresh round of compiles is about to start, so callers may legitimately
+        // wait again.
+        compilationSettled = false
         compileRulesFromScratch()
     }
 
