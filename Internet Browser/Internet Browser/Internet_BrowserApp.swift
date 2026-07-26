@@ -311,7 +311,11 @@ func loadExtensionFromOpenPanel() {
 @MainActor
 func openInNewCherryTab(_ url: URL) {
     let viewModels = BrowserViewModel.windowViewModels.values.filter { !$0.isPrivateMode }
-    let target = viewModels.first { $0.associatedWindow === NSApp.keyWindow } ?? viewModels.first
+    let target = CommandRouting.preferringKeyWindow(
+        Array(viewModels),
+        keyWindow: NSApp.keyWindow,
+        window: { $0.associatedWindow }
+    )
     guard let target else {
         NSWorkspace.shared.open(url)
         return

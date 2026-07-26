@@ -618,9 +618,11 @@ extension ExtensionManager: WKWebExtensionControllerDelegate {
         _ controller: WKWebExtensionController,
         focusedWindowFor context: WKWebExtensionContext
     ) -> (any WKWebExtensionWindow)? {
-        let keyWindow = NSApp.keyWindow
-        let viewModels = extensionVisibleViewModels
-        let focused = viewModels.first { $0.associatedWindow === keyWindow } ?? viewModels.first
+        let focused = CommandRouting.preferringKeyWindow(
+            extensionVisibleViewModels,
+            keyWindow: NSApp.keyWindow,
+            window: { $0.associatedWindow }
+        )
         return focused.map { windowAdapter(for: $0) }
     }
 
@@ -630,9 +632,13 @@ extension ExtensionManager: WKWebExtensionControllerDelegate {
         for context: WKWebExtensionContext,
         completionHandler: @escaping ((any WKWebExtensionTab)?, (any Error)?) -> Void
     ) {
-        let keyWindow = NSApp.keyWindow
-        let viewModels = extensionVisibleViewModels
-        guard let viewModel = (viewModels.first { $0.associatedWindow === keyWindow } ?? viewModels.first) else {
+        // Argument form, not a trailing closure: a trailing closure inside a
+        // `guard let … else` condition doesn't parse.
+        guard let viewModel = CommandRouting.preferringKeyWindow(
+            extensionVisibleViewModels,
+            keyWindow: NSApp.keyWindow,
+            window: { $0.associatedWindow }
+        ) else {
             completionHandler(nil, nil)
             return
         }

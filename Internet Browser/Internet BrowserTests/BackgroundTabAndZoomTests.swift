@@ -83,67 +83,138 @@ final class BackgroundTabAndZoomTests: XCTestCase {
         XCTAssertEqual(Tab().zoomLevel, PageZoom.defaultLevel, accuracy: 0.0001)
     }
 
-    /// ⌘+ / ⌘− / ⌘0 must record a level even with no web view (a sleeping tab,
-    /// the new-tab page, a tab just sent Home) instead of silently no-opping.
-    func testZoomingATabWithNoWebViewStillRecordsTheLevel() {
+    /// A tab showing a real page. `webView` is still nil (nothing rendered it),
+    /// which is exactly the case that used to no-op.
+    private func webPageTab(in viewModel: BrowserViewModel) -> Tab {
+        let tab = viewModel.tabManager.selectedTab ?? viewModel.tabManager.newTab()
+        tab.url = URL(string: "https://swift.org")
+        tab.showHomePage = false
+        return tab
+    }
+
+    /// ⌘+ / ⌘− / ⌘0 record a level on a web-page tab even before anything has
+    /// rendered it, so the level is there when a web view appears.
+    func testZoomingAWebPageTabWithNoWebViewStillRecordsTheLevel() {
         let viewModel = BrowserViewModel()
-        let tab = try? XCTUnwrap(viewModel.tabManager.selectedTab)
-        XCTAssertNil(tab?.webView, "precondition: an unrendered tab has no web view")
+        let tab = webPageTab(in: viewModel)
+        XCTAssertNil(tab.webView, "precondition: an unrendered tab has no web view")
 
         viewModel.zoomIn(for: tab)
-        XCTAssertEqual(tab?.zoomLevel ?? 0, PageZoom.step(from: 1.0, direction: 1), accuracy: 0.0001)
+        XCTAssertEqual(tab.zoomLevel, PageZoom.step(from: 1.0, direction: 1), accuracy: 0.0001)
 
         viewModel.zoomIn(for: tab)
-        XCTAssertEqual(tab?.zoomLevel ?? 0, 1.25, accuracy: 0.0001)
+        XCTAssertEqual(tab.zoomLevel, 1.25, accuracy: 0.0001)
 
         viewModel.zoomOut(for: tab)
-        XCTAssertEqual(tab?.zoomLevel ?? 0, 1.1, accuracy: 0.0001)
+        XCTAssertEqual(tab.zoomLevel, 1.1, accuracy: 0.0001)
 
         viewModel.resetZoom(for: tab)
-        XCTAssertEqual(tab?.zoomLevel ?? 0, PageZoom.defaultLevel, accuracy: 0.0001)
+        XCTAssertEqual(tab.zoomLevel, PageZoom.defaultLevel, accuracy: 0.0001)
     }
 
     /// Sleep releases the web view; the level must not go with it.
     func testZoomSurvivesSleepAndWake() {
         let viewModel = BrowserViewModel()
-        let tab = try? XCTUnwrap(viewModel.tabManager.selectedTab)
-        tab?.url = URL(string: "https://swift.org")
-        tab?.showHomePage = false
+        let tab = webPageTab(in: viewModel)
 
         viewModel.zoomIn(for: tab)
-        let zoomed = tab?.zoomLevel ?? 0
+        let zoomed = tab.zoomLevel
 
-        tab?.sleep()
-        XCTAssertEqual(tab?.isSleeping, true)
-        tab?.wake()
+        tab.sleep()
+        XCTAssertEqual(tab.isSleeping, true)
+        tab.wake()
 
-        XCTAssertEqual(tab?.zoomLevel ?? 0, zoomed, accuracy: 0.0001)
+        XCTAssertEqual(tab.zoomLevel, zoomed, accuracy: 0.0001)
         XCTAssertNotEqual(zoomed, PageZoom.defaultLevel, "precondition: the tab really was zoomed")
     }
 
     /// Home releases the web view too (`goHome` sets `webView = nil`).
     func testZoomSurvivesGoingHome() {
         let viewModel = BrowserViewModel()
-        let tab = try? XCTUnwrap(viewModel.tabManager.selectedTab)
+        let tab = webPageTab(in: viewModel)
 
         viewModel.zoomIn(for: tab)
-        let zoomed = tab?.zoomLevel ?? 0
+        let zoomed = tab.zoomLevel
 
         viewModel.goHome(for: tab)
 
-        XCTAssertEqual(tab?.zoomLevel ?? 0, zoomed, accuracy: 0.0001)
+        XCTAssertEqual(tab.zoomLevel, zoomed, accuracy: 0.0001)
     }
 
     /// Each tab zooms independently — zoom is per-tab, not per-window.
     func testZoomIsPerTab() {
         let viewModel = BrowserViewModel()
-        let first = try? XCTUnwrap(viewModel.tabManager.selectedTab)
-        let second = viewModel.tabManager.newTab(switchTo: false)
+        let first = webPageTab(in: viewModel)
+        let second = viewModel.tabManager.newTab(url: URL(string: "https://example.com"), switchTo: false)
 
         viewModel.zoomIn(for: first)
 
-        XCTAssertNotEqual(first?.zoomLevel ?? 0, second.zoomLevel)
+        XCTAssertNotEqual(first.zoomLevel, second.zoomLevel)
         XCTAssertEqual(second.zoomLevel, PageZoom.defaultLevel, accuracy: 0.0001)
+    }
+
+    // MARK: - Zoom refuses where there's no page to zoom
+
+    /// The round-2 residue: zoom used to be recorded on the new-tab page too,
+    /// so ⌘+ looked like a no-op and then silently resized the next page loaded
+    /// in that tab. It must now decline, visibly, and change nothing.
+    func testZoomingTheNewTabPageChangesNothingAndSaysSo() {
+        let viewModel = BrowserViewModel()
+        let tab = try? XCTUnwrap(viewModel.tabManager.selectedTab)
+        XCTAssertEqual(tab?.showHomePage, true, "precondition: a fresh tab is the new-tab page")
+        XCTAssertFalse(viewModel.canZoom(tab))
+
+        viewModel.zoomIn(for: tab)
+
+        XCTAssertEqual(tab?.zoomLevel ?? 0, PageZoom.defaultLevel, accuracy: 0.0001)
+        XCTAssertTrue(viewModel.showScreenshotToast, "the user must be told why nothing happened")
+        XCTAssertEqual(viewModel.screenshotToastMessage, "Zoom applies to web pages")
+    }
+
+    func testZoomingACherryInternalPageChangesNothing() {
+        let viewModel = BrowserViewModel()
+        let tab = webPageTab(in: viewModel)
+        viewModel.openInternalPage(.settings, in: tab)
+
+        XCTAssertFalse(viewModel.canZoom(tab))
+        viewModel.zoomOut(for: tab)
+        XCTAssertEqual(tab.zoomLevel, PageZoom.defaultLevel, accuracy: 0.0001)
+    }
+
+    /// Reader mode renders its own detached web view, so the tab's zoom would
+    /// not apply to what's on screen.
+    func testZoomingWhileReaderModeIsUpChangesNothing() {
+        let viewModel = BrowserViewModel()
+        let tab = webPageTab(in: viewModel)
+        XCTAssertTrue(viewModel.canZoom(tab), "precondition: zoomable before Reader opens")
+
+        viewModel.showReaderMode = true
+
+        XCTAssertFalse(viewModel.canZoom(tab))
+        viewModel.zoomIn(for: tab)
+        XCTAssertEqual(tab.zoomLevel, PageZoom.defaultLevel, accuracy: 0.0001)
+    }
+
+    /// Actual Size stays available everywhere: it can only ever CLEAR a level,
+    /// so it's the way to undo a zoom after navigating to the new-tab page.
+    func testActualSizeStillWorksWhereZoomingIsRefused() {
+        let viewModel = BrowserViewModel()
+        let tab = webPageTab(in: viewModel)
+        viewModel.zoomIn(for: tab)
+        XCTAssertNotEqual(tab.zoomLevel, PageZoom.defaultLevel)
+
+        tab.showHomePage = true
+        XCTAssertFalse(viewModel.canZoom(tab))
+
+        viewModel.resetZoom(for: tab)
+        XCTAssertEqual(tab.zoomLevel, PageZoom.defaultLevel, accuracy: 0.0001)
+    }
+
+    func testZoomIsRefusedWithNoTabAtAll() {
+        let viewModel = BrowserViewModel(withDefaultTab: false)
+        XCTAssertFalse(viewModel.canZoom(nil))
+        viewModel.zoomIn(for: nil)  // must not trap
+        XCTAssertTrue(viewModel.showScreenshotToast)
     }
 
     /// `applyZoomLevel()` is the hook `WebViewWrapper` / `adoptWebView` call

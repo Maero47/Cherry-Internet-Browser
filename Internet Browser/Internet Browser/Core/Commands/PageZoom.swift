@@ -34,6 +34,14 @@ enum PageZoom {
         }
     }
 
+    /// Confines `level` to the ladder's range. Used on values that come from
+    /// outside the app — a restored session's JSON — so a corrupt or
+    /// hand-edited number can't render a page at 0% or 4000%.
+    static func clamped(_ level: Double) -> Double {
+        guard level.isFinite else { return defaultLevel }
+        return min(max(level, levels[0]), levels[levels.count - 1])
+    }
+
     /// Guards against floating-point drift making an exact level compare as
     /// "greater than itself".
     private static let epsilon = 0.0001

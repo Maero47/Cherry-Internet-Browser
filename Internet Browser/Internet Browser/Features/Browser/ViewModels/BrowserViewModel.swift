@@ -80,9 +80,31 @@ final class BrowserViewModel {
     // MARK: - PDF detection
     var isViewingPDF: Bool = false
 
-    // MARK: - Screenshot toast
+    // MARK: - Status toast
+    // A brief bottom-of-window message. Was screenshot-only; now also carries
+    // the "zoom doesn't apply here" reply, so the icon travels with the text.
     var showScreenshotToast: Bool = false
     var screenshotToastMessage: String = ""
+    var screenshotToastIcon: String = "camera.fill"
+    var screenshotToastIconColor: Color = .green
+    @ObservationIgnored private var statusToastDismissTask: Task<Void, Never>?
+
+    /// Shows `message` for three seconds. Re-showing while one is up replaces
+    /// it and restarts the timer, rather than letting the first one's
+    /// dismissal cut the second one short.
+    func showStatusToast(_ message: String, icon: String = "camera.fill", iconColor: Color = .green) {
+        screenshotToastMessage = message
+        screenshotToastIcon = icon
+        screenshotToastIconColor = iconColor
+        showScreenshotToast = true
+
+        statusToastDismissTask?.cancel()
+        statusToastDismissTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            guard !Task.isCancelled else { return }
+            self?.showScreenshotToast = false
+        }
+    }
 
     // MARK: - Command Palette
     var showCommandPalette: Bool = false
@@ -258,19 +280,49 @@ final class BrowserViewModel {
 
     // MARK: - Zoom
 
+    /// Whether `tab` is showing a page zoom can act on. False on the new-tab
+    /// page, on any `cherry://` internal page, and while the Reader overlay is
+    /// up (it renders its own detached web view) — none of those are the
+    /// tab's `WKWebView`, so zooming them is not a thing that can happen.
+    ///
+    /// Mirrors the condition `BrowserContentView` uses to decide whether to
+    /// render `WebViewWrapper` at all.
+    func canZoom(_ tab: Tab?) -> Bool {
+        guard let tab, !showReaderMode else { return false }
+        return tab.internalPage == nil && !tab.showHomePage && !tab.showSettingsPage
+    }
+
     /// The zoom steps ⌘+ / ⌘- walk through, matching Chrome's ladder.
     /// `PageZoom.step(from:direction:)` owns the arithmetic so it can be
     /// unit-tested without a web view.
+    ///
+    /// Refuses — with a visible reason — when there's no web page to zoom.
+    /// Recording the level anyway is worse than doing nothing: the keypress
+    /// looks like a no-op and then silently changes the size of whatever page
+    /// the user loads in that tab next.
     func zoomIn(for tab: Tab?) {
+        guard canZoom(tab) else { reportZoomUnavailable(); return }
         applyZoom(PageZoom.step(from: currentZoom(for: tab), direction: 1), to: tab)
     }
 
     func zoomOut(for tab: Tab?) {
+        guard canZoom(tab) else { reportZoomUnavailable(); return }
         applyZoom(PageZoom.step(from: currentZoom(for: tab), direction: -1), to: tab)
     }
 
+    /// Actual Size is always allowed: it can only ever CLEAR a level, never
+    /// leave a surprise behind, so it stays available on the new-tab page to
+    /// undo a zoom set before navigating away.
     func resetZoom(for tab: Tab?) {
         applyZoom(PageZoom.defaultLevel, to: tab)
+    }
+
+    private func reportZoomUnavailable() {
+        showStatusToast(
+            "Zoom applies to web pages",
+            icon: "magnifyingglass",
+            iconColor: .secondary
+        )
     }
 
     private func currentZoom(for tab: Tab?) -> Double {
@@ -1417,6 +1469,14 @@ final class BrowserViewModel {
             if let groupID = entry.groupID {
                 restoredTab.group = groupsByID[groupID]
             }
+            // Restore page zoom. Written before the web view exists, which is
+            // fine — `Tab.applyZoomLevel()` pushes it as soon as one does.
+            // Sessions saved before zoom was persisted decode as nil and stay
+            // at 100%. Clamped to the ladder's bounds so a hand-edited or
+            // corrupt value can't produce an unreadable page.
+            if let zoomLevel = entry.zoomLevel {
+                restoredTab.zoomLevel = PageZoom.clamped(zoomLevel)
+            }
         }
 
         // Select the previously active tab
@@ -1466,12 +1526,7 @@ final class BrowserViewModel {
             do {
                 try pngData.write(to: fileURL)
                 DispatchQueue.main.async {
-                    self.screenshotToastMessage = "Screenshot saved to Downloads"
-                    self.showScreenshotToast = true
-                    // Auto-dismiss after 3 seconds
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
-                        self.showScreenshotToast = false
-                    }
+                    self.showStatusToast("Screenshot saved to Downloads", icon: "camera.fill")
                 }
             } catch {
                 // Silently fail

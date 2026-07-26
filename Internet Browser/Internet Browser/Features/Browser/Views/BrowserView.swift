@@ -668,8 +668,8 @@ struct BrowserView: View {
     private var screenshotToastOverlay: some View {
         if viewModel.showScreenshotToast {
             HStack(spacing: 8) {
-                Image(systemName: "camera.fill")
-                    .foregroundStyle(.green)
+                Image(systemName: viewModel.screenshotToastIcon)
+                    .foregroundStyle(viewModel.screenshotToastIconColor)
                 Text(viewModel.screenshotToastMessage)
                     .font(.system(size: 13))
             }

@@ -158,4 +158,24 @@ enum CommandRouting {
         guard let window, let keyWindow else { return false }
         return window === keyWindow
     }
+
+    /// "The candidate hosted by the key window, or else the first candidate" —
+    /// the pattern used to pick a target window for something that has to land
+    /// *somewhere* (an extension's new tab, a Settings link opening in Cherry).
+    ///
+    /// Shared rather than spelled out per site for the same reason as
+    /// `shouldRun`: the hand-written
+    /// `first { $0.associatedWindow === keyWindow } ?? first` picks an
+    /// UNREGISTERED window whenever there's no key window, because
+    /// `nil === nil` is true — so instead of falling through to the
+    /// deterministic first candidate it grabs an arbitrary one. Routing the
+    /// match through `shouldRun` makes the fallback actually happen.
+    @MainActor
+    static func preferringKeyWindow<Candidate>(
+        _ candidates: [Candidate],
+        keyWindow: NSWindow?,
+        window: (Candidate) -> NSWindow?
+    ) -> Candidate? {
+        candidates.first { shouldRun(in: window($0), keyWindow: keyWindow) } ?? candidates.first
+    }
 }

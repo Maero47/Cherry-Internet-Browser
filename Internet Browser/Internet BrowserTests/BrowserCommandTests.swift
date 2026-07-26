@@ -104,4 +104,72 @@ final class BrowserCommandTests: XCTestCase {
         let passing = candidates.filter { CommandRouting.shouldRun(in: $0, keyWindow: nil) }
         XCTAssertTrue(passing.isEmpty)
     }
+
+    // MARK: - "Key window, else the first" targeting
+    //
+    // Used where something has to land SOMEWHERE (an extension opening a tab,
+    // a Settings link opening in Cherry) rather than being dropped.
+
+    /// A stand-in for the view models the real call sites pass.
+    private struct WindowHolder {
+        let name: String
+        let window: NSWindow?
+    }
+
+    @MainActor
+    func testPrefersTheKeyWindowsCandidate() {
+        let first = NSWindow()
+        let key = NSWindow()
+        let candidates = [
+            WindowHolder(name: "first", window: first),
+            WindowHolder(name: "key", window: key)
+        ]
+
+        let picked = CommandRouting.preferringKeyWindow(
+            candidates, keyWindow: key, window: { $0.window }
+        )
+        XCTAssertEqual(picked?.name, "key")
+    }
+
+    @MainActor
+    func testFallsBackToTheFirstCandidateWhenNoneIsKey() {
+        let candidates = [
+            WindowHolder(name: "first", window: NSWindow()),
+            WindowHolder(name: "second", window: NSWindow())
+        ]
+
+        let picked = CommandRouting.preferringKeyWindow(
+            candidates, keyWindow: NSWindow(), window: { $0.window }
+        )
+        XCTAssertEqual(picked?.name, "first")
+    }
+
+    /// The residue fixed in round 2: hand-written as
+    /// `first { $0.window === keyWindow } ?? first`, this returned the
+    /// UNREGISTERED candidate — `nil === nil` is true — instead of falling
+    /// through to the deterministic first one.
+    @MainActor
+    func testAnUnregisteredCandidateIsNotMistakenForTheKeyWindow() {
+        let candidates = [
+            WindowHolder(name: "registered-first", window: NSWindow()),
+            WindowHolder(name: "unregistered", window: nil)
+        ]
+
+        let picked = CommandRouting.preferringKeyWindow(
+            candidates, keyWindow: nil, window: { $0.window }
+        )
+        XCTAssertEqual(
+            picked?.name,
+            "registered-first",
+            "with no key window the fallback must be the first candidate, not the nil-windowed one"
+        )
+    }
+
+    @MainActor
+    func testNoCandidatesYieldsNil() {
+        let picked = CommandRouting.preferringKeyWindow(
+            [WindowHolder](), keyWindow: NSWindow(), window: { $0.window }
+        )
+        XCTAssertNil(picked)
+    }
 }
