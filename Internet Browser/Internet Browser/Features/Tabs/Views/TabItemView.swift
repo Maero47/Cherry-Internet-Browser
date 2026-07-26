@@ -32,10 +32,11 @@ struct TabItemView: View {
     @State private var isHovering = false
     @State private var previewTask: Task<Void, Never>?
     /// Hit rectangles of the row's small buttons, in global space, kept current
-    /// by `.onGeometryChange`. A press that starts inside one belongs to that
-    /// button, so the tab's own click handling stands down — see
-    /// `TabInteraction.pressIsOnControl` for why this is a location and not a
-    /// remembered hover.
+    /// by `.onGeometryChange`. A press is claimed by a button only when it is
+    /// pressed AND released inside the SAME rectangle — that is exactly when
+    /// the button fires — and the tab's own click handling stands down for
+    /// those and only those. See `TabInteraction.pressIsConsumedByControl` for
+    /// why this is a location and not a remembered hover.
     @State private var closeControlFrame: CGRect = .zero
     @State private var muteControlFrame: CGRect = .zero
     /// Set by whichever of the two click paths (`onTapGesture` or the

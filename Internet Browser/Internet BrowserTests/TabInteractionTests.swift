@@ -65,33 +65,27 @@ final class TabInteractionTests: XCTestCase {
         }
     }
 
-    // MARK: - Press arbitration (which press belongs to a control)
+    // MARK: - Press arbitration (which presses a control claims)
 
     /// A tab row 240 pt wide at global x 100, with its close button's 20 pt hit
     /// target at the trailing end.
     private let closeHitRect = CGRect(x: 296, y: 8, width: 20, height: 20)
 
-    func testPressOnTheCloseButtonBelongsToTheControl() {
-        XCTAssertTrue(
-            TabInteraction.pressIsOnControl(at: CGPoint(x: 306, y: 18),
-                                            controlFrames: [closeHitRect])
+    /// A press that neither moves nor lands on a control.
+    private func press(at point: CGPoint, controlFrames: [CGRect]) -> Bool {
+        TabInteraction.pressIsConsumedByControl(
+            start: point, end: point, controlFrames: controlFrames
         )
     }
 
-    func testPressOnTheTabBodyDoesNotBelongToTheControl() {
-        XCTAssertFalse(
-            TabInteraction.pressIsOnControl(at: CGPoint(x: 150, y: 18),
-                                            controlFrames: [closeHitRect])
-        )
+    func testPressOnTheTabBodyIsNotConsumedByAControl() {
+        XCTAssertFalse(press(at: CGPoint(x: 150, y: 18), controlFrames: [closeHitRect]))
     }
 
     func testPressJustOutsideTheControlBelongsToTheTabBody() {
         // The strip immediately before the button must still select the tab —
         // a guard that is too wide would be a new click-eater.
-        XCTAssertFalse(
-            TabInteraction.pressIsOnControl(at: CGPoint(x: 295, y: 18),
-                                            controlFrames: [closeHitRect])
-        )
+        XCTAssertFalse(press(at: CGPoint(x: 295, y: 18), controlFrames: [closeHitRect]))
     }
 
     func testAControlThatIsNotOnScreenClaimsNothing() {
@@ -99,23 +93,18 @@ final class TabInteractionTests: XCTestCase {
         // press anywhere belongs to the tab. This is the property that lingering
         // hover flags could not provide: they stayed `true` after the unmute
         // button vanished under the pointer and then swallowed every click.
-        XCTAssertFalse(
-            TabInteraction.pressIsOnControl(at: CGPoint(x: 306, y: 18), controlFrames: [])
-        )
+        XCTAssertFalse(press(at: CGPoint(x: 306, y: 18), controlFrames: []))
     }
 
     func testAnUnlaidOutControlFrameClaimsNothing() {
         // `.zero` is the pre-layout value of the frame state.
-        XCTAssertFalse(
-            TabInteraction.pressIsOnControl(at: .zero, controlFrames: [.zero])
-        )
+        XCTAssertFalse(press(at: .zero, controlFrames: [.zero]))
     }
 
     func testAnyOfSeveralControlsCanClaimThePress() {
         let muteHitRect = CGRect(x: 268, y: 8, width: 20, height: 20)
         XCTAssertTrue(
-            TabInteraction.pressIsOnControl(at: CGPoint(x: 278, y: 18),
-                                            controlFrames: [closeHitRect, muteHitRect])
+            press(at: CGPoint(x: 278, y: 18), controlFrames: [closeHitRect, muteHitRect])
         )
     }
 

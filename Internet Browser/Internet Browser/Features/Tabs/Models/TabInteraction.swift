@@ -61,25 +61,9 @@ enum TabInteraction {
         return frame.insetBy(dx: inset, dy: inset)
     }
 
-    /// True when a press at `point` belongs to one of the row's controls
-    /// (close, unmute) rather than to the tab body — which is how one press is
-    /// kept from both closing and selecting a tab.
-    ///
-    /// Arbitration is by press LOCATION on purpose. The obvious alternative —
-    /// remembering which control the pointer last hovered — goes stale the
-    /// moment a control leaves the hierarchy while the pointer is still on it
-    /// (click unmute and the button vanishes under the cursor, so its hover-exit
-    /// never arrives), and a stuck flag would silently swallow every later click
-    /// on that tab. A location has no memory to get stuck.
-    ///
-    /// Only frames of controls that are actually on screen may be passed in;
-    /// callers gate each frame on the same condition that renders it.
-    static func pressIsOnControl(at point: CGPoint, controlFrames: [CGRect]) -> Bool {
-        controlFrames.contains { !$0.isEmpty && $0.contains(point) }
-    }
-
-    /// True when one of the row's controls will actually consume this press, so
-    /// the tab's own click handling must stand down.
+    /// True when one of the row's controls (close, unmute) will actually consume
+    /// this press, so the tab's own click handling must stand down — which is
+    /// how one press is kept from both closing and selecting a tab.
     ///
     /// It takes BOTH endpoints, and both must be on the SAME control, because
     /// that is exactly when a SwiftUI `Button` fires: press-in and release-in.
@@ -88,7 +72,20 @@ enum TabInteraction {
     /// it, and the Button didn't fire (released out), the tab's click handling
     /// vetoed itself (pressed in), and the click did nothing at all. Falling
     /// through to "select" in that case is right: the control did not act, so
-    /// the press means what a press on the tab body means.
+    /// the press means what a press on the tab body means. Endpoints on two
+    /// DIFFERENT controls are the same story — neither button fires — which is
+    /// why this asks for one frame containing both, not merely for each
+    /// endpoint to be on some control.
+    ///
+    /// Arbitration is by LOCATION on purpose. The obvious alternative —
+    /// remembering which control the pointer last hovered — goes stale the
+    /// moment a control leaves the hierarchy while the pointer is still on it
+    /// (click unmute and the button vanishes under the cursor, so its hover-exit
+    /// never arrives), and a stuck flag would silently swallow every later click
+    /// on that tab. A location has no memory to get stuck.
+    ///
+    /// Only frames of controls that are actually on screen may be passed in;
+    /// callers gate each frame on the same condition that renders it.
     static func pressIsConsumedByControl(
         start: CGPoint, end: CGPoint, controlFrames: [CGRect]
     ) -> Bool {

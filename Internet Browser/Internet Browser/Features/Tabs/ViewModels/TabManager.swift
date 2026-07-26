@@ -128,8 +128,13 @@ final class TabManager {
         /// window while the application is hidden (⌘H). A tab closed from a
         /// non-UI path while the app is hidden would otherwise look like the
         /// last window closing and take every hidden window's tabs with it.
-        /// While hidden the app therefore never quits itself; it quits on the
-        /// next close once the user brings it back.
+        ///
+        /// `appIsHidden` is only exact because the caller removes the window it
+        /// just closed from the list (see `livenessSnapshot`) — closed windows
+        /// linger in `NSApp.windows` with `isReleasedWhenClosed = false`, and
+        /// while hidden they are indistinguishable from merely-hidden ones.
+        /// With the closed window gone, every remaining `!isVisible` window is
+        /// unambiguously hidden rather than closed.
         func keepsAppAlive(appIsHidden: Bool) -> Bool {
             isTitled && !isPanel && (isVisible || isMiniaturized || appIsHidden)
         }
@@ -149,11 +154,25 @@ final class TabManager {
         !windows.contains { $0.keepsAppAlive(appIsHidden: appIsHidden) }
     }
 
+    /// What the termination policy should see once `closedWindow` has been
+    /// closed. Closing a window does NOT take it out of `NSApp.windows` — every
+    /// browser window sets `isReleasedWhenClosed = false` — so it must be
+    /// excluded explicitly. Without that, closing the genuinely last window
+    /// while the app is hidden would find its own corpse in the list, count it
+    /// as a hidden window, and leave the app resident with nothing open and no
+    /// further close to trigger a re-check.
+    nonisolated static func livenessSnapshot(
+        of windows: [NSWindow], excluding closedWindow: NSWindow?
+    ) -> [WindowLiveness] {
+        windows.filter { $0 !== closedWindow }.map(WindowLiveness.init)
+    }
+
     /// Terminates the app if no window is left that should keep it alive.
-    /// Called after the manager closes its own (now tabless) window.
-    private static func terminateIfNoWindowsRemain() {
+    /// Called after the manager closes its own (now tabless) window, which is
+    /// passed in so it can be excluded.
+    private static func terminateIfNoWindowsRemain(excluding closedWindow: NSWindow?) {
         let shouldTerminate = shouldTerminateApp(
-            windows: NSApp.windows.map(WindowLiveness.init),
+            windows: livenessSnapshot(of: NSApp.windows, excluding: closedWindow),
             appIsHidden: NSApp.isHidden
         )
         if shouldTerminate {
@@ -268,10 +287,9 @@ final class TabManager {
         if tabs.isEmpty {
             // Close THIS manager's window (the emptied source), not keyWindow —
             // during a cross-window drag keyWindow is often the drop target.
-            if let window = hostWindow ?? NSApp.keyWindow {
-                window.close()
-            }
-            Self.terminateIfNoWindowsRemain()
+            let closedWindow = hostWindow ?? NSApp.keyWindow
+            closedWindow?.close()
+            Self.terminateIfNoWindowsRemain(excluding: closedWindow)
             return tab
         } else if let promotedTabID {
             selectedTabID = promotedTabID
@@ -470,11 +488,10 @@ final class TabManager {
         if tabs.isEmpty {
             // Close this manager's own window when its last tab is closed —
             // hostWindow, not keyWindow (which may be a different focused window).
-            if let window = hostWindow ?? NSApp.keyWindow {
-                window.close()
-            }
+            let closedWindow = hostWindow ?? NSApp.keyWindow
+            closedWindow?.close()
             // If no window is left that should keep the app alive, quit
-            Self.terminateIfNoWindowsRemain()
+            Self.terminateIfNoWindowsRemain(excluding: closedWindow)
             return
         } else if let promotedTabID {
             selectedTabID = promotedTabID

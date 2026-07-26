@@ -612,9 +612,10 @@ private struct VerticalTabItemView: View {
 
     @State private var isHovering = false
     /// Hit rectangles of the row's small buttons, in global space, kept current
-    /// by `.onGeometryChange`. A press that starts inside one belongs to that
-    /// button — see `TabInteraction.pressIsOnControl` for why arbitration is by
-    /// location rather than by remembered hover.
+    /// by `.onGeometryChange`. A press is claimed by a button only when it is
+    /// pressed AND released inside the SAME rectangle — that is exactly when
+    /// the button fires. See `TabInteraction.pressIsConsumedByControl` for why
+    /// arbitration is by location rather than by remembered hover.
     @State private var closeControlFrame: CGRect = .zero
     @State private var muteControlFrame: CGRect = .zero
     /// Set by whichever of the two click paths resolves the current press

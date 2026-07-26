@@ -87,13 +87,6 @@ final class AppTerminationPolicyTests: XCTestCase {
         XCTAssertTrue(hiddenAppWindow.keepsAppAlive(appIsHidden: true))
     }
 
-    func testHiddenAppNeverTerminatesItself() {
-        XCTAssertFalse(
-            TabManager.shouldTerminateApp(windows: [closed()], appIsHidden: true),
-            "quitting waits until the app is back on screen"
-        )
-    }
-
     func testHiddenAppWithNoWindowsAtAllStillQuits() {
         XCTAssertTrue(TabManager.shouldTerminateApp(windows: [], appIsHidden: true))
     }
@@ -102,6 +95,62 @@ final class AppTerminationPolicyTests: XCTestCase {
         XCTAssertTrue(
             TabManager.shouldTerminateApp(windows: [helper(isVisible: false)], appIsHidden: true)
         )
+    }
+
+    // MARK: - The just-closed window must not vote
+
+    /// Closing a window does not remove it from `NSApp.windows` — every browser
+    /// window sets `isReleasedWhenClosed = false`. While the app is hidden its
+    /// corpse is indistinguishable from a merely-hidden window, so unless the
+    /// caller excludes it, closing the LAST window while hidden would find
+    /// itself in the list and leave the app resident with nothing open.
+
+    @MainActor
+    private func makeBrowserLikeWindow() -> NSWindow {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.isReleasedWhenClosed = false
+        return window
+    }
+
+    @MainActor
+    func testTheJustClosedWindowIsExcludedFromTheSnapshot() {
+        let closing = makeBrowserLikeWindow()
+        let other = makeBrowserLikeWindow()
+        let snapshot = TabManager.livenessSnapshot(of: [closing, other], excluding: closing)
+        XCTAssertEqual(snapshot.count, 1)
+    }
+
+    @MainActor
+    func testClosingTheLastWindowWhileHiddenQuits() {
+        // The residue this closes: with the closed window filtered out, nothing
+        // is left to keep the app alive, hidden or not.
+        let closing = makeBrowserLikeWindow()
+        let snapshot = TabManager.livenessSnapshot(of: [closing], excluding: closing)
+        XCTAssertTrue(TabManager.shouldTerminateApp(windows: snapshot, appIsHidden: true))
+        XCTAssertTrue(TabManager.shouldTerminateApp(windows: snapshot, appIsHidden: false))
+    }
+
+    @MainActor
+    func testClosingOneWindowWhileHiddenKeepsTheOtherAlive() {
+        // The data-loss case, still protected: the surviving window reports
+        // `isVisible == false` only because the app is hidden.
+        let closing = makeBrowserLikeWindow()
+        let survivor = makeBrowserLikeWindow()
+        let snapshot = TabManager.livenessSnapshot(of: [closing, survivor], excluding: closing)
+        XCTAssertFalse(snapshot[0].isVisible, "hidden app: not visible, not minimised")
+        XCTAssertFalse(snapshot[0].isMiniaturized)
+        XCTAssertFalse(TabManager.shouldTerminateApp(windows: snapshot, appIsHidden: true))
+    }
+
+    @MainActor
+    func testExcludingNothingLeavesTheListIntact() {
+        let window = makeBrowserLikeWindow()
+        XCTAssertEqual(TabManager.livenessSnapshot(of: [window], excluding: nil).count, 1)
     }
 
     @MainActor
