@@ -1,0 +1,18 @@
+{
+  "images" : [
+    {
+      "filename" : "AppIconAccentDB2777-512.png",
+      "idiom" : "universal",
+      "scale" : "1x"
+    },
+    {
+      "filename" : "AppIconAccentDB2777-1024.png",
+      "idiom" : "universal",
+      "scale" : "2x"
+    }
+  ],
+  "info" : {
+    "author" : "xcode",
+    "version" : 1
+  }
+}
