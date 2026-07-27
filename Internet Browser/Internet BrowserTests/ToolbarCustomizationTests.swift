@@ -1,0 +1,404 @@
+//
+//  ToolbarCustomizationTests.swift
+//  Internet BrowserTests
+//
+//  The pure half of toolbar customisation: `ToolbarLayout.resolve` turning
+//  whatever an older, newer or hand-edited defaults file holds into a layout
+//  the nav bar can draw, and the overflow-menu rule that keeps a hidden
+//  button invokable.
+//
+
+import XCTest
+import Observation
+@testable import Cherry
+
+final class ToolbarCustomizationTests: XCTestCase {
+
+    private func ids(_ items: [ToolbarItem]) -> [String] {
+        items.map(\.rawValue)
+    }
+
+    private let defaultIDs = ToolbarLayout.defaultOrder.map(\.rawValue)
+
+    // MARK: - Defaults
+
+    /// A fresh install has nothing stored and must look exactly like the
+    /// toolbar did before customisation existed.
+    func testEmptySavedDataGivesTheDefaults() {
+        let layout = ToolbarLayout.resolve(savedOrder: [], hidden: [])
+
+        XCTAssertEqual(layout.order, ToolbarLayout.defaultOrder)
+        XCTAssertTrue(layout.hidden.isEmpty)
+    }
+
+    /// The documented default order, spelled out — this is the order the nav
+    /// bar has always drawn, and a reshuffle of `allCases` would be a silent
+    /// visual change for every existing user.
+    func testDefaultOrderIsTheShippedToolbarOrder() {
+        XCTAssertEqual(
+            defaultIDs,
+            ["askThisPage", "home", "bookmark", "savePDF", "autoFill",
+             "adBlock", "focusMode", "readerMode", "privateMode"]
+        )
+        XCTAssertEqual(ToolbarLayout.defaultHidden, [])
+    }
+
+    func testSavedOrderIsHonoured() {
+        let saved = ["privateMode", "home", "askThisPage", "bookmark", "savePDF",
+                     "autoFill", "adBlock", "focusMode", "readerMode"]
+
+        XCTAssertEqual(ids(ToolbarLayout.resolve(savedOrder: saved, hidden: []).order), saved)
+    }
+
+    // MARK: - Stored-data repair
+
+    /// A button removed in a later build leaves its id behind; it must not
+    /// resurrect anything or shift the rest.
+    func testUnknownIDIsDropped() {
+        let saved = defaultIDs + ["timeMachine"]
+
+        let layout = ToolbarLayout.resolve(savedOrder: saved, hidden: [])
+
+        XCTAssertEqual(ids(layout.order), defaultIDs)
+    }
+
+    /// A duplicate must collapse to its FIRST occurrence — a button drawn
+    /// twice is worse than a button in a stale slot.
+    func testDuplicateIDCollapsesToItsFirstOccurrence() {
+        let saved = ["home", "bookmark", "home", "askThisPage", "bookmark"]
+
+        let layout = ToolbarLayout.resolve(savedOrder: saved, hidden: [])
+
+        XCTAssertEqual(Array(ids(layout.order).prefix(3)), ["home", "bookmark", "askThisPage"])
+        XCTAssertEqual(layout.order.count, ToolbarItem.allCases.count)
+        XCTAssertEqual(Set(layout.order), Set(ToolbarItem.allCases))
+    }
+
+    /// The case that quietly breaks the next feature: an order written by an
+    /// EARLIER build knows nothing about a button added since. It must appear,
+    /// at its default-order position — not vanish, and not land at the end.
+    func testUnseenItemIsInsertedAtItsDefaultPosition() {
+        // Everything except `savePDF` (default index 3), in default order —
+        // exactly what a build that predates that button would have written.
+        let saved = defaultIDs.filter { $0 != "savePDF" }
+
+        let layout = ToolbarLayout.resolve(savedOrder: saved, hidden: [])
+
+        XCTAssertEqual(ids(layout.order), defaultIDs)
+    }
+
+    /// Several unseen items at once keep their default order relative to each
+    /// other as well as to the items already stored.
+    func testSeveralUnseenItemsAreEachInsertedAtTheirDefaultPosition() {
+        let saved = ["home", "adBlock", "privateMode"]
+
+        let layout = ToolbarLayout.resolve(savedOrder: saved, hidden: [])
+
+        XCTAssertEqual(ids(layout.order), defaultIDs)
+    }
+
+    /// With a REORDERED saved layout the newcomer still lands beside the
+    /// neighbour it was designed to sit next to — right after the last item
+    /// that precedes it in default order.
+    func testUnseenItemFollowsItsDefaultPredecessorInAReorderedLayout() {
+        // User moved `home` to the front; `bookmark` (default index 2, right
+        // after `home`) is the button this build added.
+        let saved = ["home", "askThisPage", "savePDF", "autoFill",
+                     "adBlock", "focusMode", "readerMode", "privateMode"]
+
+        let layout = ToolbarLayout.resolve(savedOrder: saved, hidden: [])
+
+        XCTAssertEqual(
+            ids(layout.order),
+            ["home", "askThisPage", "bookmark", "savePDF", "autoFill",
+             "adBlock", "focusMode", "readerMode", "privateMode"]
+        )
+    }
+
+    /// An unseen item whose default position is first, with no predecessor in
+    /// the stored order, goes to the front rather than the back.
+    func testUnseenFirstItemGoesToTheFront() {
+        let saved = defaultIDs.filter { $0 != "askThisPage" }
+
+        let layout = ToolbarLayout.resolve(savedOrder: saved, hidden: [])
+
+        XCTAssertEqual(layout.order.first, .askThisPage)
+        XCTAssertEqual(ids(layout.order), defaultIDs)
+    }
+
+    /// Junk in the order never costs the user a button.
+    func testEveryCatalogueItemSurvivesGarbageInput() {
+        let layout = ToolbarLayout.resolve(
+            savedOrder: ["", "home", "HOME", "home", "🍒", "readerMode"],
+            hidden: []
+        )
+
+        XCTAssertEqual(Set(layout.order), Set(ToolbarItem.allCases))
+        XCTAssertEqual(layout.order.count, ToolbarItem.allCases.count)
+    }
+
+    // MARK: - Hidden set
+
+    func testHiddenSetIsFilteredToTheCatalogue() {
+        let layout = ToolbarLayout.resolve(
+            savedOrder: defaultIDs,
+            hidden: ["readerMode", "timeMachine", "", "savePDF"]
+        )
+
+        XCTAssertEqual(layout.hidden, [.readerMode, .savePDF])
+    }
+
+    /// Hiding changes visibility only — the item keeps its slot in the order,
+    /// so showing it again puts it back where it was.
+    func testHidingKeepsTheItemInTheOrder() {
+        let layout = ToolbarLayout.resolve(savedOrder: defaultIDs, hidden: ["readerMode"])
+
+        XCTAssertEqual(ids(layout.order), defaultIDs)
+        XCTAssertTrue(layout.hidden.contains(.readerMode))
+    }
+
+    // MARK: - Reset
+
+    func testResetRestoresDefaultOrderAndNothingHidden() {
+        let saved = ["privateMode", "readerMode", "home"]
+        let customised = ToolbarLayout.resolve(savedOrder: saved, hidden: ["home"])
+        XCTAssertNotEqual(customised.order, ToolbarLayout.defaultOrder)
+        XCTAssertFalse(customised.hidden.isEmpty)
+
+        // What `SettingsManager.resetToolbarLayout()` writes back.
+        let reset = ToolbarLayout.resolve(
+            savedOrder: ToolbarLayout.defaultOrder.map(\.rawValue),
+            hidden: []
+        )
+
+        XCTAssertEqual(reset.order, ToolbarLayout.defaultOrder)
+        XCTAssertEqual(reset.hidden, ToolbarLayout.defaultHidden)
+    }
+
+    // MARK: - Overflow menu
+
+    /// A hidden button is offered in the ⋯ menu, so hiding it never removes
+    /// the feature.
+    func testHiddenItemIsOverflowMenuEligible() {
+        let layout = ToolbarLayout.resolve(savedOrder: defaultIDs, hidden: ["readerMode"])
+
+        let overflow = ToolbarLayout.overflowItems(
+            order: layout.order,
+            hidden: layout.hidden,
+            isAvailable: { _ in true }
+        )
+
+        XCTAssertEqual(overflow, [.readerMode])
+    }
+
+    /// A button still ON the toolbar is not duplicated into the menu.
+    func testVisibleItemsAreNotOfferedInTheOverflowMenu() {
+        let layout = ToolbarLayout.resolve(savedOrder: defaultIDs, hidden: [])
+
+        let overflow = ToolbarLayout.overflowItems(
+            order: layout.order,
+            hidden: layout.hidden,
+            isAvailable: { _ in true }
+        )
+
+        XCTAssertTrue(overflow.isEmpty)
+    }
+
+    /// Availability still rules: no "Save PDF" entry when no PDF is open, even
+    /// though the button is hidden. The nav bar supplies the very same
+    /// condition it uses to decide whether to draw the button.
+    func testUnavailableHiddenItemStaysOutOfTheOverflowMenu() {
+        let layout = ToolbarLayout.resolve(
+            savedOrder: defaultIDs,
+            hidden: ["savePDF", "autoFill", "readerMode"]
+        )
+
+        let overflow = ToolbarLayout.overflowItems(
+            order: layout.order,
+            hidden: layout.hidden,
+            isAvailable: { $0 != .savePDF && $0 != .autoFill }
+        )
+
+        XCTAssertEqual(overflow, [.readerMode])
+    }
+
+    /// The menu lists hidden items in the user's own order, not catalogue order.
+    func testOverflowItemsFollowTheUsersOrder() {
+        let saved = ["readerMode", "home", "askThisPage", "bookmark", "savePDF",
+                     "autoFill", "adBlock", "focusMode", "privateMode"]
+        let layout = ToolbarLayout.resolve(savedOrder: saved, hidden: ["askThisPage", "readerMode"])
+
+        let overflow = ToolbarLayout.overflowItems(
+            order: layout.order,
+            hidden: layout.hidden,
+            isAvailable: { _ in true }
+        )
+
+        XCTAssertEqual(overflow, [.readerMode, .askThisPage])
+    }
+
+    // MARK: - Catalogue
+
+    /// Persisted ids are forever: renaming a case silently returns that button
+    /// to its default slot for every user who had moved it.
+    func testCatalogueIDsAreStable() {
+        XCTAssertEqual(
+            Set(ToolbarItem.allCases.map(\.rawValue)),
+            ["askThisPage", "home", "bookmark", "savePDF", "autoFill",
+             "adBlock", "focusMode", "readerMode", "privateMode"]
+        )
+    }
+
+    /// Structural controls are not customisable and must never enter the
+    /// catalogue.
+    func testStructuralControlsAreNotInTheCatalogue() {
+        let ids = Set(ToolbarItem.allCases.map(\.rawValue))
+        for structural in ["back", "forward", "reload", "stop", "omnibox", "extensions", "menu"] {
+            XCTAssertFalse(ids.contains(structural), "\(structural) must not be customisable")
+        }
+    }
+
+    func testEveryItemHasATitleAndAnIcon() {
+        for item in ToolbarItem.allCases {
+            XCTAssertFalse(item.title.isEmpty, "\(item.rawValue) has no title")
+            XCTAssertFalse(item.systemImage.isEmpty, "\(item.rawValue) has no icon")
+        }
+    }
+}
+
+/// The stored side: `SettingsManager`'s toolbar accessors, and the observation
+/// that carries a change made in one window's Settings to every open nav bar.
+final class ToolbarSettingsTests: XCTestCase {
+
+    private var savedOrder: [String] = []
+    private var savedHidden: Set<String> = []
+
+    override func setUp() {
+        super.setUp()
+        savedOrder = SettingsManager.shared.toolbarItemOrder
+        savedHidden = SettingsManager.shared.hiddenToolbarItems
+        SettingsManager.shared.toolbarItemOrder = []
+        SettingsManager.shared.hiddenToolbarItems = []
+    }
+
+    override func tearDown() {
+        SettingsManager.shared.toolbarItemOrder = savedOrder
+        SettingsManager.shared.hiddenToolbarItems = savedHidden
+        super.tearDown()
+    }
+
+    func testAFreshInstallReportsTheDefaultToolbar() {
+        XCTAssertTrue(SettingsManager.shared.toolbarIsDefault)
+        XCTAssertEqual(SettingsManager.shared.toolbarLayout.order, ToolbarLayout.defaultOrder)
+    }
+
+    func testHidingAndShowingRoundTrips() {
+        let settings = SettingsManager.shared
+
+        settings.setToolbarItem(.readerMode, hidden: true)
+        XCTAssertTrue(settings.isToolbarItemHidden(.readerMode))
+        XCTAssertFalse(settings.toolbarIsDefault)
+
+        settings.setToolbarItem(.readerMode, hidden: false)
+        XCTAssertFalse(settings.isToolbarItemHidden(.readerMode))
+        XCTAssertTrue(settings.toolbarIsDefault)
+    }
+
+    /// Hiding writes back the RESOLVED set, so an id left behind by another
+    /// build is cleaned out the first time the user touches the card.
+    func testHidingCleansStaleIDsOutOfStorage() {
+        let settings = SettingsManager.shared
+        settings.hiddenToolbarItems = ["timeMachine", "readerMode"]
+
+        settings.setToolbarItem(.savePDF, hidden: true)
+
+        XCTAssertEqual(settings.hiddenToolbarItems, ["readerMode", "savePDF"])
+    }
+
+    func testMovingAnItemSwapsItWithItsNeighbour() {
+        let settings = SettingsManager.shared
+
+        settings.moveToolbarItem(.home, by: -1)
+
+        XCTAssertEqual(
+            settings.toolbarLayout.order.map(\.rawValue).prefix(2),
+            ["home", "askThisPage"]
+        )
+    }
+
+    func testMovingPastEitherEndIsANoOp() {
+        let settings = SettingsManager.shared
+
+        settings.moveToolbarItem(ToolbarLayout.defaultOrder.first!, by: -1)
+        settings.moveToolbarItem(ToolbarLayout.defaultOrder.last!, by: 1)
+
+        XCTAssertEqual(settings.toolbarLayout.order, ToolbarLayout.defaultOrder)
+    }
+
+    func testResetRestoresTheStockToolbar() {
+        let settings = SettingsManager.shared
+        settings.moveToolbarItem(.privateMode, by: -1)
+        settings.setToolbarItem(.home, hidden: true)
+        XCTAssertFalse(settings.toolbarIsDefault)
+
+        settings.resetToolbarLayout()
+
+        XCTAssertTrue(settings.toolbarIsDefault)
+        XCTAssertEqual(settings.toolbarLayout.order, ToolbarLayout.defaultOrder)
+        XCTAssertEqual(settings.toolbarLayout.hidden, ToolbarLayout.defaultHidden)
+    }
+
+    /// Live propagation, at the level SwiftUI actually works at: reading
+    /// `toolbarLayout` — the single property `NavigationBarView.body` reads —
+    /// registers a dependency that fires when Settings changes the layout.
+    /// That is the same `@Observable` invalidation SwiftUI wraps every `body`
+    /// in, so every open window's nav bar is redrawn, not just the one whose
+    /// Settings page was used.
+    func testChangingTheLayoutNotifiesEveryReaderOfToolbarLayout() {
+        var hideFired = false
+        withObservationTracking {
+            _ = SettingsManager.shared.toolbarLayout
+        } onChange: {
+            hideFired = true
+        }
+
+        SettingsManager.shared.setToolbarItem(.readerMode, hidden: true)
+        XCTAssertTrue(hideFired, "hiding a button must invalidate readers of toolbarLayout")
+
+        var moveFired = false
+        withObservationTracking {
+            _ = SettingsManager.shared.toolbarLayout
+        } onChange: {
+            moveFired = true
+        }
+
+        SettingsManager.shared.moveToolbarItem(.home, by: -1)
+        XCTAssertTrue(moveFired, "reordering must invalidate readers of toolbarLayout")
+
+        var resetFired = false
+        withObservationTracking {
+            _ = SettingsManager.shared.toolbarLayout
+        } onChange: {
+            resetFired = true
+        }
+
+        SettingsManager.shared.resetToolbarLayout()
+        XCTAssertTrue(resetFired, "resetting must invalidate readers of toolbarLayout")
+    }
+
+    /// The layout survives a relaunch: what the accessors write is what a
+    /// fresh `resolve` of the stored strings reads back.
+    func testChangesPersistToTheStoredStrings() {
+        let settings = SettingsManager.shared
+        settings.moveToolbarItem(.privateMode, by: -1)
+        settings.setToolbarItem(.savePDF, hidden: true)
+
+        let reloaded = ToolbarLayout.resolve(
+            savedOrder: settings.toolbarItemOrder,
+            hidden: settings.hiddenToolbarItems
+        )
+
+        XCTAssertEqual(reloaded.order, settings.toolbarLayout.order)
+        XCTAssertEqual(reloaded.hidden, [.savePDF])
+    }
+}

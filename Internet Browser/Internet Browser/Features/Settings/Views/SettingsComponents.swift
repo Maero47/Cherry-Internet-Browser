@@ -121,6 +121,76 @@ struct SettingsLabeledRow<Control: View>: View {
     }
 }
 
+/// One customisable navigation-bar button in General ▸ Toolbar: its icon and
+/// name, ↑/↓ to move it, and an eye button to take it off the bar.
+///
+/// The eye is a button rather than a `Toggle` switch because the state it
+/// reports is "shown / hidden", which the eye and `eye.slash` symbols say at a
+/// glance and in one control the row already has room for.
+struct ToolbarItemRow: View {
+    let item: ToolbarItem
+    let isHidden: Bool
+    let canMoveUp: Bool
+    let canMoveDown: Bool
+    let onToggleHidden: () -> Void
+    let onMoveUp: () -> Void
+    let onMoveDown: () -> Void
+
+    private var accent: Color { SettingsManager.shared.accentColor }
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: item.systemImage)
+                .font(.system(size: 12))
+                .foregroundStyle(isHidden ? Color.secondary : accent)
+                .frame(width: 20)
+
+            Text(item.title)
+                .font(.system(size: 13))
+                .foregroundStyle(isHidden ? .secondary : .primary)
+
+            Spacer(minLength: 12)
+
+            HStack(spacing: 2) {
+                Button(action: onMoveUp) {
+                    Image(systemName: "chevron.up")
+                        .font(.system(size: 11, weight: .semibold))
+                        .frame(width: 22, height: 20)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.borderless)
+                .disabled(!canMoveUp)
+                .help("Move \(item.title) left")
+                .accessibilityLabel("Move \(item.title) left")
+
+                Button(action: onMoveDown) {
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 11, weight: .semibold))
+                        .frame(width: 22, height: 20)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.borderless)
+                .disabled(!canMoveDown)
+                .help("Move \(item.title) right")
+                .accessibilityLabel("Move \(item.title) right")
+            }
+
+            Button(action: onToggleHidden) {
+                Image(systemName: isHidden ? "eye.slash" : "eye")
+                    .font(.system(size: 12))
+                    .foregroundStyle(isHidden ? Color.secondary : accent)
+                    .frame(width: 26, height: 20)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.borderless)
+            .help(isHidden
+                  ? "\(item.title) is hidden — click to show it in the toolbar"
+                  : "Hide \(item.title) from the toolbar (it stays in the ⋯ menu)")
+            .accessibilityLabel(isHidden ? "Show \(item.title)" : "Hide \(item.title)")
+        }
+    }
+}
+
 /// Circular accent-color swatch with hover scale, selection ring and checkmark.
 struct AccentSwatch: View {
     let option: AccentColorOption

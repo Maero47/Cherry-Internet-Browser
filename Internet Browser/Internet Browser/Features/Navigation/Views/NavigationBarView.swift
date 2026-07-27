@@ -92,6 +92,58 @@ struct NavigationBarView: View {
         return tab.url?.host ?? tab.url?.absoluteString ?? ""
     }
 
+    /// The user's toolbar layout, read from the `@Observable` settings
+    /// singleton on every body pass — which is what makes a change made in one
+    /// window's Settings redraw the nav bar in every open window.
+    private var toolbarLayout: (order: [ToolbarItem], hidden: Set<ToolbarItem>) {
+        SettingsManager.shared.toolbarLayout
+    }
+
+    /// Whether `item`'s own condition to exist holds right now.
+    ///
+    /// These are the pre-existing per-button conditions, unchanged — a button
+    /// is drawn when this holds AND the user hasn't hidden it. The `⋯` menu's
+    /// hidden-items section asks the same question, so a hidden button is
+    /// offered there exactly when it would have been drawn here.
+    private func isAvailable(_ item: ToolbarItem) -> Bool {
+        switch item {
+        case .askThisPage:
+            onAskThisPage != nil && tab.url != nil && tab.internalPage == nil && !tab.showHomePage
+        case .home:
+            true
+        case .bookmark:
+            onBookmark != nil
+        case .savePDF:
+            isViewingPDF && onSavePDF != nil
+        case .autoFill:
+            loginFormDetected && onAutoFill != nil
+        case .adBlock:
+            SettingsManager.shared.adBlockEnabled && onToggleAdBlock != nil
+        case .focusMode:
+            onToggleFocusMode != nil
+        case .readerMode:
+            onToggleReaderMode != nil
+        case .privateMode:
+            onTogglePrivateMode != nil
+        }
+    }
+
+    /// The one place each customisable button's action lives, so the toolbar
+    /// button and its `⋯` menu stand-in genuinely run the same closure.
+    private func invoke(_ item: ToolbarItem) {
+        switch item {
+        case .askThisPage: onAskThisPage?()
+        case .home: onHome()
+        case .bookmark: onBookmark?()
+        case .savePDF: onSavePDF?()
+        case .autoFill: onAutoFill?()
+        case .adBlock: onToggleAdBlock?()
+        case .focusMode: onToggleFocusMode?()
+        case .readerMode: onToggleReaderMode?()
+        case .privateMode: onTogglePrivateMode?()
+        }
+    }
+
     /// Extra leading padding when vertical tabs are collapsed so nav buttons don't overlap traffic lights
     private var verticalTabsCollapsedPadding: CGFloat {
         if SettingsManager.shared.useVerticalTabs && isVerticalTabBarCollapsed {
@@ -224,6 +276,18 @@ struct NavigationBarView: View {
                 }
             }
         }
+        // Right-click the bar — the empty background between the buttons, and
+        // the buttons themselves, the way Safari's toolbar behaves — to reach
+        // the customisation UI. `contextMenu` answers secondary clicks only,
+        // so every left click the buttons and the omnibox used to get still
+        // reaches them.
+        .contextMenu {
+            Button {
+                onSettings?()
+            } label: {
+                Label("Customise Toolbar…", systemImage: "slider.horizontal.3")
+            }
+        }
         .overlay(alignment: .top) {
             if showWindowDragArea {
                 WindowDragAreaView()
@@ -320,185 +384,210 @@ struct NavigationBarView: View {
         }
     }
 
+    /// The customisable action buttons, in the user's order, minus the ones
+    /// they have hidden — followed by the always-present `⋯` menu.
     @ViewBuilder
     private var actionButtons: some View {
+        let layout = toolbarLayout
+        let visible = layout.order.filter { !layout.hidden.contains($0) && isAvailable($0) }
+        let overflow = ToolbarLayout.overflowItems(
+            order: layout.order,
+            hidden: layout.hidden,
+            isAvailable: isAvailable
+        )
+
         HStack(spacing: 2) {
-            // Ask This Page (on-device AI) — quick access, first action icon right
-            // by the search bar, immediately left of Home. Only on a real web page.
-            if let onAskThisPage,
-               tab.url != nil, tab.internalPage == nil, !tab.showHomePage {
-                Button(action: onAskThisPage) {
-                    Image(systemName: "sparkles")
-                        .font(.system(size: AppConstants.UI.toolbarIconSize, weight: .medium))
-                        .foregroundStyle(SettingsManager.shared.accentColor)
-                }
-                .buttonStyle(ToolbarButtonStyle())
-                .help("Ask This Page (Cmd+Shift+K)")
+            ForEach(visible, id: \.self) { item in
+                actionButton(for: item)
             }
 
-            // Home button
-            Button(action: onHome) {
+            overflowMenu(hiddenItems: overflow)
+        }
+    }
+
+    /// One customisable button. Each case is the button as it has always been
+    /// drawn — same symbol, same state-dependent tint, same tooltip; only the
+    /// decision of *whether* and *where* to draw it moved out.
+    @ViewBuilder
+    private func actionButton(for item: ToolbarItem) -> some View {
+        switch item {
+        case .askThisPage:
+            // Ask This Page (on-device AI) — quick access, first action icon right
+            // by the search bar, immediately left of Home. Only on a real web page.
+            Button { invoke(.askThisPage) } label: {
+                Image(systemName: "sparkles")
+                    .font(.system(size: AppConstants.UI.toolbarIconSize, weight: .medium))
+                    .foregroundStyle(SettingsManager.shared.accentColor)
+            }
+            .buttonStyle(ToolbarButtonStyle())
+            .help("Ask This Page (Cmd+Shift+K)")
+
+        case .home:
+            Button { invoke(.home) } label: {
                 Image(systemName: "house")
                     .font(.system(size: AppConstants.UI.toolbarIconSize, weight: .medium))
             }
             .buttonStyle(ToolbarButtonStyle())
             .help("Go Home")
 
-            // Bookmark button
-            if let onBookmark = onBookmark {
-                Button(action: onBookmark) {
-                    Image(systemName: isBookmarked ? "star.fill" : "star")
-                        .font(.system(size: AppConstants.UI.toolbarIconSize, weight: .medium))
-                        .foregroundStyle(isBookmarked ? Color.yellow : .primary)
-                }
-                .buttonStyle(ToolbarButtonStyle())
-                .help("Add Bookmark (Cmd+D)")
-            }
-
-            // Save PDF button — appears when viewing a PDF
-            if isViewingPDF, let onSavePDF = onSavePDF {
-                Button(action: onSavePDF) {
-                    Image(systemName: "arrow.down.doc")
-                        .font(.system(size: AppConstants.UI.toolbarIconSize, weight: .medium))
-                        .foregroundStyle(SettingsManager.shared.accentColor)
-                }
-                .buttonStyle(ToolbarButtonStyle())
-                .help("Save PDF")
-            }
-
-            // Password auto-fill key icon
-            if loginFormDetected, let onAutoFill = onAutoFill {
-                Button(action: onAutoFill) {
-                    Image(systemName: "key.fill")
-                        .font(.system(size: AppConstants.UI.toolbarIconSize, weight: .medium))
-                        .foregroundStyle(SettingsManager.shared.accentColor)
-                }
-                .buttonStyle(ToolbarButtonStyle())
-                .help("Auto-fill Password (Cmd+\\)")
-            }
-
-            // Ad blocker shield button
-            if SettingsManager.shared.adBlockEnabled, let onToggleAdBlock = onToggleAdBlock {
-                Button(action: onToggleAdBlock) {
-                    Image(systemName: isAdBlockPaused ? "shield.slash" : "shield.checkered")
-                        .font(.system(size: AppConstants.UI.toolbarIconSize, weight: .medium))
-                        .foregroundStyle(isAdBlockPaused ? .secondary : SettingsManager.shared.accentColor)
-                }
-                .buttonStyle(ToolbarButtonStyle())
-                .help(isAdBlockPaused ? "Ad blocker paused for this site" : "Ad blocker active — click to pause for this site")
-            }
-
-            // Focus mode button
-            if let onToggleFocusMode = onToggleFocusMode {
-                let isFocusOn = FocusModeManager.shared.focusModeEnabled
-                Button(action: onToggleFocusMode) {
-                    Image(systemName: "brain.head.profile")
-                        .font(.system(size: AppConstants.UI.toolbarIconSize, weight: .medium))
-                        .foregroundStyle(isFocusOn ? SettingsManager.shared.accentColor : .primary)
-                        .symbolVariant(isFocusOn ? .fill : .none)
-                }
-                .buttonStyle(ToolbarButtonStyle())
-                .help(isFocusOn ? "Focus Mode On — click to disable (Cmd+Shift+F)" : "Enable Focus Mode (Cmd+Shift+F)")
-            }
-
-            // Reader mode button
-            if let onToggleReaderMode = onToggleReaderMode {
-                Button(action: onToggleReaderMode) {
-                    Image(systemName: showReaderMode ? "book.fill" : "book")
-                        .font(.system(size: AppConstants.UI.toolbarIconSize, weight: .medium))
-                        .foregroundStyle(showReaderMode ? SettingsManager.shared.accentColor : .primary)
-                }
-                .buttonStyle(ToolbarButtonStyle())
-                .help("Reader Mode (Cmd+Shift+R)")
-            }
-
-            // Incognito mode button
-            if let onTogglePrivateMode = onTogglePrivateMode {
-                Button(action: onTogglePrivateMode) {
-                    Image(systemName: isPrivateMode ? "eye.slash.fill" : "eye.slash")
-                        .font(.system(size: AppConstants.UI.toolbarIconSize, weight: .medium))
-                        .foregroundStyle(isPrivateMode ? Color.purple : .primary)
-                }
-                .buttonStyle(ToolbarButtonStyle())
-                .help(isPrivateMode ? "Exit Incognito Mode" : "Enter Incognito Mode")
-            }
-
-            // 3-dot menu
-            Menu {
-                Button {
-                    onToggleBookmarks?()
-                } label: {
-                    Label("Bookmarks", systemImage: "book")
-                }
-
-                Button {
-                    onToggleHistory?()
-                } label: {
-                    Label("History", systemImage: "clock")
-                }
-
-                Button {
-                    onDownloads?()
-                } label: {
-                    Label("Downloads", systemImage: "arrow.down.circle")
-                }
-
-                Divider()
-
-                Button {
-                    onAskThisPage?()
-                } label: {
-                    Label("Ask This Page", systemImage: "sparkles")
-                }
-
-                Divider()
-
-                Button {
-                    onPrint?()
-                } label: {
-                    Label("Print Page", systemImage: "printer")
-                }
-
-                Button {
-                    onPictureInPicture?()
-                } label: {
-                    Label("Picture in Picture", systemImage: "pip.fill")
-                }
-
-                Button {
-                    onScreenshot?()
-                } label: {
-                    Label("Take Screenshot", systemImage: "camera")
-                }
-
-                Button {
-                    onQRCode?()
-                } label: {
-                    Label("QR Code", systemImage: "qrcode")
-                }
-
-                Divider()
-
-                Button {
-                    onSettings?()
-                } label: {
-                    Label("Settings", systemImage: "gear")
-                }
-            } label: {
-                Image(systemName: "ellipsis")
+        case .bookmark:
+            Button { invoke(.bookmark) } label: {
+                Image(systemName: isBookmarked ? "star.fill" : "star")
                     .font(.system(size: AppConstants.UI.toolbarIconSize, weight: .medium))
-                    .frame(width: 28, height: 28)
-                    .background(
-                        RoundedRectangle(cornerRadius: 6)
-                            .fill(Color.clear)
-                    )
-                    .contentShape(Rectangle())
+                    .foregroundStyle(isBookmarked ? Color.yellow : .primary)
             }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .frame(width: 28, height: 28)
-            .help("Menu")
+            .buttonStyle(ToolbarButtonStyle())
+            .help("Add Bookmark (Cmd+D)")
+
+        case .savePDF:
+            Button { invoke(.savePDF) } label: {
+                Image(systemName: "arrow.down.doc")
+                    .font(.system(size: AppConstants.UI.toolbarIconSize, weight: .medium))
+                    .foregroundStyle(SettingsManager.shared.accentColor)
+            }
+            .buttonStyle(ToolbarButtonStyle())
+            .help("Save PDF")
+
+        case .autoFill:
+            Button { invoke(.autoFill) } label: {
+                Image(systemName: "key.fill")
+                    .font(.system(size: AppConstants.UI.toolbarIconSize, weight: .medium))
+                    .foregroundStyle(SettingsManager.shared.accentColor)
+            }
+            .buttonStyle(ToolbarButtonStyle())
+            .help("Auto-fill Password (Cmd+\\)")
+
+        case .adBlock:
+            Button { invoke(.adBlock) } label: {
+                Image(systemName: isAdBlockPaused ? "shield.slash" : "shield.checkered")
+                    .font(.system(size: AppConstants.UI.toolbarIconSize, weight: .medium))
+                    .foregroundStyle(isAdBlockPaused ? .secondary : SettingsManager.shared.accentColor)
+            }
+            .buttonStyle(ToolbarButtonStyle())
+            .help(isAdBlockPaused ? "Ad blocker paused for this site" : "Ad blocker active — click to pause for this site")
+
+        case .focusMode:
+            let isFocusOn = FocusModeManager.shared.focusModeEnabled
+            Button { invoke(.focusMode) } label: {
+                Image(systemName: "brain.head.profile")
+                    .font(.system(size: AppConstants.UI.toolbarIconSize, weight: .medium))
+                    .foregroundStyle(isFocusOn ? SettingsManager.shared.accentColor : .primary)
+                    .symbolVariant(isFocusOn ? .fill : .none)
+            }
+            .buttonStyle(ToolbarButtonStyle())
+            .help(isFocusOn ? "Focus Mode On — click to disable (Cmd+Shift+F)" : "Enable Focus Mode (Cmd+Shift+F)")
+
+        case .readerMode:
+            Button { invoke(.readerMode) } label: {
+                Image(systemName: showReaderMode ? "book.fill" : "book")
+                    .font(.system(size: AppConstants.UI.toolbarIconSize, weight: .medium))
+                    .foregroundStyle(showReaderMode ? SettingsManager.shared.accentColor : .primary)
+            }
+            .buttonStyle(ToolbarButtonStyle())
+            .help("Reader Mode (Cmd+Shift+R)")
+
+        case .privateMode:
+            Button { invoke(.privateMode) } label: {
+                Image(systemName: isPrivateMode ? "eye.slash.fill" : "eye.slash")
+                    .font(.system(size: AppConstants.UI.toolbarIconSize, weight: .medium))
+                    .foregroundStyle(isPrivateMode ? Color.purple : .primary)
+            }
+            .buttonStyle(ToolbarButtonStyle())
+            .help(isPrivateMode ? "Exit Incognito Mode" : "Enter Incognito Mode")
         }
+    }
+
+    /// The 3-dot menu. `hiddenItems` are the buttons the user has taken off
+    /// the toolbar and that are usable right now: they lead the menu so
+    /// hiding a button is only ever a layout choice, never a loss of function.
+    @ViewBuilder
+    private func overflowMenu(hiddenItems: [ToolbarItem]) -> some View {
+        Menu {
+            if !hiddenItems.isEmpty {
+                ForEach(hiddenItems, id: \.self) { item in
+                    Button {
+                        invoke(item)
+                    } label: {
+                        Label(item.title, systemImage: item.systemImage)
+                    }
+                }
+
+                Divider()
+            }
+
+            Button {
+                onToggleBookmarks?()
+            } label: {
+                Label("Bookmarks", systemImage: "book")
+            }
+
+            Button {
+                onToggleHistory?()
+            } label: {
+                Label("History", systemImage: "clock")
+            }
+
+            Button {
+                onDownloads?()
+            } label: {
+                Label("Downloads", systemImage: "arrow.down.circle")
+            }
+
+            Divider()
+
+            Button {
+                onAskThisPage?()
+            } label: {
+                Label("Ask This Page", systemImage: "sparkles")
+            }
+
+            Divider()
+
+            Button {
+                onPrint?()
+            } label: {
+                Label("Print Page", systemImage: "printer")
+            }
+
+            Button {
+                onPictureInPicture?()
+            } label: {
+                Label("Picture in Picture", systemImage: "pip.fill")
+            }
+
+            Button {
+                onScreenshot?()
+            } label: {
+                Label("Take Screenshot", systemImage: "camera")
+            }
+
+            Button {
+                onQRCode?()
+            } label: {
+                Label("QR Code", systemImage: "qrcode")
+            }
+
+            Divider()
+
+            Button {
+                onSettings?()
+            } label: {
+                Label("Settings", systemImage: "gear")
+            }
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(.system(size: AppConstants.UI.toolbarIconSize, weight: .medium))
+                .frame(width: 28, height: 28)
+                .background(
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(Color.clear)
+                )
+                .contentShape(Rectangle())
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .frame(width: 28, height: 28)
+        .help("Menu")
     }
 }
 

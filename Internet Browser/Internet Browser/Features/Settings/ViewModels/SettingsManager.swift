@@ -206,6 +206,64 @@ final class SettingsManager {
         didSet { UserDefaults.standard.set(verticalTabBarCollapsed, forKey: Keys.verticalTabBarCollapsed) }
     }
 
+    // MARK: - Toolbar
+
+    /// The customisable nav-bar buttons, as persisted ids in the user's order.
+    /// Raw storage — read `toolbarLayout` instead, which repairs whatever an
+    /// older or newer build left here.
+    var toolbarItemOrder: [String] {
+        didSet { UserDefaults.standard.set(toolbarItemOrder, forKey: Keys.toolbarItemOrder) }
+    }
+
+    /// Ids of the buttons the user has hidden from the nav bar. Hidden is a
+    /// layout choice only: the nav bar keeps offering these in its `⋯` menu.
+    var hiddenToolbarItems: Set<String> {
+        didSet { UserDefaults.standard.set(Array(hiddenToolbarItems), forKey: Keys.hiddenToolbarItems) }
+    }
+
+    /// What the nav bar and Settings both render from. Computed on every read
+    /// rather than cached so it stays a plain function of the two stored
+    /// properties above — which is also what makes a change to either of them
+    /// invalidate every SwiftUI view that read it.
+    var toolbarLayout: (order: [ToolbarItem], hidden: Set<ToolbarItem>) {
+        ToolbarLayout.resolve(savedOrder: toolbarItemOrder, hidden: hiddenToolbarItems)
+    }
+
+    func isToolbarItemHidden(_ item: ToolbarItem) -> Bool {
+        toolbarLayout.hidden.contains(item)
+    }
+
+    func setToolbarItem(_ item: ToolbarItem, hidden: Bool) {
+        // Write back the resolved set, not `hiddenToolbarItems` verbatim, so
+        // stale ids get cleaned out the first time the user touches anything.
+        var resolved = toolbarLayout.hidden
+        if hidden { resolved.insert(item) } else { resolved.remove(item) }
+        hiddenToolbarItems = Set(resolved.map(\.rawValue))
+    }
+
+    /// Moves `item` one slot towards the start (`offset` -1) or end (+1) of
+    /// the toolbar. A move that would fall off either end is a no-op.
+    func moveToolbarItem(_ item: ToolbarItem, by offset: Int) {
+        var order = toolbarLayout.order
+        guard let from = order.firstIndex(of: item) else { return }
+        let to = from + offset
+        guard order.indices.contains(to) else { return }
+        order.swapAt(from, to)
+        toolbarItemOrder = order.map(\.rawValue)
+    }
+
+    /// Back to the stock toolbar: default order, nothing hidden.
+    func resetToolbarLayout() {
+        toolbarItemOrder = ToolbarLayout.defaultOrder.map(\.rawValue)
+        hiddenToolbarItems = []
+    }
+
+    /// True while the toolbar still looks exactly like a fresh install's.
+    var toolbarIsDefault: Bool {
+        let layout = toolbarLayout
+        return layout.order == ToolbarLayout.defaultOrder && layout.hidden == ToolbarLayout.defaultHidden
+    }
+
     // MARK: - Theme
 
     var appearanceMode: AppearanceMode {
@@ -469,6 +527,12 @@ final class SettingsManager {
         self.useVerticalTabs = defaults.bool(forKey: Keys.useVerticalTabs)
         self.verticalTabBarCollapsed = defaults.bool(forKey: Keys.verticalTabBarCollapsed)
 
+        // Toolbar. Stored raw and left exactly as found — absent keys mean an
+        // install that has never customised anything, and `ToolbarLayout`
+        // turns both that and any stale contents into a real layout on read.
+        self.toolbarItemOrder = defaults.stringArray(forKey: Keys.toolbarItemOrder) ?? []
+        self.hiddenToolbarItems = Set(defaults.stringArray(forKey: Keys.hiddenToolbarItems) ?? [])
+
         // Theme
         if let modeRaw = defaults.string(forKey: Keys.appearanceMode),
            let mode = AppearanceMode(rawValue: modeRaw) {
@@ -648,6 +712,8 @@ final class SettingsManager {
         static let showBookmarkBar = "showBookmarkBar"
         static let useVerticalTabs = "useVerticalTabs"
         static let verticalTabBarCollapsed = "verticalTabBarCollapsed"
+        static let toolbarItemOrder = "toolbarItemOrder"
+        static let hiddenToolbarItems = "hiddenToolbarItems"
         static let blockCookies = "blockCookies"
         static let httpsOnlyMode = "httpsOnlyMode"
         static let sendGlobalPrivacyControl = "sendGlobalPrivacyControl"

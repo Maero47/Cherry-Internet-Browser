@@ -194,6 +194,8 @@ struct GeneralSettingsView: View {
                 }
             }
 
+            toolbarCard
+
             SettingsCard(icon: "macwindow", title: "Window Layout") {
                 SettingsToggleRow(title: "Show Bookmark Bar", isOn: $settings.showBookmarkBar)
                 Divider()
@@ -280,6 +282,60 @@ struct GeneralSettingsView: View {
                             .foregroundStyle(.orange)
                     }
                 }
+            }
+        }
+    }
+
+    // MARK: - Toolbar
+
+    /// Which action buttons the navigation bar shows, and in what order.
+    ///
+    /// Reorder is ↑/↓ per row rather than drag-and-drop on purpose: this card
+    /// sits inside `SettingsPageView`'s `ScrollView`, and SwiftUI's `onMove`
+    /// needs a `List` — nesting one here fights the scroll view and the card's
+    /// self-sizing height. Buttons reorder reliably with the keyboard and
+    /// VoiceOver too, which drag never does.
+    @ViewBuilder
+    private var toolbarCard: some View {
+        let layout = settings.toolbarLayout
+
+        SettingsCard(
+            icon: "slider.horizontal.3",
+            title: "Toolbar",
+            subtitle: "Choose which buttons appear in the navigation bar, and their order. Hidden buttons stay available in the ⋯ menu."
+        ) {
+            ForEach(Array(layout.order.enumerated()), id: \.element) { index, item in
+                if index > 0 { Divider() }
+
+                ToolbarItemRow(
+                    item: item,
+                    isHidden: layout.hidden.contains(item),
+                    canMoveUp: index > 0,
+                    canMoveDown: index < layout.order.count - 1,
+                    onToggleHidden: {
+                        settings.setToolbarItem(item, hidden: !layout.hidden.contains(item))
+                    },
+                    onMoveUp: { settings.moveToolbarItem(item, by: -1) },
+                    onMoveDown: { settings.moveToolbarItem(item, by: 1) }
+                )
+            }
+
+            Divider()
+
+            HStack {
+                Text(layout.hidden.isEmpty
+                     ? "All buttons are shown."
+                     : "\(layout.hidden.count) hidden — still in the ⋯ menu.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+
+                Spacer()
+
+                Button("Reset to Defaults") {
+                    settings.resetToolbarLayout()
+                }
+                .controlSize(.small)
+                .disabled(settings.toolbarIsDefault)
             }
         }
     }
