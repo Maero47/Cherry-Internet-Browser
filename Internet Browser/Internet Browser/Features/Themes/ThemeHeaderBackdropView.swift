@@ -128,9 +128,11 @@ final class ThemeHeaderCanvasNSView: NSView, ThemeAnimationTickReceiver {
     }
 
     // viewDidMoveToWindow(nil) covers normal removal, but a closing window
-    // can dealloc the view tree without it — without this, the shared ticker
-    // (which does not retain its receivers) would keep firing for a window
-    // that is gone.
+    // can dealloc the view tree without it. The clock holds receivers weakly,
+    // so this canvas is already OUT of its table by the time deinit runs —
+    // what this call is for is making the clock re-check and invalidate the
+    // shared timer once the last animating canvas is gone, instead of leaving
+    // it firing for windows that no longer exist.
     deinit {
         ThemeAnimationClock.shared.removeReceiver(self)
     }
@@ -197,7 +199,7 @@ private final class BackgroundLayerRenderer {
     private let staticImage: NSImage
     private let frameSource: CGImageSource?
     private let frameDelays: [TimeInterval]
-    private var frameIndex = 0
+    private var cursor = ThemeAnimationFrameCursor()
     private var currentFrameImage: NSImage?
 
     /// Nil for static layers — the view only registers with the shared
@@ -228,9 +230,7 @@ private final class BackgroundLayerRenderer {
     /// changed, i.e. the layer needs redrawing.
     func updateFrame(elapsed: TimeInterval) -> Bool {
         guard frameSource != nil, !frameDelays.isEmpty else { return false }
-        let index = ThemeAnimationClock.frameIndex(elapsed: elapsed, delays: frameDelays)
-        guard index != frameIndex else { return false }
-        frameIndex = index
+        guard cursor.update(elapsed: elapsed, delays: frameDelays) else { return false }
         // Dropped, not replaced: `displayImage` re-decodes on demand, so only
         // the one visible frame is ever held.
         currentFrameImage = nil
@@ -242,7 +242,7 @@ private final class BackgroundLayerRenderer {
         if let cached = currentFrameImage { return cached }
         guard let cgImage = CGImageSourceCreateImageAtIndex(
             frameSource,
-            frameIndex,
+            cursor.frameIndex,
             [kCGImageSourceShouldCache: false] as CFDictionary
         ) else { return staticImage }
         let image = NSImage(cgImage: cgImage, size: staticImage.size)

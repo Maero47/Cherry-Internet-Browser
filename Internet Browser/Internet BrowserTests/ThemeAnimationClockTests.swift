@@ -110,54 +110,114 @@ final class ThemeAnimationClockTests: XCTestCase {
         XCTAssertEqual(clock.elapsed(themeID: themeID, now: 1_009), 9)
     }
 
-    /// A different theme gets its own loop from frame 0 rather than
-    /// inheriting the previous theme's position.
-    func testEachThemeGetsItsOwnStart() {
+    /// A different theme starts its own loop at frame 0 rather than
+    /// inheriting the previous theme's position — and the clock keeps only
+    /// the running theme, so it stops answering for a theme that has been
+    /// switched away from or removed (each import mints a fresh id, so a
+    /// table keyed by theme would grow forever).
+    func testSwitchingThemeRestartsTheClockAndForgetsTheOldOne() {
         let clock = ThemeAnimationClock.shared
         let first = "theme-a-\(UUID().uuidString)"
         let second = "theme-b-\(UUID().uuidString)"
 
         XCTAssertEqual(clock.elapsed(themeID: first, now: 1_000), 0)
+        XCTAssertEqual(clock.elapsed(themeID: first, now: 1_004), 4)
+
+        // Switching restarts the loop for the new theme…
         XCTAssertEqual(clock.elapsed(themeID: second, now: 1_007), 0)
-        XCTAssertEqual(clock.elapsed(themeID: first, now: 1_007), 7)
+        XCTAssertEqual(clock.elapsed(themeID: second, now: 1_009), 2)
+
+        // …and the old theme's start is gone, not remembered.
+        XCTAssertEqual(clock.elapsed(themeID: first, now: 1_009), 0)
     }
 
     // MARK: - The regression this whole change exists to prevent
 
-    /// The bug: the tab strip and the toolbar each ran their own timer from
-    /// their own creation, so they displayed different frames of the same
-    /// GIF. Here two surfaces are "created" 10.4s apart; reading the shared
-    /// clock they resolve to the same frame, while the old per-view timing
-    /// (each measuring from its own birth) demonstrably does not.
-    func testSurfacesCreatedAtDifferentTimesResolveToTheSameFrame() {
+    /// The bug: the tab strip and the toolbar each held their own frame
+    /// counter, driven by their own timer from their own creation, so they
+    /// displayed different frames of the same GIF and drifted further apart.
+    ///
+    /// This drives two genuinely independent frame-holding objects — the same
+    /// `ThemeAnimationFrameCursor` the renderer stores — created 10.4s apart
+    /// and pulled through the shared clock at the same instants, and checks
+    /// three things at every step: the late surface agrees with the early one,
+    /// BOTH match the frame the elapsed wall-clock time calls for (so a clock
+    /// that agreed by standing still, e.g. always answering 0, fails here),
+    /// and the animation actually moves.
+    func testTwoSurfacesCreatedAtDifferentTimesShowTheSameFrame() {
         let clock = ThemeAnimationClock.shared
         let themeID = "two-surfaces-\(UUID().uuidString)"
-        let firstSurfaceAppeared: TimeInterval = 1_000
-        let secondSurfaceAppeared = firstSurfaceAppeared + 10.4
+        let firstAppeared: TimeInterval = 1_000
+        let secondAppeared = firstAppeared + 10.4
 
-        // The first surface to render starts the theme's clock.
-        XCTAssertEqual(clock.elapsed(themeID: themeID, now: firstSurfaceAppeared), 0)
+        // Two surfaces, each with its own frame state, exactly as two chrome
+        // canvases hold one cursor per animated layer.
+        var early = ThemeAnimationFrameCursor()
+        var late = ThemeAnimationFrameCursor()
 
-        var perViewClocksEverDiverged = false
-        for now in stride(from: secondSurfaceAppeared, to: secondSurfaceAppeared + 3, by: 0.17) {
-            // Each surface asks the shared clock independently, as they do in
-            // their own draw passes.
-            let first = frame(clock.elapsed(themeID: themeID, now: now))
-            let second = frame(clock.elapsed(themeID: themeID, now: now))
-            XCTAssertEqual(first, second, "both surfaces must show the same frame at t=\(now)")
-
-            // Same instant, old behaviour: each surface measuring from its own
-            // creation. This is what the owner saw as "they don't move
-            // together".
-            if frame(now - firstSurfaceAppeared) != frame(now - secondSurfaceAppeared) {
-                perViewClocksEverDiverged = true
-            }
+        // The first surface to draw starts the theme's clock, then animates
+        // alone until the second one appears (a new window, a split pane, the
+        // toolbar coming back from fullscreen).
+        for now in stride(from: firstAppeared, to: secondAppeared, by: 0.11) {
+            _ = early.update(elapsed: clock.elapsed(themeID: themeID, now: now), delays: delays)
         }
-        // Guards the fixture itself: if these creation times stopped landing
-        // on different frames, the test above would pass for the wrong reason.
+
+        var framesSeen: Set<Int> = []
+        for now in stride(from: secondAppeared, to: secondAppeared + 4, by: 0.13) {
+            // Each surface reads the shared clock in its own draw pass.
+            _ = early.update(elapsed: clock.elapsed(themeID: themeID, now: now), delays: delays)
+            _ = late.update(elapsed: clock.elapsed(themeID: themeID, now: now), delays: delays)
+
+            XCTAssertEqual(
+                late.frameIndex, early.frameIndex,
+                "surfaces born 10.4s apart show different frames at t=\(now)"
+            )
+            // Independently of the clock: the frame the elapsed time calls for.
+            XCTAssertEqual(
+                early.frameIndex, frame(now - firstAppeared),
+                "the shared frame stopped tracking elapsed time at t=\(now)"
+            )
+            framesSeen.insert(early.frameIndex)
+        }
+
+        XCTAssertEqual(
+            framesSeen, Set(0..<delays.count),
+            "the surfaces agreed but the animation never ran through its frames"
+        )
+
+        // Guards the fixture: these two creation times must be ones the OLD
+        // per-view timing (each cursor measuring from its own birth) actually
+        // got wrong, or the assertions above would pass for the wrong reason.
+        var perViewEarly = ThemeAnimationFrameCursor()
+        var perViewLate = ThemeAnimationFrameCursor()
+        var perViewEverDiverged = false
+        for now in stride(from: secondAppeared, to: secondAppeared + 4, by: 0.13) {
+            _ = perViewEarly.update(elapsed: now - firstAppeared, delays: delays)
+            _ = perViewLate.update(elapsed: now - secondAppeared, delays: delays)
+            if perViewEarly.frameIndex != perViewLate.frameIndex { perViewEverDiverged = true }
+        }
         XCTAssertTrue(
-            perViewClocksEverDiverged,
+            perViewEverDiverged,
             "fixture no longer reproduces the per-view drift it is guarding against"
         )
+    }
+
+    /// A cursor never counts frames of its own: pulled to an arbitrary point
+    /// in the loop it lands there directly, so a surface that appears mid-loop
+    /// snaps to the shared frame instead of starting over at 0. Also pins the
+    /// "needs redrawing" answer the canvas uses to decide whether to repaint.
+    func testCursorJumpsStraightToTheSharedFrameAndReportsChanges() {
+        var cursor = ThemeAnimationFrameCursor()
+        XCTAssertEqual(cursor.frameIndex, 0)
+
+        XCTAssertTrue(cursor.update(elapsed: 10.4, delays: delays))
+        XCTAssertEqual(cursor.frameIndex, 1)
+
+        // Same frame again: no redraw.
+        XCTAssertFalse(cursor.update(elapsed: 10.6, delays: delays))
+        XCTAssertEqual(cursor.frameIndex, 1)
+
+        XCTAssertTrue(cursor.update(elapsed: 10.8, delays: delays))
+        XCTAssertEqual(cursor.frameIndex, 2)
     }
 }

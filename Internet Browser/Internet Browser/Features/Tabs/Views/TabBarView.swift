@@ -529,9 +529,16 @@ struct TabBarView: View {
                 Rectangle().fill(.bar)
                 if isPrivateMode { Color.purple.opacity(0.12) }
             }
-            // Specular highlight — light catching the top edge of the glass
-            Color.white.opacity(0.12)
-                .frame(height: 1)
+            // Specular highlight — light catching the top edge of the glass.
+            // There is no glass under a theme: the backdrop above is the
+            // theme's own header art, and a hardcoded white line composited
+            // onto it is the same overdraw as the seam hairline 0.5pt below.
+            // Same rule as there — the stock look and private windows (never
+            // themed) keep the highlight.
+            if isPrivateMode || !FirefoxThemeManager.shared.hasHeaderBackdrop {
+                Color.white.opacity(0.12)
+                    .frame(height: 1)
+            }
         }
     }
 }

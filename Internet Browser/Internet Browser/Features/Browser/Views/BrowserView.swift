@@ -903,9 +903,15 @@ struct BrowserContentView: View {
             } else if !viewModel.isVideoFullscreen {
                 // Unconditional on purpose: this is the chrome↔page boundary,
                 // the last row below the nav/bookmark bars, standing in for the
-                // progress bar. It marks where the themed chrome ENDS rather
-                // than cutting across it (Firefox keeps its toolbox bottom
-                // border under a theme too), and the page below is never themed.
+                // progress bar. Chrome needs separating from page content
+                // whatever the chrome looks like — Firefox keeps its toolbox
+                // bottom border under a theme for the same reason.
+                //
+                // Not free, though: under a TILING theme (`repeat`/`repeat-y`)
+                // the header art does reach the bottom of the bookmark bar, and
+                // this row is then a gap in it rather than a border at its edge.
+                // That is a known, accepted cost of keeping the boundary, not a
+                // case that doesn't arise.
                 Rectangle()
                     .fill(Color.primary.opacity(0.08))
                     .frame(height: 0.5)
