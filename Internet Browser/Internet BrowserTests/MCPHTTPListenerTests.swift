@@ -32,7 +32,8 @@ final class MCPHTTPListenerTests: XCTestCase {
     /// Bind on a high port picked per-run, so two test runs (or a running copy
     /// of Cherry on 8787) cannot collide.
     private func startListener(
-        handler: @escaping MCPHTTPListener.RequestHandler
+        handler: @escaping MCPHTTPListener.RequestHandler,
+        authorize: @escaping MCPHTTPListener.Authorizer = { _ in false }
     ) throws -> UInt16 {
         var candidate = UInt16.random(in: 20000...40000)
 
@@ -40,7 +41,7 @@ final class MCPHTTPListenerTests: XCTestCase {
             let settled = XCTestExpectation(description: "listener settled on \(candidate)")
             settled.assertForOverFulfill = false
 
-            let listener = MCPHTTPListener(handler: handler, statusChanged: { status in
+            let listener = MCPHTTPListener(handler: handler, authorize: authorize, statusChanged: { status in
                 switch status {
                 case .ready, .failed: settled.fulfill()
                 case .idle, .starting, .cancelled: break
@@ -84,6 +85,63 @@ final class MCPHTTPListenerTests: XCTestCase {
         }.resume()
         wait(for: [done], timeout: timeout + 5)
         return result
+    }
+
+    /// Send raw bytes and read everything back until the server closes.
+    ///
+    /// URLSession will not emit a malformed request line or a bogus
+    /// `Transfer-Encoding`, and those are exactly the framing refusals that must
+    /// not answer an unauthenticated caller with anything identifying.
+    private func sendRaw(_ request: String, port: UInt16, timeout: TimeInterval = 5) -> String {
+        let connection = NWConnection(
+            host: .ipv4(.loopback),
+            port: NWEndpoint.Port(rawValue: port)!,
+            using: .tcp
+        )
+        let received = Received()
+        let done = expectation(description: "raw exchange on \(port)")
+        done.assertForOverFulfill = false
+
+        func read() {
+            connection.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { data, _, isComplete, error in
+                if let data, !data.isEmpty { received.append(data) }
+                if isComplete || error != nil {
+                    done.fulfill()
+                } else {
+                    read()
+                }
+            }
+        }
+
+        connection.stateUpdateHandler = { state in
+            if case .ready = state {
+                connection.send(content: Data(request.utf8), completion: .contentProcessed { _ in })
+                read()
+            }
+            if case .failed = state { done.fulfill() }
+            if case .cancelled = state { done.fulfill() }
+        }
+        connection.start(queue: .global())
+        wait(for: [done], timeout: timeout)
+        connection.cancel()
+        return received.text
+    }
+
+    private final class Received: @unchecked Sendable {
+        private let lock = NSLock()
+        private var data = Data()
+
+        func append(_ chunk: Data) {
+            lock.lock()
+            data.append(chunk)
+            lock.unlock()
+        }
+
+        var text: String {
+            lock.lock()
+            defer { lock.unlock() }
+            return String(decoding: data, as: UTF8.self)
+        }
     }
 
     /// The machine's own non-loopback IPv4 address, if it has one.
@@ -205,6 +263,115 @@ final class MCPHTTPListenerTests: XCTestCase {
         XCTAssertFalse(MCPListenerStatus.starting.needsRestart)
         XCTAssertTrue(MCPListenerStatus.cancelled.needsRestart)
         XCTAssertTrue(MCPListenerStatus.failed(reason: "in use").needsRestart)
+    }
+
+    // MARK: - Framing refusals must not answer an unauthenticated caller
+
+    /// Framing-layer refusals used to return a JSON-RPC-shaped body before any
+    /// token check, so `Transfer-Encoding: chunked` alone fingerprinted Cherry
+    /// with no credentials at all — the exact recon the "unauthenticated callers
+    /// only ever see 401" invariant exists to deny. The header block parsed
+    /// here, so there IS a token to check, and it decides.
+    func testChunkedEncodingWithoutATokenGets401NotDetail() throws {
+        let port = try startListener(
+            handler: { _ in .data(Data("ok".utf8)) },
+            authorize: { headers in headers["authorization"] == "Bearer good" }
+        )
+
+        let response = sendRaw(
+            "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\nTransfer-Encoding: chunked\r\n\r\n",
+            port: port
+        )
+        XCTAssertTrue(response.hasPrefix("HTTP/1.1 401"), response)
+        XCTAssertFalse(response.contains("Transfer-Encoding is not supported"), response)
+        XCTAssertFalse(response.lowercased().contains("not implemented"), response)
+    }
+
+    /// …and with a valid token the caller gets the real, useful diagnosis.
+    func testChunkedEncodingWithAValidTokenGetsTheRealReason() throws {
+        let port = try startListener(
+            handler: { _ in .data(Data("ok".utf8)) },
+            authorize: { headers in headers["authorization"] == "Bearer good" }
+        )
+
+        let response = sendRaw(
+            "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer good\r\nTransfer-Encoding: chunked\r\n\r\n",
+            port: port
+        )
+        XCTAssertTrue(response.hasPrefix("HTTP/1.1 501"), response)
+        XCTAssertTrue(response.contains("Transfer-Encoding is not supported"), response)
+    }
+
+    func testOversizedContentLengthWithoutATokenGets401() throws {
+        let port = try startListener(
+            handler: { _ in .data(Data("ok".utf8)) },
+            authorize: { headers in headers["authorization"] == "Bearer good" }
+        )
+
+        let response = sendRaw(
+            "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: \(MCPHTTPWire.maxBodyBytes + 1)\r\n\r\n",
+            port: port
+        )
+        XCTAssertTrue(response.hasPrefix("HTTP/1.1 401"), response)
+    }
+
+    /// A malformed request line has no header block, so there is nothing to read
+    /// a token from and no way to authenticate the caller. It gets the status
+    /// and nothing else — no body, no `Content-Type`, nothing that names us.
+    func testMalformedRequestLineGetsABareStatusWithNoBody() throws {
+        let port = try startListener(
+            handler: { _ in .data(Data("ok".utf8)) },
+            authorize: { _ in true }
+        )
+
+        let response = sendRaw("GARBAGE\r\n\r\n", port: port)
+        XCTAssertTrue(response.hasPrefix("HTTP/1.1 400"), response)
+        XCTAssertTrue(response.contains("Content-Length: 0"), response)
+        XCTAssertFalse(response.contains("jsonrpc"), response)
+        XCTAssertFalse(response.contains("Malformed"), response)
+        XCTAssertFalse(response.lowercased().contains("content-type"), response)
+    }
+
+    // MARK: - Resource bounds
+
+    /// `maxBodyBytes` bounds one request; nothing bounded how many were in
+    /// flight. Past the cap the listener drops the connection without reading a
+    /// byte or writing a response — a 503 would be one more thing to fingerprint.
+    func testConcurrentConnectionsAreCapped() throws {
+        let port = try startListener { _ in .data(Data("ok".utf8)) }
+
+        // Fill the cap with connections that open a request and never finish it.
+        var held: [NWConnection] = []
+        defer { held.forEach { $0.cancel() } }
+
+        for _ in 0..<MCPHTTPListener.maxConcurrentConnections {
+            let connection = NWConnection(host: .ipv4(.loopback), port: NWEndpoint.Port(rawValue: port)!, using: .tcp)
+            connection.start(queue: .global())
+            connection.send(content: Data("POST /mcp HTTP/1.1\r\n".utf8), completion: .contentProcessed { _ in })
+            held.append(connection)
+        }
+        pause(0.5)
+
+        XCTAssertNil(
+            post(to: "127.0.0.1", port: port, timeout: 3).status,
+            "the \(MCPHTTPListener.maxConcurrentConnections + 1)th connection was served — nothing is bounding concurrency"
+        )
+
+        // …and the slots come back, so the cap is a bound rather than a wedge.
+        held.forEach { $0.cancel() }
+        held = []
+        pause(0.5)
+
+        XCTAssertEqual(
+            post(to: "127.0.0.1", port: port).status, 200,
+            "connection slots were never released"
+        )
+    }
+
+    private func pause(_ seconds: TimeInterval) {
+        let settled = XCTestExpectation(description: "pause")
+        DispatchQueue.global().asyncAfter(deadline: .now() + seconds) { settled.fulfill() }
+        _ = XCTWaiter().wait(for: [settled], timeout: seconds + 3)
     }
 
     // MARK: - Off by default

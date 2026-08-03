@@ -63,30 +63,38 @@ nonisolated struct MCPRequestServer: Sendable {
     let expectedToken: @Sendable () -> String?
     let invokeTool: ToolInvoker
 
-    func serve(_ request: HTTPRequest) async -> HTTPResponse {
-        // THE token check, and it happens here rather than only inside the
-        // transport's validation pipeline.
-        //
-        // `StatelessHTTPServerTransport.handleRequest` answers 405 (with
-        // `Allow: POST`) for a non-POST, and 400 "Empty request body" /
-        // "Invalid JSON-RPC message" for a body it cannot classify — all BEFORE
-        // it runs the pipeline. So a bearer validator that is merely first
-        // *inside* the pipeline is not first: an unauthenticated caller could
-        // still fingerprint Cherry on the port, and — the part that actually
-        // matters — attacker-controlled bytes reached `JSONRPCMessageKind`, a
-        // JSON decode over an unauthenticated body of up to 1 MB, before the
-        // token was ever compared.
-        //
-        // Nothing is allocated and no byte of the body is looked at until this
-        // returns nil.
-        let bearer = MCPBearerValidator(expectedToken: expectedToken)
-        if let refusal = bearer.validate(
-            request,
-            context: HTTPValidationContext(httpMethod: request.method.uppercased())
-        ) {
-            return refusal
-        }
+    var bearer: MCPBearerValidator { MCPBearerValidator(expectedToken: expectedToken) }
 
+    /// THE token check, and it happens before anything else touches the request.
+    ///
+    /// `StatelessHTTPServerTransport.handleRequest` answers 405 (with
+    /// `Allow: POST`) for a non-POST, and 400 "Empty request body" / "Invalid
+    /// JSON-RPC message" for a body it cannot classify — all BEFORE it runs the
+    /// pipeline. So a bearer validator that is merely first *inside* the
+    /// pipeline is not first: an unauthenticated caller could still fingerprint
+    /// Cherry on the port, and — the part that actually matters —
+    /// attacker-controlled bytes reached `JSONRPCMessageKind`, a JSON decode
+    /// over an unauthenticated body of up to 1 MB, before the token was ever
+    /// compared.
+    ///
+    /// Returns the refusal to send, or `nil` if the caller is authorised.
+    /// Nothing is allocated and no byte of the body is looked at either way.
+    func authenticate(_ request: HTTPRequest) -> HTTPResponse? {
+        bearer.validate(request, context: HTTPValidationContext(httpMethod: request.method.uppercased()))
+    }
+
+    /// Authenticate, then dispatch. Callers that need to distinguish the two —
+    /// the listener does, so unauthenticated requests never reach the main
+    /// actor — call the halves separately.
+    func serve(_ request: HTTPRequest) async -> HTTPResponse {
+        if let refusal = authenticate(request) { return refusal }
+        return await dispatch(request)
+    }
+
+    /// Build a fresh `Server` + transport for this one request and run it.
+    ///
+    /// **Only reachable once `authenticate` has passed.**
+    func dispatch(_ request: HTTPRequest) async -> HTTPResponse {
         let server = Server(
             name: serverName,
             version: serverVersion,
@@ -214,7 +222,10 @@ final class MCPServerManager {
         let store = MCPTokenStore.shared
         let token: String
         if includingToken {
-            token = store?.existingToken() ?? "<token>"
+            // A token that cannot be served safely is not shown either — the
+            // pane would otherwise hand the user a command that is about to be
+            // rejected by the server's own fail-closed check.
+            token = store?.tokenForAuthentication() ?? "<token>"
         } else if let path = store?.tokenFileURL.path {
             token = "$(cat \"\(path)\")"
         } else {
@@ -265,18 +276,29 @@ final class MCPServerManager {
             port: port,
             // Read from disk per request rather than capturing the string, so
             // rotating the token in Settings invalidates existing clients
-            // immediately without restarting the listener.
-            expectedToken: { MCPTokenStore.shared?.existingToken() },
+            // immediately without restarting the listener — and so a token that
+            // becomes unsecurable while the server runs locks it, rather than
+            // being served out of a directory someone else now controls.
+            expectedToken: { MCPTokenStore.shared?.tokenForAuthentication() },
             invokeTool: MCPToolStubs.notImplemented
         )
 
         let newListener = MCPHTTPListener(
             handler: { [weak self] request in
+                // Authenticate BEFORE any hop to the main actor. The telemetry
+                // below mutates `@Observable` state, so doing it first let any
+                // web page POST to the port and force two main-actor hops plus
+                // an observation invalidation — enough to drive a SwiftUI
+                // re-render — before the token was compared, and let
+                // unauthenticated garbage write the "last used" timestamp.
+                if let refusal = requestServer.authenticate(request) { return refusal }
+
                 await MainActor.run { self?.requestBegan() }
-                let response = await requestServer.serve(request)
+                let response = await requestServer.dispatch(request)
                 await MainActor.run { self?.requestEnded() }
                 return response
             },
+            authorize: { headers in requestServer.bearer.authorizes(headers: headers) },
             statusChanged: { [weak self] newStatus in
                 Task { @MainActor in self?.status = newStatus }
             }

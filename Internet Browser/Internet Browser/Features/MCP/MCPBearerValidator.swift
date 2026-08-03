@@ -58,6 +58,19 @@ nonisolated struct MCPBearerValidator: HTTPRequestValidator {
         return nil
     }
 
+    /// Whether these headers carry a valid token.
+    ///
+    /// For the framing layer, which may have to refuse a request (chunked
+    /// encoding, a bad `Content-Length`) before there is a whole `HTTPRequest`
+    /// to validate — but which has the headers, and so must still not answer an
+    /// unauthenticated caller with anything but `401`.
+    func authorizes(headers: [String: String]) -> Bool {
+        validate(
+            HTTPRequest(method: "POST", headers: headers),
+            context: HTTPValidationContext(httpMethod: "POST")
+        ) == nil
+    }
+
     // MARK: - Parsing
 
     /// The token out of `Bearer <token>`, or `nil` for anything else.

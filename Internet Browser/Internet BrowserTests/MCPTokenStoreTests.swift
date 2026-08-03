@@ -74,9 +74,113 @@ final class MCPTokenStoreTests: XCTestCase {
         )
         XCTAssertEqual(mode(of: directory), 0o777, "precondition")
 
-        _ = store.existingToken()
+        _ = try store.existingToken()
 
         XCTAssertEqual(mode(of: directory), 0o700, "reading did not repair the directory mode")
+    }
+
+    // MARK: - Repair that cannot succeed must refuse, not shrug
+
+    /// A `FileModes` whose `chmod` always fails, standing in for the case a
+    /// `chown`-based test cannot portably create: an MCP directory that exists
+    /// but is owned by another uid — restored from a backup that preserved a
+    /// foreign owner, or pre-created by something else. `chmod` returns EPERM,
+    /// the directory stays `0777`, and any local writer can unlink the token
+    /// file and drop in one of their own.
+    private var refusingChmod: MCPTokenStore.FileModes {
+        var modes = MCPTokenStore.FileModes.live
+        modes.setPermissions = { _, url in
+            throw NSError(
+                domain: NSPOSIXErrorDomain,
+                code: Int(EPERM),
+                userInfo: [NSLocalizedDescriptionKey: "Operation not permitted"]
+            )
+        }
+        return modes
+    }
+
+    /// A `chmod` that reports success and changes nothing — the other way a
+    /// best-effort repair lies.
+    private var lyingChmod: MCPTokenStore.FileModes {
+        var modes = MCPTokenStore.FileModes.live
+        modes.setPermissions = { _, _ in }
+        return modes
+    }
+
+    func testATokenThatCannotBeSecuredIsRefusedRatherThanServed() throws {
+        try store.rotate()
+        try FileManager.default.setAttributes(
+            [.posixPermissions: NSNumber(value: 0o644)],
+            ofItemAtPath: store.tokenFileURL.path
+        )
+
+        let stuck = MCPTokenStore(directory: directory, fileModes: refusingChmod)
+        XCTAssertThrowsError(try stuck.existingToken()) { error in
+            guard case MCPTokenStore.Failure.insecurePermissions = error else {
+                return XCTFail("expected insecurePermissions, got \(error)")
+            }
+        }
+    }
+
+    /// A widened DIRECTORY that cannot be repaired is the round-1 bypass in its
+    /// silent form: the file is still `0600`, so a check that only looked at the
+    /// file would pass it — and the file can be replaced wholesale anyway.
+    func testAnUnsecurableDirectoryIsRefusedEvenWhenTheFileIsFine() throws {
+        try store.rotate()
+        XCTAssertEqual(store.tokenFilePermissions(), 0o600, "precondition: the file is fine")
+        try FileManager.default.setAttributes(
+            [.posixPermissions: NSNumber(value: 0o777)],
+            ofItemAtPath: directory.path
+        )
+
+        let stuck = MCPTokenStore(directory: directory, fileModes: refusingChmod)
+        XCTAssertThrowsError(try stuck.existingToken())
+    }
+
+    /// The repair is verified, not trusted: a `chmod` that returns success and
+    /// does nothing must still refuse.
+    func testAChmodThatSilentlyDoesNothingIsRefused() throws {
+        try store.rotate()
+        try FileManager.default.setAttributes(
+            [.posixPermissions: NSNumber(value: 0o666)],
+            ofItemAtPath: store.tokenFileURL.path
+        )
+
+        let lying = MCPTokenStore(directory: directory, fileModes: lyingChmod)
+        XCTAssertThrowsError(try lying.existingToken())
+    }
+
+    /// The serving path. `MCPBearerValidator` treats a nil expected token as
+    /// "refuse everything", so this is what makes an unsecurable token lock the
+    /// server rather than leak.
+    func testTokenForAuthenticationIsNilWhenTheModesCannotBeFixed() throws {
+        let token = try store.rotate()
+        XCTAssertEqual(store.tokenForAuthentication(), token, "precondition")
+
+        try FileManager.default.setAttributes(
+            [.posixPermissions: NSNumber(value: 0o777)],
+            ofItemAtPath: directory.path
+        )
+        let stuck = MCPTokenStore(directory: directory, fileModes: refusingChmod)
+        XCTAssertNil(stuck.tokenForAuthentication())
+    }
+
+    /// Writing a fresh secret into a directory that cannot be secured is the
+    /// bypass, not a step towards fixing it.
+    func testRotateRefusesWhenTheDirectoryCannotBeSecured() throws {
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: NSNumber(value: 0o777)]
+        )
+        let stuck = MCPTokenStore(directory: directory, fileModes: refusingChmod)
+        XCTAssertThrowsError(try stuck.rotate())
+    }
+
+    /// A fresh install has no file at all, which is not a security failure.
+    func testAMissingTokenIsNotTreatedAsAFailure() throws {
+        XCTAssertNil(try store.existingToken())
+        XCTAssertNil(store.tokenForAuthentication())
     }
 
     private func mode(of url: URL) -> Int? {
@@ -94,7 +198,7 @@ final class MCPTokenStoreTests: XCTestCase {
         )
         XCTAssertEqual(store.tokenFilePermissions(), 0o644, "precondition")
 
-        _ = store.existingToken()
+        _ = try store.existingToken()
         XCTAssertEqual(store.tokenFilePermissions(), 0o600, "reading did not repair the mode")
     }
 
@@ -126,8 +230,8 @@ final class MCPTokenStoreTests: XCTestCase {
 
     // MARK: - Lifecycle
 
-    func testNoTokenExistsBeforeOneIsGenerated() {
-        XCTAssertNil(store.existingToken())
+    func testNoTokenExistsBeforeOneIsGenerated() throws {
+        XCTAssertNil(try store.existingToken())
         XCTAssertNil(store.tokenFilePermissions())
     }
 
@@ -143,13 +247,13 @@ final class MCPTokenStoreTests: XCTestCase {
         let original = try store.currentToken()
         let rotated = try store.rotate()
         XCTAssertNotEqual(original, rotated)
-        XCTAssertEqual(store.existingToken(), rotated)
+        XCTAssertEqual(try store.existingToken(), rotated)
     }
 
     func testDeleteRemovesTheToken() throws {
         try store.rotate()
         try store.deleteToken()
-        XCTAssertNil(store.existingToken())
+        XCTAssertNil(try store.existingToken())
     }
 
     func testDeleteIsSafeWhenNoTokenExists() {
@@ -161,7 +265,7 @@ final class MCPTokenStoreTests: XCTestCase {
     func testStoredTokenIsReadBackTrimmed() throws {
         let token = try store.rotate()
         try (token + "\n").write(to: store.tokenFileURL, atomically: true, encoding: .utf8)
-        XCTAssertEqual(store.existingToken(), token)
+        XCTAssertEqual(try store.existingToken(), token)
     }
 
     func testDefaultLocationLivesUnderApplicationSupport() throws {

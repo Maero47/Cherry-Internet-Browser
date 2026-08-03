@@ -201,7 +201,7 @@ final class MCPHTTPWireTests: XCTestCase {
                 switch MCPHTTPWire.parseHead(from: buffer, resumingAt: scanOffset) {
                 case .complete(let parsed): head = parsed
                 case .incomplete(let next): scanOffset = next
-                case .failure(let status, let message): return XCTFail("split \(split): \(status) \(message)")
+                case .failure(let status, let message, _): return XCTFail("split \(split): \(status) \(message)")
                 }
                 if head != nil { break }
             }
@@ -239,7 +239,7 @@ final class MCPHTTPWireTests: XCTestCase {
                 switch MCPHTTPWire.parseHead(from: buffer, resumingAt: scanOffset) {
                 case .complete(let value): parsedHead = value
                 case .incomplete(let next): scanOffset = next
-                case .failure(let status, let message): return XCTFail("\(status): \(message)")
+                case .failure(let status, let message, _): return XCTFail("\(status): \(message)")
                 }
             }
             if let parsedHead, buffer.count >= parsedHead.totalLength { break }

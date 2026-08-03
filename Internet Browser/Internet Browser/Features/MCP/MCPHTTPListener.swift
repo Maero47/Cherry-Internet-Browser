@@ -68,13 +68,27 @@ nonisolated final class MCPHTTPListener: @unchecked Sendable {
     /// The only way this type talks to the rest of Cherry.
     typealias RequestHandler = @Sendable (HTTPRequest) async -> HTTPResponse
 
+    /// Answers "does this request carry a valid token?" for refusals raised by
+    /// the framing layer itself, which never reach `RequestHandler`.
+    typealias Authorizer = @Sendable ([String: String]) -> Bool
+
     /// How long a connection may sit without completing a request line + headers
-    /// + body before it is dropped. Bounds slow-loris style hangs; it never
-    /// applies once a request has been handed to the handler, so a slow tool
-    /// call is not cut off.
+    /// + body before it is dropped. Bounds slow-loris style hangs; it is
+    /// cancelled the moment a response is written, so a slow tool call is never
+    /// cut off and a finished connection is not pinned waiting for it to fire.
     private static let requestReadTimeout: TimeInterval = 30
 
+    /// How many connections may be open at once.
+    ///
+    /// `maxBodyBytes` bounds one request; without this, nothing bounded how many
+    /// were in flight, so an unauthenticated client — a web page included —
+    /// could take a 401 per connection and still pin megabytes by opening more.
+    /// Claude Code uses one connection at a time; 16 is generous for the real
+    /// workload and small enough to bound the worst case.
+    static let maxConcurrentConnections = 16
+
     private let handler: RequestHandler
+    private let authorize: Authorizer
     private let statusChanged: (@Sendable (MCPListenerStatus) -> Void)?
 
     /// Every `NWListener` and `NWConnection` callback is delivered here, so all
@@ -86,11 +100,16 @@ nonisolated final class MCPHTTPListener: @unchecked Sendable {
     private var listener: NWListener?
     private var status: MCPListenerStatus = .idle
 
+    /// Number of live connections. Only touched on `queue`.
+    private var openConnections = 0
+
     init(
         handler: @escaping RequestHandler,
+        authorize: @escaping Authorizer = { _ in false },
         statusChanged: (@Sendable (MCPListenerStatus) -> Void)? = nil
     ) {
         self.handler = handler
+        self.authorize = authorize
         self.statusChanged = statusChanged
     }
 
@@ -204,14 +223,32 @@ nonisolated final class MCPHTTPListener: @unchecked Sendable {
         /// Where the CRLFCRLF search resumes, so the header scan is not
         /// restarted from byte zero on every segment.
         var scanOffset = 0
-        /// Set once a request has been handed off, so the read timeout stops
-        /// applying to a response we are still producing.
-        var handedOff = false
+        /// The read deadline, cancelled the moment a response is written so a
+        /// finished connection is not held alive waiting for it to fire.
+        var readDeadline: DispatchWorkItem?
+        /// Guards the open-connection count against a double decrement.
+        var counted = true
 
         init(_ nw: NWConnection) { self.nw = nw }
+
+        /// Drop the accumulated bytes. Called at hand-off: without it a 1 MB
+        /// body stayed resident for the whole life of the connection, long
+        /// after the request had been parsed out of it.
+        func releaseBuffer() {
+            buffer = Data()
+        }
     }
 
     private func accept(_ nwConnection: NWConnection) {
+        // Over the cap, drop the connection without reading a byte or writing a
+        // response — silence leaks nothing, and a 503 would be one more thing an
+        // unauthenticated caller could fingerprint.
+        guard openConnections < Self.maxConcurrentConnections else {
+            nwConnection.cancel()
+            return
+        }
+        openConnections += 1
+
         let connection = Connection(nwConnection)
 
         nwConnection.stateUpdateHandler = { [weak self] state in
@@ -220,17 +257,29 @@ nonisolated final class MCPHTTPListener: @unchecked Sendable {
                 self?.receive(connection)
             case .failed, .cancelled:
                 nwConnection.stateUpdateHandler = nil
+                self?.release(connection)
             default:
                 break
             }
         }
 
-        queue.asyncAfter(deadline: .now() + Self.requestReadTimeout) {
-            guard !connection.handedOff else { return }
-            nwConnection.cancel()
+        let deadline = DispatchWorkItem { [weak nwConnection] in
+            nwConnection?.cancel()
         }
+        connection.readDeadline = deadline
+        queue.asyncAfter(deadline: .now() + Self.requestReadTimeout, execute: deadline)
 
         nwConnection.start(queue: queue)
+    }
+
+    /// Give back the connection's slot and stop its deadline. Idempotent.
+    private func release(_ connection: Connection) {
+        connection.readDeadline?.cancel()
+        connection.readDeadline = nil
+        connection.releaseBuffer()
+        guard connection.counted else { return }
+        connection.counted = false
+        openConnections = max(0, openConnections - 1)
     }
 
     private func receive(_ connection: Connection) {
@@ -251,8 +300,8 @@ nonisolated final class MCPHTTPListener: @unchecked Sendable {
             // rather than a fresh copy-and-reparse of everything received so far.
             if connection.head == nil {
                 switch MCPHTTPWire.parseHead(from: connection.buffer, resumingAt: connection.scanOffset) {
-                case .failure(let statusCode, let message):
-                    respond(MCPHTTPWire.framingError(statusCode: statusCode, message: message), on: connection)
+                case .failure(let statusCode, let message, let headers):
+                    refuse(statusCode: statusCode, message: message, headers: headers, on: connection)
                     return
                 case .incomplete(let nextScanOffset):
                     connection.scanOffset = nextScanOffset
@@ -263,7 +312,9 @@ nonisolated final class MCPHTTPListener: @unchecked Sendable {
 
             if let head = connection.head, connection.buffer.count >= head.totalLength {
                 let request = MCPHTTPWire.request(from: connection.buffer, head: head)
-                connection.handedOff = true
+                connection.releaseBuffer()
+                connection.readDeadline?.cancel()
+                connection.readDeadline = nil
                 let handler = handler
                 Task {
                     let response = await handler(request)
@@ -277,24 +328,44 @@ nonisolated final class MCPHTTPListener: @unchecked Sendable {
                 connection.nw.cancel()
                 return
             }
-            // Before a head is parsed the header cap applies; after it, the
-            // request's own declared length is the ceiling and `parseHead`
-            // already refused anything over the body cap.
-            let ceiling = connection.head?.totalLength ?? MCPHTTPWire.maxHeaderBytes
-            if connection.buffer.count > ceiling {
-                respond(
-                    MCPHTTPWire.framingError(statusCode: 413, message: "Payload Too Large"),
-                    on: connection
-                )
-                return
-            }
             receive(connection)
         }
     }
 
+    /// A refusal raised by the framing layer, before any request reached the
+    /// handler — and therefore before anything checked the token.
+    ///
+    /// Answering these with a JSON-RPC body let `Transfer-Encoding: chunked`
+    /// fingerprint Cherry with no credentials at all, which is exactly what the
+    /// "unauthenticated callers only ever see 401" invariant forbids. So:
+    /// where headers were parsed, the token decides; where they were not (a
+    /// malformed request line — there is nothing to read a token from), the
+    /// status goes back bare, with no body to identify us.
+    private func refuse(
+        statusCode: Int,
+        message: String,
+        headers: [String: String]?,
+        on connection: Connection
+    ) {
+        guard let headers else {
+            respond(raw: MCPHTTPWire.bareStatus(statusCode), on: connection)
+            return
+        }
+        guard authorize(headers) else {
+            respond(MCPBearerValidator.unauthorized, on: connection)
+            return
+        }
+        respond(MCPHTTPWire.framingError(statusCode: statusCode, message: message), on: connection)
+    }
+
     private func respond(_ response: HTTPResponse, on connection: Connection) {
-        connection.handedOff = true
-        let data = MCPHTTPWire.serialize(response)
+        respond(raw: MCPHTTPWire.serialize(response), on: connection)
+    }
+
+    private func respond(raw data: Data, on connection: Connection) {
+        connection.readDeadline?.cancel()
+        connection.readDeadline = nil
+        connection.releaseBuffer()
         connection.nw.send(content: data, completion: .contentProcessed { _ in
             connection.nw.cancel()
         })
@@ -314,9 +385,15 @@ nonisolated enum MCPHTTPWire {
     /// The largest body accepted. A `Content-Length` above this is refused
     /// outright rather than buffered, so a malformed or hostile length cannot
     /// pin memory or hold a connection open forever.
+    ///
+    /// Note what enforces this: `parseHead` refuses an oversized declared length
+    /// up front, and past that the connection stops reading the moment
+    /// `buffer.count >= head.totalLength`. There is deliberately no separate
+    /// post-head byte ceiling in the receive loop — the one that used to be
+    /// there was unreachable in both branches (431 already fires pre-head at the
+    /// same threshold, and the hand-off fires first post-head), and an inert
+    /// check that reads like a control is worse than no check.
     static let maxBodyBytes = 1024 * 1024
-
-    static var maxRequestBytes: Int { maxHeaderBytes + maxBodyBytes }
 
     enum ParseResult: Sendable {
         /// Not all the bytes have arrived yet; read more.
@@ -358,7 +435,12 @@ nonisolated enum MCPHTTPWire {
         /// on every segment.
         case incomplete(nextScanOffset: Int)
         case complete(RequestHead)
-        case failure(statusCode: Int, message: String)
+        /// `headers` is non-nil when the failure was diagnosed AFTER the header
+        /// block parsed (chunked encoding, a bad or oversized `Content-Length`),
+        /// which is what lets the caller check the token before answering with
+        /// anything more informative than `401`. It is nil when there was never
+        /// a readable header block to take a token from.
+        case failure(statusCode: Int, message: String, headers: [String: String]?)
     }
 
     private static let headerTerminator = Data([0x0D, 0x0A, 0x0D, 0x0A])
@@ -369,7 +451,7 @@ nonisolated enum MCPHTTPWire {
 
         guard let terminator = buffer.range(of: headerTerminator, in: searchFrom..<buffer.endIndex) else {
             if buffer.count > maxHeaderBytes {
-                return .failure(statusCode: 431, message: "Request Header Fields Too Large")
+                return .failure(statusCode: 431, message: "Request Header Fields Too Large", headers: nil)
             }
             // Resume three bytes back, so a CRLFCRLF split across two segments
             // is still found.
@@ -378,19 +460,19 @@ nonisolated enum MCPHTTPWire {
 
         let headerEnd = buffer.distance(from: start, to: terminator.lowerBound)
         if headerEnd > maxHeaderBytes {
-            return .failure(statusCode: 431, message: "Request Header Fields Too Large")
+            return .failure(statusCode: 431, message: "Request Header Fields Too Large", headers: nil)
         }
 
         var lines = String(decoding: buffer[start..<terminator.lowerBound], as: UTF8.self)
             .components(separatedBy: "\r\n")
         guard !lines.isEmpty else {
-            return .failure(statusCode: 400, message: "Malformed request")
+            return .failure(statusCode: 400, message: "Malformed request", headers: nil)
         }
 
         let requestLine = lines.removeFirst()
         let requestParts = requestLine.split(separator: " ", omittingEmptySubsequences: true)
         guard requestParts.count >= 2 else {
-            return .failure(statusCode: 400, message: "Malformed request line")
+            return .failure(statusCode: 400, message: "Malformed request line", headers: nil)
         }
         let method = requestParts[0].uppercased()
         let target = String(requestParts[1])
@@ -403,7 +485,7 @@ nonisolated enum MCPHTTPWire {
             // Obsolete line folding is not supported; a continuation line has
             // no colon and is rejected here rather than misread.
             guard let colon = line.firstIndex(of: ":") else {
-                return .failure(statusCode: 400, message: "Malformed header line")
+                return .failure(statusCode: 400, message: "Malformed header line", headers: nil)
             }
             // LOWERCASED ON INSERTION, and this is load-bearing. Folding
             // duplicates with ", " is what makes `Content-Length: 10` plus a
@@ -419,7 +501,7 @@ nonisolated enum MCPHTTPWire {
                 .lowercased()
             let value = String(line[line.index(after: colon)...]).trimmingCharacters(in: .whitespaces)
             guard !name.isEmpty else {
-                return .failure(statusCode: 400, message: "Malformed header line")
+                return .failure(statusCode: 400, message: "Malformed header line", headers: nil)
             }
             if let existing = headers[name] {
                 headers[name] = existing + ", " + value
@@ -432,7 +514,7 @@ nonisolated enum MCPHTTPWire {
         // send them; a different client might, and a wrong answer would be worse
         // than a clear refusal.
         if headers["transfer-encoding"] != nil {
-            return .failure(statusCode: 501, message: "Transfer-Encoding is not supported")
+            return .failure(statusCode: 501, message: "Transfer-Encoding is not supported", headers: headers)
         }
 
         let headerBlockLength = headerEnd + headerTerminator.count
@@ -449,10 +531,10 @@ nonisolated enum MCPHTTPWire {
         }
 
         guard let contentLength = Int(lengthHeader), contentLength >= 0 else {
-            return .failure(statusCode: 400, message: "Invalid Content-Length")
+            return .failure(statusCode: 400, message: "Invalid Content-Length", headers: headers)
         }
         guard contentLength <= maxBodyBytes else {
-            return .failure(statusCode: 413, message: "Payload Too Large")
+            return .failure(statusCode: 413, message: "Payload Too Large", headers: headers)
         }
 
         return .complete(RequestHead(
@@ -483,7 +565,7 @@ nonisolated enum MCPHTTPWire {
         switch parseHead(from: buffer) {
         case .incomplete:
             return .incomplete
-        case .failure(let statusCode, let message):
+        case .failure(let statusCode, let message, _):
             return .failure(statusCode: statusCode, message: message)
         case .complete(let head):
             guard buffer.count >= head.totalLength else { return .incomplete }
@@ -518,12 +600,23 @@ nonisolated enum MCPHTTPWire {
     }
 
     /// A refusal raised by the framing layer itself, before the transport is
-    /// ever reached — a bad request line, an oversized body, chunked encoding.
+    /// ever reached — an oversized body, chunked encoding.
     ///
     /// Carried in the SDK's `.error` shape so the client gets the JSON body it
     /// asked for, with the HTTP status that actually describes the problem.
+    /// **Only ever sent to a caller that presented a valid token** — see
+    /// `MCPHTTPListener.refuse`.
     static func framingError(statusCode: Int, message: String) -> HTTPResponse {
         .error(statusCode: statusCode, .invalidRequest(message))
+    }
+
+    /// A status line and nothing else: no body, no `Content-Type`, nothing that
+    /// says which server this is.
+    ///
+    /// For refusals where there were never any headers to read a token from, so
+    /// the caller cannot be authenticated and must not be told anything.
+    static func bareStatus(_ statusCode: Int) -> Data {
+        serialize(statusCode: statusCode, headers: [:], body: nil)
     }
 
     static func serialize(statusCode: Int, headers: [String: String], body: Data?) -> Data {

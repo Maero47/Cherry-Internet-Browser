@@ -118,18 +118,29 @@ final class MCPBearerValidatorTests: XCTestCase {
         // Compared as parsed JSON, not as bytes: the SDK builds the error body
         // with `JSONSerialization` and no `.sortedKeys`, so key order varies
         // between otherwise identical responses.
-        let refusals = [validate(nil), validate(""), validate("Bearer wrong"), validate("Basic x")]
-            .map { response -> String in
-                guard let response,
-                      let data = response.bodyData,
-                      let json = try? JSONSerialization.jsonObject(with: data),
-                      let canonical = try? JSONSerialization.data(withJSONObject: json, options: .sortedKeys)
-                else {
-                    return "<passed>"
-                }
-                let headers = response.headers.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }
-                return "\(response.statusCode)|\(headers)|\(String(decoding: canonical, as: UTF8.self))"
+        let attempts = ["<absent>", "", "Bearer wrong", "Basic x"]
+        let responses = [validate(nil), validate(""), validate("Bearer wrong"), validate("Basic x")]
+
+        // Assert each one actually REFUSED before comparing them to each other.
+        // Without this the test could not fail: replacing `validate`'s body with
+        // `return nil` mapped all four to the same placeholder, the set had one
+        // element, and it went green while nothing was being rejected at all.
+        for (attempt, response) in zip(attempts, responses) {
+            XCTAssertNotNil(response, "\(attempt) was ACCEPTED, not refused")
+        }
+
+        let refusals = responses.map { response -> String in
+            guard let response,
+                  let data = response.bodyData,
+                  let json = try? JSONSerialization.jsonObject(with: data),
+                  let canonical = try? JSONSerialization.data(withJSONObject: json, options: .sortedKeys)
+            else {
+                return "<accepted>"
             }
+            let headers = response.headers.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }
+            return "\(response.statusCode)|\(headers)|\(String(decoding: canonical, as: UTF8.self))"
+        }
+        XCTAssertFalse(refusals.contains("<accepted>"), "at least one attempt was not refused: \(refusals)")
         XCTAssertEqual(Set(refusals).count, 1, "refusals differ: \(refusals)")
     }
 

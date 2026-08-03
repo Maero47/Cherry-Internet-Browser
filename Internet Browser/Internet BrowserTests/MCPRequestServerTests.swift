@@ -288,6 +288,47 @@ final class MCPRequestServerTests: XCTestCase {
         XCTAssertEqual(response.statusCode, 401)
     }
 
+    /// `authenticate` is separable from `dispatch`, and that is what lets the
+    /// listener refuse a request without ever hopping to the main actor.
+    ///
+    /// The listener's handler used to record telemetry — `activeRequestCount`,
+    /// `lastActivity`, both `@Observable` — before calling `serve`. So any page
+    /// the user visited could POST to the port and force two main-actor hops
+    /// plus an observation invalidation, enough to drive a SwiftUI re-render,
+    /// before the token was compared. It also let unauthenticated garbage write
+    /// the "last used" timestamp the Settings pane shows.
+    func testAuthenticateIsSeparableAndDecidesWithoutDispatching() async {
+        let server = makeServer(invokeTool: { _ in
+            XCTFail("an unauthenticated request reached the tool invoker")
+            return CallTool.Result(content: [])
+        })
+
+        let refusal = server.authenticate(request(
+            json: #"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_tabs"}}"#,
+            authorization: "Bearer wrong"
+        ))
+        XCTAssertEqual(refusal?.statusCode, 401)
+
+        // …and it gets out of the way for a good token.
+        XCTAssertNil(server.authenticate(request(json: #"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#)))
+    }
+
+    /// Fail closed all the way through: a store whose permissions cannot be
+    /// repaired yields no token, and no token means nobody gets in — not even
+    /// someone holding the string that is genuinely in the file.
+    func testAnUnsecurableTokenLocksTheServerRatherThanLeaking() async {
+        let server = MCPRequestServer(
+            serverName: "Cherry",
+            serverVersion: "1.0-test",
+            port: port,
+            expectedToken: { nil },
+            invokeTool: MCPToolStubs.notImplemented
+        )
+        let response = await server.serve(request(json: #"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#))
+        XCTAssertEqual(response.statusCode, 401)
+        assertNoToolDataLeaked(in: text(of: response))
+    }
+
     // MARK: - DNS rebinding
 
     /// A web page's `fetch('http://127.0.0.1:8787/mcp')` sends an `Origin`; a
