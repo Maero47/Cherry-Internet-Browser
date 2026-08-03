@@ -1,5 +1,5 @@
 //
-//  ToolbarItem.swift
+//  ToolbarButtonID.swift
 //  Cherry Browser
 //
 //  The catalogue of navigation-bar buttons the user is allowed to reorder or
@@ -19,7 +19,13 @@ import Foundation
 /// Deliberately covers the action buttons only. Back / Forward /
 /// Reload-Stop, the omnibox, the per-extension buttons and the `⋯` menu are
 /// structural: nothing here can move or remove them.
-enum ToolbarItem: String, CaseIterable, Identifiable, Sendable {
+///
+/// Named `…ButtonID`, not `ToolbarItem`, because that would shadow
+/// `SwiftUI.ToolbarItem` for every unqualified use in this target — the first
+/// `.toolbar { ToolbarItem { … } }` anyone wrote would fail with a misleading
+/// "extra argument 'placement' in call". The type name is free to change; the
+/// raw values above are not.
+enum ToolbarButtonID: String, CaseIterable, Identifiable, Sendable {
     case askThisPage
     case home
     case bookmark
@@ -72,13 +78,13 @@ enum ToolbarItem: String, CaseIterable, Identifiable, Sendable {
 /// `UserDefaults` — is testable without a view or a singleton.
 enum ToolbarLayout {
 
-    /// `ToolbarItem.allCases`, in the order a fresh install draws them. This
+    /// `ToolbarButtonID.allCases`, in the order a fresh install draws them. This
     /// is the order the nav bar has always used, so an install that has never
     /// touched Settings looks exactly as it did before customisation existed.
-    static var defaultOrder: [ToolbarItem] { ToolbarItem.allCases }
+    static var defaultOrder: [ToolbarButtonID] { ToolbarButtonID.allCases }
 
     /// Nothing is hidden by default.
-    static let defaultHidden: Set<ToolbarItem> = []
+    static let defaultHidden: Set<ToolbarButtonID> = []
 
     /// Turns persisted ids into a usable layout.
     ///
@@ -105,11 +111,11 @@ enum ToolbarLayout {
     static func resolve(
         savedOrder: [String],
         hidden: Set<String>
-    ) -> (order: [ToolbarItem], hidden: Set<ToolbarItem>) {
-        var order: [ToolbarItem] = []
-        var seen: Set<ToolbarItem> = []
+    ) -> (order: [ToolbarButtonID], hidden: Set<ToolbarButtonID>) {
+        var order: [ToolbarButtonID] = []
+        var seen: Set<ToolbarButtonID> = []
         for id in savedOrder {
-            guard let item = ToolbarItem(rawValue: id), seen.insert(item).inserted else { continue }
+            guard let item = ToolbarButtonID(rawValue: id), seen.insert(item).inserted else { continue }
             order.append(item)
         }
 
@@ -128,7 +134,7 @@ enum ToolbarLayout {
             order.insert(item, at: insertionIndex)
         }
 
-        return (order, Set(hidden.compactMap(ToolbarItem.init(rawValue:))))
+        return (order, Set(hidden.compactMap(ToolbarButtonID.init(rawValue:))))
     }
 
     /// The hidden buttons that should appear at the top of the `⋯` menu right
@@ -141,10 +147,10 @@ enum ToolbarLayout {
     /// it from the exact same conditions it uses to decide whether to draw the
     /// button, so the two can't drift apart.
     static func overflowItems(
-        order: [ToolbarItem],
-        hidden: Set<ToolbarItem>,
-        isAvailable: (ToolbarItem) -> Bool
-    ) -> [ToolbarItem] {
+        order: [ToolbarButtonID],
+        hidden: Set<ToolbarButtonID>,
+        isAvailable: (ToolbarButtonID) -> Bool
+    ) -> [ToolbarButtonID] {
         order.filter { hidden.contains($0) && isAvailable($0) }
     }
 }

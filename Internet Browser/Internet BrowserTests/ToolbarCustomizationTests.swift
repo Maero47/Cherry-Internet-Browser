@@ -14,7 +14,7 @@ import Observation
 
 final class ToolbarCustomizationTests: XCTestCase {
 
-    private func ids(_ items: [ToolbarItem]) -> [String] {
+    private func ids(_ items: [ToolbarButtonID]) -> [String] {
         items.map(\.rawValue)
     }
 
@@ -70,8 +70,8 @@ final class ToolbarCustomizationTests: XCTestCase {
         let layout = ToolbarLayout.resolve(savedOrder: saved, hidden: [])
 
         XCTAssertEqual(Array(ids(layout.order).prefix(3)), ["home", "bookmark", "askThisPage"])
-        XCTAssertEqual(layout.order.count, ToolbarItem.allCases.count)
-        XCTAssertEqual(Set(layout.order), Set(ToolbarItem.allCases))
+        XCTAssertEqual(layout.order.count, ToolbarButtonID.allCases.count)
+        XCTAssertEqual(Set(layout.order), Set(ToolbarButtonID.allCases))
     }
 
     /// The case that quietly breaks the next feature: an order written by an
@@ -133,8 +133,8 @@ final class ToolbarCustomizationTests: XCTestCase {
             hidden: []
         )
 
-        XCTAssertEqual(Set(layout.order), Set(ToolbarItem.allCases))
-        XCTAssertEqual(layout.order.count, ToolbarItem.allCases.count)
+        XCTAssertEqual(Set(layout.order), Set(ToolbarButtonID.allCases))
+        XCTAssertEqual(layout.order.count, ToolbarButtonID.allCases.count)
     }
 
     // MARK: - Hidden set
@@ -243,7 +243,7 @@ final class ToolbarCustomizationTests: XCTestCase {
     /// to its default slot for every user who had moved it.
     func testCatalogueIDsAreStable() {
         XCTAssertEqual(
-            Set(ToolbarItem.allCases.map(\.rawValue)),
+            Set(ToolbarButtonID.allCases.map(\.rawValue)),
             ["askThisPage", "home", "bookmark", "savePDF", "autoFill",
              "adBlock", "focusMode", "readerMode", "privateMode"]
         )
@@ -252,14 +252,14 @@ final class ToolbarCustomizationTests: XCTestCase {
     /// Structural controls are not customisable and must never enter the
     /// catalogue.
     func testStructuralControlsAreNotInTheCatalogue() {
-        let ids = Set(ToolbarItem.allCases.map(\.rawValue))
+        let ids = Set(ToolbarButtonID.allCases.map(\.rawValue))
         for structural in ["back", "forward", "reload", "stop", "omnibox", "extensions", "menu"] {
             XCTAssertFalse(ids.contains(structural), "\(structural) must not be customisable")
         }
     }
 
     func testEveryItemHasATitleAndAnIcon() {
-        for item in ToolbarItem.allCases {
+        for item in ToolbarButtonID.allCases {
             XCTAssertFalse(item.title.isEmpty, "\(item.rawValue) has no title")
             XCTAssertFalse(item.systemImage.isEmpty, "\(item.rawValue) has no icon")
         }

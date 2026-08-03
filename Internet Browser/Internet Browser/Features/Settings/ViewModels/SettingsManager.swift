@@ -225,15 +225,15 @@ final class SettingsManager {
     /// rather than cached so it stays a plain function of the two stored
     /// properties above — which is also what makes a change to either of them
     /// invalidate every SwiftUI view that read it.
-    var toolbarLayout: (order: [ToolbarItem], hidden: Set<ToolbarItem>) {
+    var toolbarLayout: (order: [ToolbarButtonID], hidden: Set<ToolbarButtonID>) {
         ToolbarLayout.resolve(savedOrder: toolbarItemOrder, hidden: hiddenToolbarItems)
     }
 
-    func isToolbarItemHidden(_ item: ToolbarItem) -> Bool {
+    func isToolbarItemHidden(_ item: ToolbarButtonID) -> Bool {
         toolbarLayout.hidden.contains(item)
     }
 
-    func setToolbarItem(_ item: ToolbarItem, hidden: Bool) {
+    func setToolbarItem(_ item: ToolbarButtonID, hidden: Bool) {
         // Write back the resolved set, not `hiddenToolbarItems` verbatim, so
         // stale ids get cleaned out the first time the user touches anything.
         var resolved = toolbarLayout.hidden
@@ -243,7 +243,7 @@ final class SettingsManager {
 
     /// Moves `item` one slot towards the start (`offset` -1) or end (+1) of
     /// the toolbar. A move that would fall off either end is a no-op.
-    func moveToolbarItem(_ item: ToolbarItem, by offset: Int) {
+    func moveToolbarItem(_ item: ToolbarButtonID, by offset: Int) {
         var order = toolbarLayout.order
         guard let from = order.firstIndex(of: item) else { return }
         let to = from + offset

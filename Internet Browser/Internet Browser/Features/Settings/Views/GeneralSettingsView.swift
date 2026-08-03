@@ -307,7 +307,7 @@ struct GeneralSettingsView: View {
             ForEach(Array(layout.order.enumerated()), id: \.element) { index, item in
                 if index > 0 { Divider() }
 
-                ToolbarItemRow(
+                ToolbarButtonRow(
                     item: item,
                     isHidden: layout.hidden.contains(item),
                     canMoveUp: index > 0,

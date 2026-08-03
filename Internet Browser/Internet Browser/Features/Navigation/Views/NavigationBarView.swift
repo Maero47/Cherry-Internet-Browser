@@ -95,7 +95,7 @@ struct NavigationBarView: View {
     /// The user's toolbar layout, read from the `@Observable` settings
     /// singleton on every body pass — which is what makes a change made in one
     /// window's Settings redraw the nav bar in every open window.
-    private var toolbarLayout: (order: [ToolbarItem], hidden: Set<ToolbarItem>) {
+    private var toolbarLayout: (order: [ToolbarButtonID], hidden: Set<ToolbarButtonID>) {
         SettingsManager.shared.toolbarLayout
     }
 
@@ -105,7 +105,7 @@ struct NavigationBarView: View {
     /// is drawn when this holds AND the user hasn't hidden it. The `⋯` menu's
     /// hidden-items section asks the same question, so a hidden button is
     /// offered there exactly when it would have been drawn here.
-    private func isAvailable(_ item: ToolbarItem) -> Bool {
+    private func isAvailable(_ item: ToolbarButtonID) -> Bool {
         switch item {
         case .askThisPage:
             onAskThisPage != nil && tab.url != nil && tab.internalPage == nil && !tab.showHomePage
@@ -128,9 +128,37 @@ struct NavigationBarView: View {
         }
     }
 
+    /// Whether `item` is a toggle, and if so which way it currently sits —
+    /// `nil` for the items that are plain one-shot actions.
+    ///
+    /// The four toggles say their state on the bar through a symbol variant
+    /// and a tint (`shield.slash` vs `shield.checkered`, `book.fill` vs
+    /// `book`, accent vs `.primary`). This is the single accessor that lets
+    /// the `⋯` menu say the same thing for a hidden one, so "is it on?" is
+    /// answered in one place next to `isAvailable` and `invoke` rather than by
+    /// a second switch that could drift from either.
+    private func toggleState(_ item: ToolbarButtonID) -> Bool? {
+        switch item {
+        case .focusMode:
+            FocusModeManager.shared.focusModeEnabled
+        case .adBlock:
+            // "On" is the blocker working on this site, which is the
+            // un-paused case — same sense the shield icon carries.
+            !isAdBlockPaused
+        case .readerMode:
+            showReaderMode
+        case .privateMode:
+            isPrivateMode
+        case .askThisPage, .home, .bookmark, .savePDF, .autoFill:
+            // One-shot actions. They must NOT grow a checkmark: a tick next to
+            // "Home" or "Print" would claim a state that doesn't exist.
+            nil
+        }
+    }
+
     /// The one place each customisable button's action lives, so the toolbar
     /// button and its `⋯` menu stand-in genuinely run the same closure.
-    private func invoke(_ item: ToolbarItem) {
+    private func invoke(_ item: ToolbarButtonID) {
         switch item {
         case .askThisPage: onAskThisPage?()
         case .home: onHome()
@@ -264,10 +292,12 @@ struct NavigationBarView: View {
         .padding(.vertical, 8)
         .padding(.top, showWindowDragArea ? 6 : 0)
         .background {
-            // The bar's own background is also the right-click target for the
-            // empty space between the buttons — see `customizeToolbarMenu` for
-            // why the menu is attached here and to the button clusters rather
-            // than to the whole bar.
+            // The bar's own background is also a right-click target — for the
+            // outer padding and the 4pt gaps between the clusters, which is
+            // all the bare background there is: the omnibox's
+            // `.frame(maxWidth: .infinity)` takes the rest of the slack. See
+            // `customizeToolbarContextMenu` for why the menu is attached here
+            // and to the clusters rather than to the whole bar.
             ZStack {
                 if !isPrivateMode && FirefoxThemeManager.shared.hasHeaderBackdrop {
                     // Firefox compositing: the opaque frame color + header
@@ -410,7 +440,7 @@ struct NavigationBarView: View {
     /// drawn — same symbol, same state-dependent tint, same tooltip; only the
     /// decision of *whether* and *where* to draw it moved out.
     @ViewBuilder
-    private func actionButton(for item: ToolbarItem) -> some View {
+    private func actionButton(for item: ToolbarButtonID) -> some View {
         switch item {
         case .askThisPage:
             // Ask This Page (on-device AI) — quick access, first action icon right
@@ -502,14 +532,28 @@ struct NavigationBarView: View {
     /// the toolbar and that are usable right now: they lead the menu so
     /// hiding a button is only ever a layout choice, never a loss of function.
     @ViewBuilder
-    private func overflowMenu(hiddenItems: [ToolbarItem]) -> some View {
+    private func overflowMenu(hiddenItems: [ToolbarButtonID]) -> some View {
         Menu {
             if !hiddenItems.isEmpty {
                 ForEach(hiddenItems, id: \.self) { item in
-                    Button {
-                        invoke(item)
-                    } label: {
-                        Label(item.title, systemImage: item.systemImage)
+                    if let isOn = toggleState(item) {
+                        // A hidden toggle has to say which way it is set, or
+                        // the user can't tell whether clicking turns Focus Mode
+                        // on or off — the state the toolbar button shows with a
+                        // filled symbol and an accent tint. `Toggle` in a menu
+                        // is the macOS-native form of that: a checkmark when on.
+                        // The binding ignores the incoming value and just runs
+                        // the same closure the button would have; every one of
+                        // these actions is itself a toggle.
+                        Toggle(isOn: Binding(get: { isOn }, set: { _ in invoke(item) })) {
+                            Label(item.title, systemImage: item.systemImage)
+                        }
+                    } else {
+                        Button {
+                            invoke(item)
+                        } label: {
+                            Label(item.title, systemImage: item.systemImage)
+                        }
                     }
                 }
 
@@ -539,9 +583,8 @@ struct NavigationBarView: View {
             // No standalone "Ask This Page" entry: it is a catalogue item, so
             // it is on the bar when visible, in the hidden-items section above
             // when hidden, and absent when its own condition doesn't hold —
-            // the same rule as every other customisable button. The old fixed
-            // entry duplicated the hidden-items one and fired on cherry://
-            // pages, where the button itself never appears.
+            // the same rule as every other customisable button. The fixed entry
+            // rendered a second, identical one whenever the user hid it.
             Button {
                 onPrint?()
             } label: {

@@ -127,8 +127,8 @@ struct SettingsLabeledRow<Control: View>: View {
 /// The eye is a button rather than a `Toggle` switch because the state it
 /// reports is "shown / hidden", which the eye and `eye.slash` symbols say at a
 /// glance and in one control the row already has room for.
-struct ToolbarItemRow: View {
-    let item: ToolbarItem
+struct ToolbarButtonRow: View {
+    let item: ToolbarButtonID
     let isHidden: Bool
     let canMoveUp: Bool
     let canMoveDown: Bool
