@@ -41,7 +41,10 @@ enum ToolbarButtonID: String, CaseIterable, Identifiable, Sendable {
     /// What Settings calls this button.
     var title: String {
         switch self {
-        case .askThisPage: "Ask This Page"
+        // Named for the action, not the surface: the panel answers about the
+        // page when there is one and chats generally when there isn't, so
+        // "Ask This Page" was a promise it broke on the home page.
+        case .askThisPage: "Ask Cherry AI"
         case .home: "Home"
         case .bookmark: "Bookmark"
         case .savePDF: "Save PDF"
@@ -135,6 +138,26 @@ enum ToolbarLayout {
         }
 
         return (order, Set(hidden.compactMap(ToolbarButtonID.init(rawValue:))))
+    }
+
+    /// Whether the Ask Cherry AI button exists right now.
+    ///
+    /// The surface flags are taken and deliberately ignored. They spell out
+    /// the condition this rule USED to carry — `tab.url != nil &&
+    /// tab.internalPage == nil && !tab.showHomePage` — which removed the
+    /// button from the home page and from every `cherry://` page: precisely
+    /// the surfaces with no web view, and so precisely the ones the panel's
+    /// general chat is for. Now that the panel opens everywhere, the only
+    /// thing that can take the button away is a window that wires no action to
+    /// it. Keeping the flags in the signature means the widening is asserted
+    /// by name in the tests rather than by an absence nobody can see.
+    static func askThisPageIsAvailable(
+        hasAction: Bool,
+        hasURL: Bool,
+        isInternalPage: Bool,
+        isShowingHomePage: Bool
+    ) -> Bool {
+        hasAction
     }
 
     /// The hidden buttons that should appear at the top of the `⋯` menu right

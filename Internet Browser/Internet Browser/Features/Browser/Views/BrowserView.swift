@@ -641,6 +641,7 @@ struct BrowserView: View {
                 pageTitle: viewModel.askThisPageTitle,
                 pageText: viewModel.askThisPageText,
                 tabManager: viewModel.tabManager,
+                seedDraft: viewModel.askThisPageSeed,
                 onDismiss: { viewModel.showAskThisPage = false }
             )
             .transition(.move(edge: .trailing).combined(with: .opacity))
@@ -936,6 +937,10 @@ struct BrowserContentView: View {
                     },
                     onSearch: { query in
                         onNavigate(query)
+                    },
+                    onAskAI: { query in
+                        onFocusPane?()
+                        viewModel.askCherryAI(seed: query)
                     }
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)

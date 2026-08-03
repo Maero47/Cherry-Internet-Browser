@@ -108,7 +108,12 @@ struct NavigationBarView: View {
     private func isAvailable(_ item: ToolbarButtonID) -> Bool {
         switch item {
         case .askThisPage:
-            onAskThisPage != nil && tab.url != nil && tab.internalPage == nil && !tab.showHomePage
+            ToolbarLayout.askThisPageIsAvailable(
+                hasAction: onAskThisPage != nil,
+                hasURL: tab.url != nil,
+                isInternalPage: tab.internalPage != nil,
+                isShowingHomePage: tab.showHomePage
+            )
         case .home:
             true
         case .bookmark:
@@ -443,15 +448,17 @@ struct NavigationBarView: View {
     private func actionButton(for item: ToolbarButtonID) -> some View {
         switch item {
         case .askThisPage:
-            // Ask This Page (on-device AI) — quick access, first action icon right
-            // by the search bar, immediately left of Home. Only on a real web page.
+            // Ask Cherry AI (on-device) — quick access, first action icon right
+            // by the search bar, immediately left of Home. On every surface:
+            // it answers about the page when there is one to read, and chats
+            // generally when there isn't.
             Button { invoke(.askThisPage) } label: {
                 Image(systemName: "sparkles")
                     .font(.system(size: AppConstants.UI.toolbarIconSize, weight: .medium))
                     .foregroundStyle(SettingsManager.shared.accentColor)
             }
             .buttonStyle(ToolbarButtonStyle())
-            .help("Ask This Page (Cmd+Shift+K)")
+            .help("Ask Cherry AI (Cmd+Shift+K)")
 
         case .home:
             Button { invoke(.home) } label: {

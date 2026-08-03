@@ -116,9 +116,24 @@ final class BrowserViewModel {
     var showDevToolsPanel: Bool = false
 
     // MARK: - Ask This Page
-    var showAskThisPage: Bool = false
+    var showAskThisPage: Bool = false {
+        didSet {
+            // A seed belongs to the ONE opening it was typed for. Clearing it
+            // as the panel closes is what stops a homepage question from
+            // reappearing in the composer the next time the panel is opened
+            // from a page. Every close goes through this property, so there is
+            // no second place to keep in step.
+            if !showAskThisPage { askThisPageSeed = "" }
+        }
+    }
     var askThisPageTitle: String = ""
     var askThisPageText: String = ""
+    /// Text the panel's composer should open pre-filled with — set by the
+    /// homepage's Ask control, which routes what the user typed into the chat
+    /// instead of the search engine. Empty means "open with an empty
+    /// composer", which is every other way in. The panel consumes it once, on
+    /// appear (see `AskThisPagePanel.seedDraft`).
+    var askThisPageSeed: String = ""
 
     // MARK: - Address Bar Focus
     /// Bumped by the "Focus Address Bar" (⌘L) command. `BrowserContentView`
@@ -1196,7 +1211,19 @@ final class BrowserViewModel {
             showAskThisPage = false
             return
         }
-        guard let webView = tabManager.focusedTab?.webView else { return }
+        guard let webView = tabManager.focusedTab?.webView else {
+            // No web view — the home page, or any surface whose page was
+            // released — so there is nothing to extract. This used to `return`,
+            // which made the toolbar button, the ⋯ entry, ⌘⇧K and the command
+            // palette all do NOTHING here. The panel has handled this since
+            // general chat existed: an empty snapshot is exactly what
+            // `AskThisPagePanel.isGeneralChat` reads as "nothing to ground on",
+            // so open it with one instead of swallowing the command.
+            askThisPageTitle = ""
+            askThisPageText = ""
+            showAskThisPage = true
+            return
+        }
         let fallbackTitle = currentTab?.title ?? "This Page"
         Task { @MainActor in
             if let content = await PageAIService.extractPageText(from: webView) {
@@ -1208,6 +1235,20 @@ final class BrowserViewModel {
             }
             self.showAskThisPage = true
         }
+    }
+
+    /// The homepage's Ask control: open the panel with what the user typed
+    /// waiting in its composer (empty text simply opens general chat).
+    ///
+    /// Deliberately not `toggleAskThisPage()`: this control's promise is "take
+    /// this to the AI", so pressing it must never be the thing that CLOSES the
+    /// panel. With the panel already open the running conversation is left
+    /// exactly as it is — the seed is consumed once, when the panel appears,
+    /// so it can't reach in and overwrite a draft the user is typing there.
+    func askCherryAI(seed: String) {
+        guard !showAskThisPage else { return }
+        askThisPageSeed = seed
+        toggleAskThisPage()
     }
 
     // MARK: - Picture-in-Picture

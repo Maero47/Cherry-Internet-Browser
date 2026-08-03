@@ -146,6 +146,11 @@ struct HomePageView: View {
     var isPrivateMode: Bool = false
     let onShortcutClick: (URL) -> Void
     let onSearch: (String) -> Void
+    /// The homepage's own way into the AI: what is in the search field is
+    /// routed to the chat instead of to the search engine. Empty text opens a
+    /// general chat, which is the same thing the panel does with a page it
+    /// can't read.
+    let onAskAI: (String) -> Void
 
     @Environment(\.colorScheme) private var colorScheme
     @FocusState private var isSearchFocused: Bool
@@ -228,27 +233,39 @@ struct HomePageView: View {
                 .focused($isSearchFocused)
                 .onSubmit(submitSearch)
 
-            if !searchText.isEmpty {
-                Button {
-                    searchText = ""
-                    isSearchFocused = true
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .foregroundStyle(foreground.opacity(0.35))
+            // Never more than two controls. The `return` chip that used to sit
+            // here rendered ONLY while the field was empty — the one moment
+            // Return does nothing (`submitSearch` guards on an empty query) —
+            // so it hid itself exactly when it would have been true. What it
+            // was trying to say now lives in these two tooltips.
+            HStack(spacing: 4) {
+                if !searchText.isEmpty {
+                    Button {
+                        searchText = ""
+                        isSearchFocused = true
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(foreground.opacity(0.35))
+                    }
+                    .buttonStyle(.plain)
+                    .help("Clear what you typed. Return searches for it.")
+                    .transition(.scale.combined(with: .opacity))
                 }
-                .buttonStyle(.plain)
-                .help("Clear")
-                .transition(.scale.combined(with: .opacity))
-            } else {
-                Text("return")
-                    .font(.system(size: 11, weight: .medium, design: .rounded))
-                    .foregroundStyle(foreground.opacity(0.32))
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(foreground.opacity(0.07), in: RoundedRectangle(cornerRadius: 6))
+
+                AskAIButton(
+                    foreground: foreground,
+                    accent: accent,
+                    hasQuery: !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                    action: askAI
+                )
             }
         }
-        .padding(.horizontal, 19)
+        // 19 leading, 13 trailing: the Ask control carries a 30pt hit target
+        // around a 17pt glyph, so the extra 6pt of its own box is taken back
+        // here. Both glyphs then sit ~28pt from their edge — the field stays
+        // as symmetric as it looks today.
+        .padding(.leading, 19)
+        .padding(.trailing, 13)
         .frame(height: 58)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
         .overlay {
@@ -324,6 +341,97 @@ struct HomePageView: View {
         guard !query.isEmpty else { return }
         onSearch(query)
         searchText = ""
+    }
+
+    /// Sends the field to the AI instead of the search engine. Unguarded, in
+    /// contrast to `submitSearch`: an empty field is a general chat, not a
+    /// reason to do nothing.
+    private func askAI() {
+        onAskAI(searchText.trimmingCharacters(in: .whitespacesAndNewlines))
+        searchText = ""
+    }
+}
+
+// MARK: - Ask control
+
+/// The search field's trailing control: take what is in the field to the AI.
+///
+/// Colour follows the rule the leading magnifier already sets — the accent is
+/// a reply to the user (hover, press, keyboard focus) and never a resting
+/// state. It rests one rung heavier than the magnifier at `0.62` rather than
+/// `0.42`: the magnifier is decoration, this is a control, and `0.42`
+/// composited on the field's material measures ~2.6:1 in light mode against a
+/// 4.5:1 floor (`0.62` measures 4.5–5.1:1 light, 5.1–7.3:1 dark).
+private struct AskAIButton: View {
+    let foreground: Color
+    let accent: Color
+    /// Whether the field has something to ask about. Only changes the words:
+    /// the control is in the first frame and stays there either way.
+    let hasQuery: Bool
+    let action: () -> Void
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var isHovering = false
+    @FocusState private var isFocused: Bool
+
+    private var actionName: String {
+        hasQuery ? "Ask Cherry AI about what you typed" : "Ask Cherry AI"
+    }
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "sparkles")
+                .font(.system(size: 17, weight: .medium))
+                .frame(width: 30, height: 30)
+                .contentShape(Capsule())
+        }
+        .buttonStyle(
+            AskAIButtonStyle(
+                isEngaged: isHovering || isFocused,
+                foreground: foreground,
+                accent: accent,
+                reduceMotion: reduceMotion
+            )
+        )
+        // Tab-reachable, with a ring drawn in the accent and in the shape
+        // family the page already uses. The system's own focus effect is
+        // switched off so there is exactly one ring, and it is this one.
+        .focusable()
+        .focused($isFocused)
+        .focusEffectDisabled()
+        .overlay {
+            Capsule()
+                .stroke(accent.opacity(0.65), lineWidth: 1.5)
+                .opacity(isFocused ? 1 : 0)
+        }
+        .onHover { isHovering = $0 }
+        .keyboardShortcut(.return, modifiers: .command)
+        .help("\(actionName) (Cmd+Return)")
+        .accessibilityLabel(actionName)
+    }
+}
+
+/// The control's two authored moments, both replies to the user: colour
+/// resolving to the accent, and the press. Nothing here runs on its own — the
+/// homepage is redrawn on every new tab, and an idle animation on a surface
+/// seen that often is noise by the end of the first day.
+private struct AskAIButtonStyle: ButtonStyle {
+    /// Hovered or holding keyboard focus. Pressed is folded in below, so a
+    /// button activated from the keyboard colours too.
+    let isEngaged: Bool
+    let foreground: Color
+    let accent: Color
+    let reduceMotion: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        let engaged = isEngaged || configuration.isPressed
+        return configuration.label
+            .foregroundStyle(engaged ? accent : foreground.opacity(0.62))
+            // Ease-out both times: ease-in would hold back the first few
+            // milliseconds, which is the part being watched.
+            .animation(.easeOut(duration: 0.12), value: engaged)
+            .scaleEffect(configuration.isPressed && !reduceMotion ? 0.97 : 1)
+            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
     }
 }
 

@@ -6,6 +6,25 @@
 import SwiftUI
 import WebKit
 
+/// The rule for putting a caller's text into the panel's composer.
+///
+/// Its own type, and pure, because the composer is `@State` inside the panel:
+/// this is the half that decides, and it is the half that can be tested.
+enum AskPanelDraftSeed {
+    /// What the composer should hold once `seed` is handed over, or `nil` to
+    /// leave it exactly as it is.
+    ///
+    /// Two ways to leave it alone, and the second is the important one:
+    /// - nothing was typed before the panel was opened (the ordinary case:
+    ///   every entry point other than the homepage's Ask control seeds ""),
+    /// - the composer is not empty, so something is already there to lose.
+    static func resolve(seed: String, draft: String) -> String? {
+        let trimmed = seed.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, draft.isEmpty else { return nil }
+        return trimmed
+    }
+}
+
 /// Trailing side panel for on-device page Q&A, (when more than the current
 /// page is selected in the tab picker) cited research over the chosen open
 /// tabs, and (when the tab selection is empty) a general ungrounded chat
@@ -17,6 +36,13 @@ import WebKit
 /// selected tab whose content changed (see the follow/refresh tasks in body).
 struct AskThisPagePanel: View {
     let tabManager: TabManager
+    /// Text the composer opens pre-filled with, handed over by whoever opened
+    /// the panel — today only the homepage's Ask control, which routes what
+    /// the user typed here instead of to the search engine. Empty for every
+    /// other way in. Consumed ONCE, when the panel appears (see
+    /// `seedDraftIfNeeded`): a value re-applied on later body passes would
+    /// keep re-appearing under whatever the user has since typed.
+    let seedDraft: String
     let onDismiss: () -> Void
 
     /// LIVE snapshot of the page the single-page chat is grounded on. Seeded
@@ -35,6 +61,11 @@ struct AskThisPagePanel: View {
     @StateObject private var chatSession = PageChatSession()
     @StateObject private var researchSession = TabsResearchSession()
     @State private var draft: String = ""
+    /// Whether `seedDraft` has already been handed to `draft`. One panel, one
+    /// seeding: `onAppear` can run again for the same instance (the panel is
+    /// re-inserted into the hierarchy), and re-seeding then would drop the
+    /// homepage's old question back on top of a live composer.
+    @State private var hasSeededDraft = false
     /// Turn IDs whose reasoning ("Thoughts") disclosure is expanded. Kept on
     /// the panel (not inside the row builder) because rows live in a ForEach —
     /// a `@State` in the row would reset on every turns-array mutation.
@@ -128,10 +159,17 @@ struct AskThisPagePanel: View {
     /// created inside each `search` call, so this holds no page state.
     @State private var webSearchService = WebSearchService()
 
-    init(pageTitle: String, pageText: String, tabManager: TabManager, onDismiss: @escaping () -> Void) {
+    init(
+        pageTitle: String,
+        pageText: String,
+        tabManager: TabManager,
+        seedDraft: String = "",
+        onDismiss: @escaping () -> Void
+    ) {
         _pageTitle = State(initialValue: pageTitle)
         _pageText = State(initialValue: pageText)
         self.tabManager = tabManager
+        self.seedDraft = seedDraft
         self.onDismiss = onDismiss
         let active = tabManager.selectedTabID
         _activeTabID = State(initialValue: active)
@@ -371,12 +409,26 @@ struct AskThisPagePanel: View {
             }
             researchRestoreOverride = false
         }
+        .onAppear {
+            seedDraftIfNeeded()
+        }
         .onDisappear {
             webAgentTask?.cancel()
             researchReopenTask?.cancel()
             saveChatConversation()
             saveResearchConversation()
         }
+    }
+
+    // MARK: - Seeded draft
+
+    /// Moves `seedDraft` into the composer the first time the panel appears,
+    /// and never again for this panel.
+    private func seedDraftIfNeeded() {
+        guard !hasSeededDraft else { return }
+        hasSeededDraft = true
+        guard let seeded = AskPanelDraftSeed.resolve(seed: seedDraft, draft: draft) else { return }
+        draft = seeded
     }
 
     // MARK: - Chat history
