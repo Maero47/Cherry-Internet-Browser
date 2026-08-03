@@ -322,6 +322,14 @@ struct TabItemView: View {
                 .fill(themedSelectedBackground)
                 .shadow(color: .black.opacity(0.18), radius: 6, y: 2)
         } else if isSelected {
+            // This branch is also what a theme with header images but no
+            // `tab_selected`/`toolbar` color falls into, so the stroke can end
+            // up over header art. It stays anyway: it is a rim on the selected
+            // tab's OWN material chip — it draws that chip's edge rather than
+            // ruling a line across the artwork — and against a busy header
+            // image a translucent material with no defined edge is exactly
+            // what stops reading as the selected tab. Removing it would cost
+            // legibility to fix nothing.
             RoundedRectangle(cornerRadius: AppConstants.UI.tabCornerRadius)
                 .fill(.regularMaterial)
                 .shadow(color: .black.opacity(0.18), radius: 6, y: 2)

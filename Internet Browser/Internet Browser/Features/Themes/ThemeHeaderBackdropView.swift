@@ -128,11 +128,12 @@ final class ThemeHeaderCanvasNSView: NSView, ThemeAnimationTickReceiver {
     }
 
     // viewDidMoveToWindow(nil) covers normal removal, but a closing window
-    // can dealloc the view tree without it. The clock holds receivers weakly,
-    // so this canvas is already OUT of its table by the time deinit runs —
-    // what this call is for is making the clock re-check and invalidate the
-    // shared timer once the last animating canvas is gone, instead of leaving
-    // it firing for windows that no longer exist.
+    // can dealloc the view tree without it. This drops the canvas from the
+    // clock's table, and — the part that must not be lost — it is the only
+    // thing that makes the clock re-check its receivers when the last
+    // animating canvas dies. Delete it and nothing invalidates the shared
+    // timer: it goes on firing at up to 60 Hz on the main thread for windows
+    // that no longer exist.
     deinit {
         ThemeAnimationClock.shared.removeReceiver(self)
     }

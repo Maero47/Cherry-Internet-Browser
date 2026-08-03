@@ -128,10 +128,17 @@ final class ThemeAnimationClock {
         syncTimer()
     }
 
-    /// Also called from `deinit`. Note the table's weak key has ALREADY been
-    /// pruned by the time a receiver's `deinit` runs, so that call's
-    /// `removeObject` is a no-op — what actually stops the ticker is the
-    /// `syncTimer()` below finding the table empty and invalidating.
+    /// Also called from a receiver's `deinit`, where it does remove the entry:
+    /// the weak key is still in the table at that point (the table's `count`
+    /// drops across this call).
+    ///
+    /// That is not why the `deinit` call matters, though. If a receiver is
+    /// deallocated without calling this, the table's `count` goes stale but
+    /// enumeration already skips the zeroed key, so `syncTimer()` would still
+    /// see no delays and invalidate — the problem is that nothing would CALL
+    /// `syncTimer()`. This is the only thing that re-checks when the last
+    /// canvas dies, so without it the ticker keeps firing at up to 60 Hz on
+    /// the main thread forever, ticking an empty enumeration.
     func removeReceiver(_ receiver: ThemeAnimationTickReceiver) {
         receivers.removeObject(forKey: receiver)
         syncTimer()

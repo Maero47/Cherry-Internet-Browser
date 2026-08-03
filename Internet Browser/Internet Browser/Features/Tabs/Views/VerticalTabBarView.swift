@@ -176,6 +176,12 @@ struct VerticalTabBarView: View {
                         tabItem(for: tab)
                     }
 
+                    // Kept even on a themed backdrop: `VerticalTabItemView`
+                    // renders a pinned tab identically to any other row, so
+                    // this inset rule is the ONLY thing showing where the
+                    // pinned run ends. It carries information the artwork
+                    // cannot, and being inset it reads as list structure
+                    // rather than a line ruled across the chrome.
                     if tabManager.tabs.contains(where: { $0.isPinned }) {
                         Divider()
                             .padding(.horizontal, 8)
@@ -208,7 +214,16 @@ struct VerticalTabBarView: View {
                 handleBarDrop()
             }
 
-            Divider()
+            // Unlike the pinned separator above, this one runs edge to edge
+            // across the sidebar — on a themed backdrop it is a full-bleed
+            // line ruled over the header art, the sidebar's version of the
+            // tab-strip/toolbar seam. It also carries less: the row below is
+            // a glyph-and-label button at the bottom of the bar, outside the
+            // scroll area, and reads as a control without a rule above it.
+            // Stock look and private windows (never themed) keep it.
+            if isPrivateMode || !FirefoxThemeManager.shared.hasHeaderBackdrop {
+                Divider()
+            }
 
             // New tab button
             Button(action: onNewTab) {
