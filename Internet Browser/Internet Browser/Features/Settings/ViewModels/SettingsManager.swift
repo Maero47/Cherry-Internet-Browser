@@ -516,8 +516,23 @@ final class SettingsManager {
     /// The loopback port the MCP server binds. Fixed rather than ephemeral,
     /// because the `claude mcp add` command the user copies has to keep working
     /// across restarts.
+    ///
+    /// An out-of-range value is refused rather than stored. Port 0 in particular
+    /// is not harmless: `NWEndpoint.Port(rawValue: 0)` is `.any`, so the listener
+    /// would bind an OS-assigned port while `OriginValidator.localhost(port:)`
+    /// and `registrationCommand` both went on describing a port nothing is
+    /// listening on — every legitimate client would get 421.
+    ///
+    /// (Assigning inside `didSet` does not re-enter it, so the revert is safe;
+    /// `init` guarantees the value being reverted to is itself valid.)
     var mcpServerPort: Int {
-        didSet { UserDefaults.standard.set(mcpServerPort, forKey: Keys.mcpServerPort) }
+        didSet {
+            guard Self.isValidMCPServerPort(mcpServerPort) else {
+                mcpServerPort = oldValue
+                return
+            }
+            UserDefaults.standard.set(mcpServerPort, forKey: Keys.mcpServerPort)
+        }
     }
 
     /// The default MCP port. Unassigned by IANA and not in common use.

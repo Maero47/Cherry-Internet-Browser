@@ -245,6 +245,49 @@ final class MCPRequestServerTests: XCTestCase {
         XCTAssertEqual(response.statusCode, 401)
     }
 
+    /// The invariant this file's header claims: an unauthorised caller learns
+    /// exactly one thing, `401`.
+    ///
+    /// It was false. `StatelessHTTPServerTransport.handleRequest` answers 405
+    /// (with `Allow: POST`), 400 "Empty request body" and 400 "Invalid JSON-RPC
+    /// message" BEFORE it ever runs the validation pipeline — so the bearer
+    /// check was first inside the pipeline, but the pipeline was not first.
+    ///
+    /// Two consequences, the second being the real one:
+    ///   * an unauthenticated caller could fingerprint Cherry-with-MCP on the
+    ///     port, which is the recon the 401-only design existed to deny;
+    ///   * attacker-controlled bytes reached `JSONRPCMessageKind(data:)` — a
+    ///     JSON decode over an unauthenticated body up to 1 MB — before the
+    ///     token was ever compared. Every decoder bug in that path was pre-auth.
+    func testEveryPreDispatchRefusalStillRequiresTheToken() async {
+        let unauthorized: [(name: String, request: HTTPRequest)] = [
+            ("non-POST", request(json: "", authorization: "Bearer wrong", method: "GET")),
+            ("DELETE", request(json: "", authorization: "Bearer wrong", method: "DELETE")),
+            ("empty body", request(json: "", authorization: "Bearer wrong")),
+            ("not JSON at all", request(json: "not json", authorization: "Bearer wrong")),
+            ("JSON but not JSON-RPC", request(json: #"{"hello":"world"}"#, authorization: "Bearer wrong")),
+            ("wrong content type", request(json: #"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#,
+                                           authorization: "Bearer wrong", contentType: "text/plain")),
+            ("unacceptable Accept", request(json: #"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#,
+                                            authorization: "Bearer wrong", accept: "text/html")),
+        ]
+
+        for (name, unauthenticated) in unauthorized {
+            let response = await makeServer().serve(unauthenticated)
+            XCTAssertEqual(response.statusCode, 401, "\(name) leaked a non-401 status")
+            XCTAssertNil(response.headers["Allow"], "\(name) leaked the accepted methods")
+            assertNoToolDataLeaked(in: text(of: response))
+        }
+    }
+
+    /// The token check must run before anything decodes the body, so an
+    /// unauthenticated 1 MB body is never handed to a JSON parser.
+    func testAnUnauthenticatedBodyIsNeverDecoded() async {
+        let hostile = String(repeating: "[", count: 200_000)
+        let response = await makeServer().serve(request(json: hostile, authorization: "Bearer wrong"))
+        XCTAssertEqual(response.statusCode, 401)
+    }
+
     // MARK: - DNS rebinding
 
     /// A web page's `fetch('http://127.0.0.1:8787/mcp')` sends an `Origin`; a

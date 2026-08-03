@@ -199,6 +199,11 @@ nonisolated final class MCPHTTPListener: @unchecked Sendable {
     private final class Connection: @unchecked Sendable {
         let nw: NWConnection
         var buffer = Data()
+        /// Parsed once, then never again for this connection.
+        var head: MCPHTTPWire.RequestHead?
+        /// Where the CRLFCRLF search resumes, so the header scan is not
+        /// restarted from byte zero on every segment.
+        var scanOffset = 0
         /// Set once a request has been handed off, so the read timeout stops
         /// applying to a response we are still producing.
         var handedOff = false
@@ -241,33 +246,49 @@ nonisolated final class MCPHTTPListener: @unchecked Sendable {
                 return
             }
 
-            switch MCPHTTPWire.parseRequest(from: connection.buffer) {
-            case .failure(let statusCode, let message):
-                respond(MCPHTTPWire.framingError(statusCode: statusCode, message: message), on: connection)
+            // Parse the head at most once per connection. After that, "has the
+            // whole request arrived?" is one integer comparison per segment
+            // rather than a fresh copy-and-reparse of everything received so far.
+            if connection.head == nil {
+                switch MCPHTTPWire.parseHead(from: connection.buffer, resumingAt: connection.scanOffset) {
+                case .failure(let statusCode, let message):
+                    respond(MCPHTTPWire.framingError(statusCode: statusCode, message: message), on: connection)
+                    return
+                case .incomplete(let nextScanOffset):
+                    connection.scanOffset = nextScanOffset
+                case .complete(let head):
+                    connection.head = head
+                }
+            }
 
-            case .complete(let request, _):
+            if let head = connection.head, connection.buffer.count >= head.totalLength {
+                let request = MCPHTTPWire.request(from: connection.buffer, head: head)
                 connection.handedOff = true
                 let handler = handler
                 Task {
                     let response = await handler(request)
                     self.queue.async { self.respond(response, on: connection) }
                 }
-
-            case .incomplete:
-                if isComplete {
-                    // Client hung up mid-request.
-                    connection.nw.cancel()
-                    return
-                }
-                if connection.buffer.count > MCPHTTPWire.maxRequestBytes {
-                    respond(
-                        MCPHTTPWire.framingError(statusCode: 413, message: "Payload Too Large"),
-                        on: connection
-                    )
-                    return
-                }
-                receive(connection)
+                return
             }
+
+            if isComplete {
+                // Client hung up mid-request.
+                connection.nw.cancel()
+                return
+            }
+            // Before a head is parsed the header cap applies; after it, the
+            // request's own declared length is the ceiling and `parseHead`
+            // already refused anything over the body cap.
+            let ceiling = connection.head?.totalLength ?? MCPHTTPWire.maxHeaderBytes
+            if connection.buffer.count > ceiling {
+                respond(
+                    MCPHTTPWire.framingError(statusCode: 413, message: "Payload Too Large"),
+                    on: connection
+                )
+                return
+            }
+            receive(connection)
         }
     }
 
@@ -304,22 +325,63 @@ nonisolated enum MCPHTTPWire {
         case failure(statusCode: Int, message: String)
     }
 
-    // MARK: Request
+    // MARK: Request head
 
-    static func parseRequest(from buffer: Data) -> ParseResult {
-        let bytes = [UInt8](buffer)
+    /// Everything a request declares before its body.
+    ///
+    /// Parsed exactly once per connection. Once it is in hand, deciding whether
+    /// the rest of the request has arrived is a single integer comparison — see
+    /// `totalLength`. That is the whole point of splitting it out: re-running a
+    /// full parse on every TCP segment made a slow 1 MB upload cost
+    /// O(segments × buffer) in memcpy and header re-parsing, on the single
+    /// serial queue that also services the accept handler and every other
+    /// connection. No token was needed to trigger it.
+    struct RequestHead: Sendable, Equatable {
+        let method: String
+        let path: String
+        /// Header names are lowercased on insertion — see `parseHead`.
+        let headers: [String: String]
+        /// Bytes from the start of the request through the terminating CRLFCRLF.
+        let headerBlockLength: Int
+        /// `false` when no `Content-Length` was sent at all, which is different
+        /// from `Content-Length: 0`.
+        let declaresBody: Bool
+        let contentLength: Int
 
-        guard let headerEnd = indexOfHeaderTerminator(in: bytes) else {
-            if bytes.count > maxHeaderBytes {
+        /// The exact size of the whole request on the wire.
+        var totalLength: Int { headerBlockLength + contentLength }
+    }
+
+    enum HeadParseResult: Sendable {
+        /// The header block has not fully arrived. `nextScanOffset` is where the
+        /// terminator search may resume, so the scan is not restarted from zero
+        /// on every segment.
+        case incomplete(nextScanOffset: Int)
+        case complete(RequestHead)
+        case failure(statusCode: Int, message: String)
+    }
+
+    private static let headerTerminator = Data([0x0D, 0x0A, 0x0D, 0x0A])
+
+    static func parseHead(from buffer: Data, resumingAt scanOffset: Int = 0) -> HeadParseResult {
+        let start = buffer.startIndex
+        let searchFrom = start + max(0, min(scanOffset, buffer.count))
+
+        guard let terminator = buffer.range(of: headerTerminator, in: searchFrom..<buffer.endIndex) else {
+            if buffer.count > maxHeaderBytes {
                 return .failure(statusCode: 431, message: "Request Header Fields Too Large")
             }
-            return .incomplete
+            // Resume three bytes back, so a CRLFCRLF split across two segments
+            // is still found.
+            return .incomplete(nextScanOffset: max(0, buffer.count - 3))
         }
+
+        let headerEnd = buffer.distance(from: start, to: terminator.lowerBound)
         if headerEnd > maxHeaderBytes {
             return .failure(statusCode: 431, message: "Request Header Fields Too Large")
         }
 
-        var lines = String(decoding: bytes[0..<headerEnd], as: UTF8.self)
+        var lines = String(decoding: buffer[start..<terminator.lowerBound], as: UTF8.self)
             .components(separatedBy: "\r\n")
         guard !lines.isEmpty else {
             return .failure(statusCode: 400, message: "Malformed request")
@@ -343,7 +405,18 @@ nonisolated enum MCPHTTPWire {
             guard let colon = line.firstIndex(of: ":") else {
                 return .failure(statusCode: 400, message: "Malformed header line")
             }
-            let name = String(line[line.startIndex..<colon]).trimmingCharacters(in: .whitespaces)
+            // LOWERCASED ON INSERTION, and this is load-bearing. Folding
+            // duplicates with ", " is what makes `Content-Length: 10` plus a
+            // second `Content-Length: 0` fail `Int("10, 0")` and get rejected.
+            // Keying on the raw name defeated that for `content-length: 0`,
+            // which landed in a second dictionary entry — and every lookup,
+            // ours and the SDK's, resolves with `headers.first { … }`, whose
+            // order is undefined. The same request framed differently between
+            // runs, with an attacker choosing which `Authorization`, `Origin`
+            // or `Host` the validators saw.
+            let name = String(line[line.startIndex..<colon])
+                .trimmingCharacters(in: .whitespaces)
+                .lowercased()
             let value = String(line[line.index(after: colon)...]).trimmingCharacters(in: .whitespaces)
             guard !name.isEmpty else {
                 return .failure(statusCode: 400, message: "Malformed header line")
@@ -358,17 +431,21 @@ nonisolated enum MCPHTTPWire {
         // Refuse chunked bodies rather than mis-parse them. Claude Code does not
         // send them; a different client might, and a wrong answer would be worse
         // than a clear refusal.
-        if headerValue("Transfer-Encoding", in: headers) != nil {
+        if headers["transfer-encoding"] != nil {
             return .failure(statusCode: 501, message: "Transfer-Encoding is not supported")
         }
 
-        let bodyStart = headerEnd + 4
+        let headerBlockLength = headerEnd + headerTerminator.count
 
-        guard let lengthHeader = headerValue("Content-Length", in: headers) else {
-            return .complete(
-                request: HTTPRequest(method: method, headers: headers, body: nil, path: path),
-                bytesConsumed: bodyStart
-            )
+        guard let lengthHeader = headers["content-length"] else {
+            return .complete(RequestHead(
+                method: method,
+                path: path,
+                headers: headers,
+                headerBlockLength: headerBlockLength,
+                declaresBody: false,
+                contentLength: 0
+            ))
         }
 
         guard let contentLength = Int(lengthHeader), contentLength >= 0 else {
@@ -377,33 +454,47 @@ nonisolated enum MCPHTTPWire {
         guard contentLength <= maxBodyBytes else {
             return .failure(statusCode: 413, message: "Payload Too Large")
         }
-        guard bytes.count - bodyStart >= contentLength else {
-            return .incomplete
-        }
 
-        let body = Data(bytes[bodyStart..<(bodyStart + contentLength)])
-        return .complete(
-            request: HTTPRequest(method: method, headers: headers, body: body, path: path),
-            bytesConsumed: bodyStart + contentLength
-        )
+        return .complete(RequestHead(
+            method: method,
+            path: path,
+            headers: headers,
+            headerBlockLength: headerBlockLength,
+            declaresBody: true,
+            contentLength: contentLength
+        ))
+    }
+
+    /// Slice the body out of a buffer known to hold `head.totalLength` bytes.
+    static func request(from buffer: Data, head: RequestHead) -> HTTPRequest {
+        let bodyStart = buffer.startIndex + head.headerBlockLength
+        let body: Data? = head.declaresBody
+            ? Data(buffer[bodyStart..<(bodyStart + head.contentLength)])
+            : nil
+        return HTTPRequest(method: head.method, headers: head.headers, body: body, path: head.path)
+    }
+
+    // MARK: Whole-request convenience
+
+    /// One-shot parse over a complete buffer. The listener does not use this —
+    /// it keeps the head across segments — but it is the shape fixtures and
+    /// tests want.
+    static func parseRequest(from buffer: Data) -> ParseResult {
+        switch parseHead(from: buffer) {
+        case .incomplete:
+            return .incomplete
+        case .failure(let statusCode, let message):
+            return .failure(statusCode: statusCode, message: message)
+        case .complete(let head):
+            guard buffer.count >= head.totalLength else { return .incomplete }
+            return .complete(request: request(from: buffer, head: head), bytesConsumed: head.totalLength)
+        }
     }
 
     /// Case-insensitive header lookup, matching `HTTPRequest.header(_:)`.
     static func headerValue(_ name: String, in headers: [String: String]) -> String? {
         let wanted = name.lowercased()
         return headers.first { $0.key.lowercased() == wanted }?.value
-    }
-
-    private static func indexOfHeaderTerminator(in bytes: [UInt8]) -> Int? {
-        guard bytes.count >= 4 else { return nil }
-        for index in 0...(bytes.count - 4) where bytes[index] == 0x0D
-            && bytes[index + 1] == 0x0A
-            && bytes[index + 2] == 0x0D
-            && bytes[index + 3] == 0x0A
-        {
-            return index
-        }
-        return nil
     }
 
     // MARK: Response

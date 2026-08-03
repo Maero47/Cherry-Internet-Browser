@@ -4,10 +4,18 @@
 //
 //  The first thing every MCP request meets.
 //
-//  This runs BEFORE origin checks, before Accept/Content-Type checks, and
-//  before the transport parses anything into a tool call — so an unauthorised
-//  caller learns exactly one thing about Cherry: `401`. No tool names, no tab
-//  titles, no history, not even which protocol versions we speak.
+//  "First" means first in `MCPRequestServer.serve`, before
+//  `StatelessHTTPServerTransport.handleRequest` is called at all — NOT merely
+//  first inside the transport's validation pipeline. The transport answers 405
+//  for a non-POST and 400 for a body it cannot classify before it ever runs the
+//  pipeline, so a validator that is only first in the pipeline still lets an
+//  unauthenticated caller fingerprint the server and, worse, still lets its
+//  bytes reach a JSON decoder. This validator is registered in both places; the
+//  call site in `serve` is the one that holds the invariant.
+//
+//  With that ordering, an unauthorised caller learns exactly one thing about
+//  Cherry: `401`. No tool names, no tab titles, no history, no `Allow` header,
+//  not even which protocol versions we speak.
 //
 //  The SDK ships its own `BearerTokenValidator`, but it is built for OAuth 2.1
 //  resource servers: it answers `400` for a malformed `Authorization` header

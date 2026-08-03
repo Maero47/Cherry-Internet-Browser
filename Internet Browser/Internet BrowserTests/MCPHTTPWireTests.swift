@@ -107,6 +107,151 @@ final class MCPHTTPWireTests: XCTestCase {
         XCTAssertLessThan(consumed, raw.count)
     }
 
+    // MARK: - Duplicate headers
+
+    /// Folding duplicates with `", "` is the defence that makes a smuggled
+    /// second `Content-Length` fail `Int("10, 0")`. It only fired when the raw
+    /// names matched byte-for-byte, so `content-length` in a different case
+    /// landed in a SECOND dictionary entry — and every lookup, ours and the
+    /// SDK's, resolves with `headers.first { $0.key.lowercased() == … }`, whose
+    /// order is undefined. Same request, different framing between runs, with
+    /// the attacker choosing which value the parser saw.
+    func testCaseDifferingDuplicateContentLengthIsFoldedAndRejected() {
+        let raw = bytes(
+            "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 10\r\ncontent-length: 0\r\n\r\n0123456789"
+        )
+        // Run it repeatedly: the bug was nondeterministic, so one green pass
+        // never proved anything.
+        for attempt in 1...50 {
+            guard case .failure(let status, _) = MCPHTTPWire.parseRequest(from: raw) else {
+                return XCTFail("attempt \(attempt) accepted a doubled Content-Length")
+            }
+            XCTAssertEqual(status, 400, "attempt \(attempt)")
+        }
+    }
+
+    /// The same nondeterminism let an attacker choose which `Authorization`,
+    /// `Origin` or `Host` the validators saw.
+    func testCaseDifferingDuplicateAuthorizationResolvesDeterministically() {
+        let raw = bytes(
+            "POST /mcp HTTP/1.1\r\nAuthorization: Bearer real\r\nauthorization: Bearer forged\r\n\r\n"
+        )
+        var seen = Set<String>()
+        for _ in 1...50 {
+            guard case .complete(let request, _) = MCPHTTPWire.parseRequest(from: raw) else {
+                return XCTFail("expected a complete request")
+            }
+            seen.insert(request.header("Authorization") ?? "<nil>")
+        }
+        XCTAssertEqual(seen, ["Bearer real, Bearer forged"], "resolved to \(seen)")
+    }
+
+    func testHeaderNamesAreLowercasedOnInsertion() {
+        let raw = bytes("POST /mcp HTTP/1.1\r\nContent-Type: application/json\r\nX-Weird-CASE: 1\r\n\r\n")
+        guard case .complete(let request, _) = MCPHTTPWire.parseRequest(from: raw) else {
+            return XCTFail("expected a complete request")
+        }
+        XCTAssertEqual(Set(request.headers.keys), ["content-type", "x-weird-case"])
+        // The SDK's own accessor lowercases the query, so lookups are unaffected.
+        XCTAssertEqual(request.header("Content-Type"), "application/json")
+    }
+
+    // MARK: - Incremental parsing
+
+    /// The head is parsed once; after that, "has it all arrived?" is a single
+    /// integer comparison.
+    func testHeadCarriesEverythingNeededToMeasureTheRequest() {
+        let body = #"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#
+        let raw = post(body: body)
+
+        guard case .complete(let head) = MCPHTTPWire.parseHead(from: raw) else {
+            return XCTFail("expected a complete head")
+        }
+        XCTAssertEqual(head.method, "POST")
+        XCTAssertEqual(head.path, "/mcp")
+        XCTAssertEqual(head.contentLength, body.utf8.count)
+        XCTAssertTrue(head.declaresBody)
+        XCTAssertEqual(head.totalLength, raw.count)
+        XCTAssertEqual(head.headerBlockLength, raw.count - body.utf8.count)
+
+        let request = MCPHTTPWire.request(from: raw, head: head)
+        XCTAssertEqual(String(decoding: request.body ?? Data(), as: UTF8.self), body)
+    }
+
+    func testHeadWithoutContentLengthDeclaresNoBody() {
+        guard case .complete(let head) = MCPHTTPWire.parseHead(from: bytes("GET /mcp HTTP/1.1\r\n\r\n")) else {
+            return XCTFail("expected a complete head")
+        }
+        XCTAssertFalse(head.declaresBody)
+        XCTAssertEqual(head.contentLength, 0)
+        XCTAssertNil(MCPHTTPWire.request(from: bytes("GET /mcp HTTP/1.1\r\n\r\n"), head: head).body)
+    }
+
+    /// The resume offset must never step over a CRLFCRLF that straddles two
+    /// segments.
+    func testTerminatorSplitAcrossSegmentsIsStillFound() {
+        let raw = bytes("POST /mcp HTTP/1.1\r\nHost: x\r\n\r\n")
+        for split in 0...raw.count {
+            var buffer = Data()
+            var scanOffset = 0
+            var head: MCPHTTPWire.RequestHead?
+
+            for chunk in [raw.prefix(split), raw.suffix(from: split)] where !chunk.isEmpty {
+                buffer.append(chunk)
+                switch MCPHTTPWire.parseHead(from: buffer, resumingAt: scanOffset) {
+                case .complete(let parsed): head = parsed
+                case .incomplete(let next): scanOffset = next
+                case .failure(let status, let message): return XCTFail("split \(split): \(status) \(message)")
+                }
+                if head != nil { break }
+            }
+            XCTAssertNotNil(head, "split at \(split) lost the header terminator")
+        }
+    }
+
+    /// The listener's loop, driven by hand: parse the head once, then only
+    /// compare counts. Under the old whole-buffer re-parse this was
+    /// O(segments × buffer) of memcpy plus a full header re-parse per segment,
+    /// **on the single serial queue that also services the accept handler** —
+    /// so one unauthenticated client dribbling a declared 1 MB body stalled the
+    /// entire listener. Parsing finishes before the handler is reached, so no
+    /// token was needed.
+    ///
+    /// The bound is deliberately loose (the fixed version runs in a few ms);
+    /// it is a regression trip-wire for the quadratic, not a benchmark.
+    func testDribblingALargeBodyDoesNotReparseTheHeaders() {
+        let bodySize = MCPHTTPWire.maxBodyBytes
+        let head = "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+            + String(repeating: "X-Pad-Header-Name: some padding value here\r\n", count: 200)
+            + "Content-Type: application/json\r\nContent-Length: \(bodySize)\r\n\r\n"
+
+        var buffer = Data(head.utf8)
+        var scanOffset = 0
+        var parsedHead: MCPHTTPWire.RequestHead?
+        var headParses = 0
+
+        let segment = Data(repeating: UInt8(ascii: "a"), count: 1024)
+        let started = Date()
+
+        while true {
+            if parsedHead == nil {
+                headParses += 1
+                switch MCPHTTPWire.parseHead(from: buffer, resumingAt: scanOffset) {
+                case .complete(let value): parsedHead = value
+                case .incomplete(let next): scanOffset = next
+                case .failure(let status, let message): return XCTFail("\(status): \(message)")
+                }
+            }
+            if let parsedHead, buffer.count >= parsedHead.totalLength { break }
+            buffer.append(segment)
+        }
+        let elapsed = Date().timeIntervalSince(started)
+
+        XCTAssertEqual(headParses, 1, "the header block was re-parsed \(headParses) times")
+        XCTAssertEqual(buffer.count, parsedHead?.totalLength)
+        XCTAssertLessThan(elapsed, 2.0, "1 MB in 1 KB segments took \(elapsed)s")
+    }
+
     // MARK: - Refusals
 
     func testChunkedTransferEncodingIsRefusedNotGuessedAt() {

@@ -34,6 +34,7 @@ nonisolated struct MCPTokenStore: Sendable {
     enum Failure: LocalizedError {
         case randomBytesUnavailable(OSStatus)
         case couldNotWrite(URL)
+        case applicationSupportUnavailable
 
         var errorDescription: String? {
             switch self {
@@ -41,6 +42,8 @@ nonisolated struct MCPTokenStore: Sendable {
                 "Could not generate a secure random token (SecRandomCopyBytes returned \(status))."
             case .couldNotWrite(let url):
                 "Could not write the MCP token file at \(url.path)."
+            case .applicationSupportUnavailable:
+                "Could not locate the Application Support directory, so there is nowhere safe to keep the MCP token."
             }
         }
     }
@@ -49,18 +52,36 @@ nonisolated struct MCPTokenStore: Sendable {
     /// entropy — far beyond brute force over a loopback socket.
     static let tokenByteCount = 32
 
+    /// The mode the token file and its directory must carry.
+    static let fileMode = 0o600
+    static let directoryMode = 0o700
+
     /// `~/Library/Application Support/<bundle id>/MCP/`
-    static let defaultDirectory: URL = {
+    ///
+    /// Throws rather than falling back. There is no safe second location for a
+    /// bearer token: the obvious fallback, `temporaryDirectory`, is somewhere
+    /// the OS may prune out from under us, which would silently invalidate
+    /// every registered client and leave the user with a server that refuses
+    /// the token they copied.
+    static func defaultDirectory() throws -> URL {
         let fileManager = FileManager.default
-        let base = (try? fileManager.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true))
-            ?? fileManager.temporaryDirectory
+        guard let base = try? fileManager.url(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask,
+            appropriateFor: nil,
+            create: true
+        ) else {
+            throw Failure.applicationSupportUnavailable
+        }
         let appDirectoryName = Bundle.main.bundleIdentifier ?? "Cherry"
         return base
             .appendingPathComponent(appDirectoryName, isDirectory: true)
             .appendingPathComponent("MCP", isDirectory: true)
-    }()
+    }
 
-    static let shared = MCPTokenStore(directory: defaultDirectory)
+    /// `nil` when Application Support could not be resolved. Callers treat that
+    /// as "the server cannot run", which is the correct fail-closed answer.
+    static let shared: MCPTokenStore? = (try? defaultDirectory()).map(MCPTokenStore.init(directory:))
 
     let directory: URL
 
@@ -74,15 +95,17 @@ nonisolated struct MCPTokenStore: Sendable {
 
     /// The token on disk, or `nil` if none has been generated yet.
     ///
-    /// Repairs the file mode on the way out: a token file that somehow ended up
-    /// group- or world-readable is tightened rather than trusted, because the
-    /// alternative is silently serving a secret from a `0644` file.
+    /// Repairs the modes BEFORE reading, not after: tightening a `0644` file
+    /// once its contents have already been handed out is theatre. Both the file
+    /// and the directory are repaired, because a `0600` file inside a
+    /// world-writable directory can simply be replaced — and since this runs on
+    /// every request, a replaced file would be believed immediately.
     func existingToken() -> String? {
+        tightenPermissionsIfNeeded()
         let url = tokenFileURL
         guard let data = try? Data(contentsOf: url) else { return nil }
         let token = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
         guard !token.isEmpty else { return nil }
-        tightenPermissionsIfNeeded(at: url)
         return token
     }
 
@@ -96,8 +119,13 @@ nonisolated struct MCPTokenStore: Sendable {
     /// The mode the token file actually carries right now, for assertions and
     /// for the Settings pane to surface if it is ever wrong.
     func tokenFilePermissions() -> Int? {
-        let attributes = try? FileManager.default.attributesOfItem(atPath: tokenFileURL.path)
-        return (attributes?[.posixPermissions] as? NSNumber)?.intValue
+        Self.permissions(ofItemAt: tokenFileURL)
+    }
+
+    /// The mode the containing directory carries. Just as load-bearing as the
+    /// file's: write access to the directory is write access to the token.
+    func directoryPermissions() -> Int? {
+        Self.permissions(ofItemAt: directory)
     }
 
     // MARK: - Writing
@@ -124,13 +152,17 @@ nonisolated struct MCPTokenStore: Sendable {
 
     private func write(_ token: String) throws {
         let fileManager = FileManager.default
-        // 0700 on the directory too: a 0600 file inside a world-writable
-        // directory can simply be replaced.
+        // `createDirectory(withIntermediateDirectories: true, attributes:)`
+        // succeeds and SILENTLY IGNORES the attributes when the directory is
+        // already there — so passing 0700 here only ever protected the
+        // create-new case. The explicit repair below is what actually holds the
+        // guarantee for a directory that predates this build.
         try? fileManager.createDirectory(
             at: directory,
             withIntermediateDirectories: true,
-            attributes: [.posixPermissions: NSNumber(value: 0o700)]
+            attributes: [.posixPermissions: NSNumber(value: Self.directoryMode)]
         )
+        tightenDirectoryPermissionsIfNeeded()
 
         let url = tokenFileURL
         // Remove first: `createFile` on an existing path keeps the old inode's
@@ -140,19 +172,39 @@ nonisolated struct MCPTokenStore: Sendable {
         let created = fileManager.createFile(
             atPath: url.path,
             contents: Data(token.utf8),
-            attributes: [.posixPermissions: NSNumber(value: 0o600)]
+            attributes: [.posixPermissions: NSNumber(value: Self.fileMode)]
         )
         guard created else { throw Failure.couldNotWrite(url) }
 
-        // Never assume the create call honoured the attributes — assert and fix.
-        tightenPermissionsIfNeeded(at: url)
+        // Never assume the create call honoured the attributes — check and fix.
+        tightenPermissionsIfNeeded()
     }
 
-    private func tightenPermissionsIfNeeded(at url: URL) {
-        let fileManager = FileManager.default
-        let current = (try? fileManager.attributesOfItem(atPath: url.path))?[.posixPermissions] as? NSNumber
-        guard current?.intValue != 0o600 else { return }
-        try? fileManager.setAttributes([.posixPermissions: NSNumber(value: 0o600)], ofItemAtPath: url.path)
+    /// Bring both the directory and the token file back to their required modes.
+    ///
+    /// Directory first: tightening the file while the directory it sits in is
+    /// still writable by anyone protects nothing, because the file can be
+    /// replaced wholesale.
+    private func tightenPermissionsIfNeeded() {
+        tightenDirectoryPermissionsIfNeeded()
+        Self.setPermissionsIfNeeded(Self.fileMode, ofItemAt: tokenFileURL)
+    }
+
+    private func tightenDirectoryPermissionsIfNeeded() {
+        Self.setPermissionsIfNeeded(Self.directoryMode, ofItemAt: directory)
+    }
+
+    private static func permissions(ofItemAt url: URL) -> Int? {
+        let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
+        return (attributes?[.posixPermissions] as? NSNumber)?.intValue
+    }
+
+    private static func setPermissionsIfNeeded(_ mode: Int, ofItemAt url: URL) {
+        guard let current = permissions(ofItemAt: url), current != mode else { return }
+        try? FileManager.default.setAttributes(
+            [.posixPermissions: NSNumber(value: mode)],
+            ofItemAtPath: url.path
+        )
     }
 
     // MARK: - Generation

@@ -64,6 +64,29 @@ nonisolated struct MCPRequestServer: Sendable {
     let invokeTool: ToolInvoker
 
     func serve(_ request: HTTPRequest) async -> HTTPResponse {
+        // THE token check, and it happens here rather than only inside the
+        // transport's validation pipeline.
+        //
+        // `StatelessHTTPServerTransport.handleRequest` answers 405 (with
+        // `Allow: POST`) for a non-POST, and 400 "Empty request body" /
+        // "Invalid JSON-RPC message" for a body it cannot classify — all BEFORE
+        // it runs the pipeline. So a bearer validator that is merely first
+        // *inside* the pipeline is not first: an unauthenticated caller could
+        // still fingerprint Cherry on the port, and — the part that actually
+        // matters — attacker-controlled bytes reached `JSONRPCMessageKind`, a
+        // JSON decode over an unauthenticated body of up to 1 MB, before the
+        // token was ever compared.
+        //
+        // Nothing is allocated and no byte of the body is looked at until this
+        // returns nil.
+        let bearer = MCPBearerValidator(expectedToken: expectedToken)
+        if let refusal = bearer.validate(
+            request,
+            context: HTTPValidationContext(httpMethod: request.method.uppercased())
+        ) {
+            return refusal
+        }
+
         let server = Server(
             name: serverName,
             version: serverVersion,
@@ -73,10 +96,11 @@ nonisolated struct MCPRequestServer: Sendable {
 
         let transport = StatelessHTTPServerTransport(
             validationPipeline: StandardValidationPipeline(validators: [
-                // Bearer FIRST, deliberately. An unauthenticated caller must
-                // not learn which origins we accept, which protocol versions we
-                // speak, or anything else — only `401`.
-                MCPBearerValidator(expectedToken: expectedToken),
+                // Belt and braces. The check above is the one that holds the
+                // "only ever 401" invariant; this one keeps holding it inside
+                // the pipeline if the pre-check is ever refactored away, and it
+                // costs one read of a 43-byte file.
+                bearer,
                 // DNS-rebinding protection. The SDK validates `Origin` only when
                 // present, which is correct here: Claude Code sends none and
                 // passes, while a web page's `fetch()` sends one and is refused.
@@ -187,7 +211,15 @@ final class MCPServerManager {
     /// Surfaced by the Settings pane in step 8.
     func registrationCommand(includingToken: Bool) -> String {
         let port = SettingsManager.shared.mcpServerPort
-        let token = includingToken ? (MCPTokenStore.shared.existingToken() ?? "<token>") : "$(cat \"\(MCPTokenStore.shared.tokenFileURL.path)\")"
+        let store = MCPTokenStore.shared
+        let token: String
+        if includingToken {
+            token = store?.existingToken() ?? "<token>"
+        } else if let path = store?.tokenFileURL.path {
+            token = "$(cat \"\(path)\")"
+        } else {
+            token = "<token>"
+        }
         return "claude mcp add --transport http --scope user cherry http://127.0.0.1:\(port)/mcp "
             + "--header \"Authorization: Bearer \(token)\""
     }
@@ -206,9 +238,17 @@ final class MCPServerManager {
     func start() {
         stop()
 
+        // No resolvable Application Support means nowhere safe to keep the
+        // token, and there is no acceptable fallback location for it — so the
+        // server does not run at all.
+        guard let store = MCPTokenStore.shared else {
+            status = .failed(reason: MCPTokenStore.Failure.applicationSupportUnavailable.localizedDescription)
+            return
+        }
+
         let token: String
         do {
-            token = try MCPTokenStore.shared.currentToken()
+            token = try store.currentToken()
         } catch {
             status = .failed(reason: error.localizedDescription)
             return
@@ -226,7 +266,7 @@ final class MCPServerManager {
             // Read from disk per request rather than capturing the string, so
             // rotating the token in Settings invalidates existing clients
             // immediately without restarting the listener.
-            expectedToken: { MCPTokenStore.shared.existingToken() },
+            expectedToken: { MCPTokenStore.shared?.existingToken() },
             invokeTool: MCPToolStubs.notImplemented
         )
 

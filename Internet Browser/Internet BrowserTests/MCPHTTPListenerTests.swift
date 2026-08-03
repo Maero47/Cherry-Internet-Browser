@@ -130,16 +130,38 @@ final class MCPHTTPListenerTests: XCTestCase {
     }
 
     /// The requirement that matters: nothing on the LAN can reach the socket.
+    ///
+    /// This used to `XCTSkip` on a machine with no non-loopback IPv4, which
+    /// meant the single strongest structural assertion in the feature could go
+    /// green having checked nothing. It no longer skips: with no LAN address it
+    /// asserts the IPv6-loopback case instead, which every machine has.
     func testRefusesTheMachinesOwnLANAddress() throws {
         let port = try startListener { _ in .data(Data(#"{"stub":true}"#.utf8)) }
 
         guard let lan = lanAddress() else {
-            throw XCTSkip("this machine has no non-loopback IPv4 address to test against")
+            XCTAssertNil(
+                post(to: "[::1]", port: port, timeout: 3).status,
+                "no LAN address on this machine, and the IPv6 loopback fallback also reached the listener"
+            )
+            return
         }
 
         let response = post(to: lan, port: port, timeout: 3)
         XCTAssertNil(response.status, "the listener answered on \(lan):\(port) — the bind is not loopback-only")
         XCTAssertNotNil(response.error, "expected a connection failure from \(lan)")
+    }
+
+    /// The bind is `.ipv4(.loopback)`, so even the *IPv6* loopback is a
+    /// different address and must be refused. Unlike the LAN address this one
+    /// exists on every machine, so this test can never quietly not run.
+    func testRefusesIPv6LoopbackWhichIsADifferentLocalAddress() throws {
+        let port = try startListener { _ in .data(Data(#"{"stub":true}"#.utf8)) }
+
+        XCTAssertEqual(post(to: "127.0.0.1", port: port).status, 200, "precondition: IPv4 loopback works")
+        XCTAssertNil(
+            post(to: "[::1]", port: port, timeout: 3).status,
+            "the listener answered on [::1]:\(port) — the bind is wider than ipv4 loopback"
+        )
     }
 
     func testStoppingClosesTheSocket() throws {
@@ -196,6 +218,35 @@ final class MCPHTTPListenerTests: XCTestCase {
 
         XCTAssertFalse(SettingsManager.mcpServerEnabled(from: defaults))
         XCTAssertEqual(SettingsManager.mcpServerPort(from: defaults), 8787)
+    }
+
+    /// `isValidMCPServerPort` was only consulted on the read path, so the setter
+    /// would happily store anything. Port 0 is the dangerous one:
+    /// `NWEndpoint.Port(rawValue: 0)` is `.any`, so the listener binds an
+    /// OS-assigned port while the origin validator and the registration command
+    /// keep describing a port nothing is on — every legitimate client then
+    /// gets 421.
+    func testSettingAnOutOfRangePortIsRefused() {
+        let settings = SettingsManager.shared
+        let original = settings.mcpServerPort
+        let storedBefore = UserDefaults.standard.object(forKey: "mcpServerPort")
+        defer {
+            settings.mcpServerPort = original
+            if let storedBefore {
+                UserDefaults.standard.set(storedBefore, forKey: "mcpServerPort")
+            } else {
+                UserDefaults.standard.removeObject(forKey: "mcpServerPort")
+            }
+        }
+
+        for invalid in [0, -1, 80, 1023, 65536, 100_000] {
+            settings.mcpServerPort = invalid
+            XCTAssertNotEqual(settings.mcpServerPort, invalid, "stored out-of-range port \(invalid)")
+            XCTAssertTrue(SettingsManager.isValidMCPServerPort(settings.mcpServerPort))
+        }
+
+        settings.mcpServerPort = 9911
+        XCTAssertEqual(settings.mcpServerPort, 9911, "a valid port must still be accepted")
     }
 
     func testStoredPortIsHonouredAndOutOfRangeValuesFallBack() throws {

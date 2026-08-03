@@ -38,9 +38,50 @@ final class MCPTokenStoreTests: XCTestCase {
 
     func testContainingDirectoryIsNotGroupOrWorldAccessible() throws {
         try store.rotate()
-        let attributes = try FileManager.default.attributesOfItem(atPath: directory.path)
-        let mode = (attributes[.posixPermissions] as? NSNumber)?.intValue ?? 0
+        let mode = try XCTUnwrap(self.mode(of: directory))
         XCTAssertEqual(mode & 0o077, 0, "directory mode \(String(mode, radix: 8)) is reachable by others")
+    }
+
+    /// `createDirectory(withIntermediateDirectories: true, attributes:)` succeeds
+    /// and SILENTLY IGNORES the attributes when the directory already exists, so
+    /// the `0700` guarantee only ever held on the create-new path. A pre-existing
+    /// wide directory — an earlier build, a restore from backup, a stray `mkdir` —
+    /// lets any local writer swap the token file for one they chose. The
+    /// validator re-reads the file on every request, so that is a full auth
+    /// bypass, not a disclosure.
+    func testWritingIntoAPreExistingWideOpenDirectoryTightensIt() throws {
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: NSNumber(value: 0o777)]
+        )
+        XCTAssertEqual(mode(of: directory), 0o777, "precondition")
+
+        try store.rotate()
+
+        XCTAssertEqual(
+            mode(of: directory), 0o700,
+            "a 0600 token file inside a world-writable directory can simply be replaced"
+        )
+    }
+
+    /// The same repair the file gets on every read, for the directory.
+    func testReadingFromAWidenedDirectoryTightensIt() throws {
+        try store.rotate()
+        try FileManager.default.setAttributes(
+            [.posixPermissions: NSNumber(value: 0o777)],
+            ofItemAtPath: directory.path
+        )
+        XCTAssertEqual(mode(of: directory), 0o777, "precondition")
+
+        _ = store.existingToken()
+
+        XCTAssertEqual(mode(of: directory), 0o700, "reading did not repair the directory mode")
+    }
+
+    private func mode(of url: URL) -> Int? {
+        let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
+        return (attributes?[.posixPermissions] as? NSNumber)?.intValue
     }
 
     /// A `0600` file inside a directory anyone can write is not protected — the
@@ -123,9 +164,20 @@ final class MCPTokenStoreTests: XCTestCase {
         XCTAssertEqual(store.existingToken(), token)
     }
 
-    func testDefaultLocationLivesUnderApplicationSupport() {
-        let path = MCPTokenStore.defaultDirectory.path
+    func testDefaultLocationLivesUnderApplicationSupport() throws {
+        let path = try MCPTokenStore.defaultDirectory().path
         XCTAssertTrue(path.contains("Application Support"), path)
         XCTAssertTrue(path.hasSuffix("/MCP"), path)
+    }
+
+    /// There is no safe second location for a bearer token. The old fallback to
+    /// `temporaryDirectory` put it somewhere the OS may prune, which would
+    /// silently invalidate every registered client and leave the user holding a
+    /// token the server no longer recognises. `shared` is optional now, and its
+    /// nil case means the server refuses to run at all.
+    func testThereIsNoFallbackLocationForTheToken() throws {
+        let path = try MCPTokenStore.defaultDirectory().path
+        XCTAssertFalse(path.hasPrefix(FileManager.default.temporaryDirectory.path), path)
+        XCTAssertNotNil(MCPTokenStore.shared, "Application Support is resolvable here, so shared should exist")
     }
 }
