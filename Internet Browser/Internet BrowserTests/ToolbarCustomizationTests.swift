@@ -270,21 +270,29 @@ final class ToolbarCustomizationTests: XCTestCase {
 /// that carries a change made in one window's Settings to every open nav bar.
 final class ToolbarSettingsTests: XCTestCase {
 
-    private var savedOrder: [String] = []
-    private var savedHidden: Set<String> = []
+    /// The real `UserDefaults` keys `SettingsManager` writes. Spelled out here
+    /// rather than reached through the (private) `Keys` enum on purpose: these
+    /// strings are the on-disk contract, and a test that renamed itself along
+    /// with the constant would not notice a launch-breaking rename.
+    private static let orderKey = "toolbarItemOrder"
+    private static let hiddenKey = "hiddenToolbarItems"
 
     override func setUp() {
         super.setUp()
-        savedOrder = SettingsManager.shared.toolbarItemOrder
-        savedHidden = SettingsManager.shared.hiddenToolbarItems
+
+        let savedOrder = SettingsManager.shared.toolbarItemOrder
+        let savedHidden = SettingsManager.shared.hiddenToolbarItems
+        // Registered BEFORE anything is touched, and via addTeardownBlock so it
+        // still runs when a test fails part-way. These tests write to the app's
+        // real defaults domain, so a half-finished run must not leave the
+        // developer's own toolbar layout blanked.
+        addTeardownBlock {
+            SettingsManager.shared.toolbarItemOrder = savedOrder
+            SettingsManager.shared.hiddenToolbarItems = savedHidden
+        }
+
         SettingsManager.shared.toolbarItemOrder = []
         SettingsManager.shared.hiddenToolbarItems = []
-    }
-
-    override func tearDown() {
-        SettingsManager.shared.toolbarItemOrder = savedOrder
-        SettingsManager.shared.hiddenToolbarItems = savedHidden
-        super.tearDown()
     }
 
     func testAFreshInstallReportsTheDefaultToolbar() {
@@ -386,19 +394,58 @@ final class ToolbarSettingsTests: XCTestCase {
         XCTAssertTrue(resetFired, "resetting must invalidate readers of toolbarLayout")
     }
 
-    /// The layout survives a relaunch: what the accessors write is what a
-    /// fresh `resolve` of the stored strings reads back.
-    func testChangesPersistToTheStoredStrings() {
+    /// The only part that can lose data across a launch: what actually lands
+    /// in `UserDefaults`.
+    ///
+    /// Reads the two keys straight out of `UserDefaults.standard` rather than
+    /// re-reading the in-memory properties — those would agree with themselves
+    /// even if no `didSet` ever wrote anything — and then rehydrates from
+    /// exactly those strings the way `SettingsManager.init` does.
+    func testHideAndReorderAreWrittenToUserDefaults() {
         let settings = SettingsManager.shared
-        settings.moveToolbarItem(.privateMode, by: -1)
+        let defaults = UserDefaults.standard
+
         settings.setToolbarItem(.savePDF, hidden: true)
+        settings.moveToolbarItem(.privateMode, by: -1)
 
-        let reloaded = ToolbarLayout.resolve(
-            savedOrder: settings.toolbarItemOrder,
-            hidden: settings.hiddenToolbarItems
+        let storedOrder = defaults.stringArray(forKey: Self.orderKey) ?? []
+        let storedHidden = defaults.stringArray(forKey: Self.hiddenKey) ?? []
+
+        XCTAssertEqual(
+            storedOrder,
+            ["askThisPage", "home", "bookmark", "savePDF", "autoFill",
+             "adBlock", "focusMode", "privateMode", "readerMode"]
         )
+        XCTAssertEqual(storedHidden, ["savePDF"])
 
-        XCTAssertEqual(reloaded.order, settings.toolbarLayout.order)
-        XCTAssertEqual(reloaded.hidden, [.savePDF])
+        // What the next launch rebuilds from the bytes on disk.
+        let rehydrated = ToolbarLayout.resolve(savedOrder: storedOrder, hidden: Set(storedHidden))
+        XCTAssertEqual(rehydrated.order, settings.toolbarLayout.order)
+        XCTAssertEqual(rehydrated.hidden, [.savePDF])
+        XCTAssertEqual(rehydrated.order.last, .readerMode)
+    }
+
+    /// Reset has to reach the disk too, or the old layout comes back on the
+    /// next launch.
+    func testResetIsWrittenToUserDefaults() {
+        let settings = SettingsManager.shared
+        let defaults = UserDefaults.standard
+        settings.setToolbarItem(.home, hidden: true)
+        settings.moveToolbarItem(.privateMode, by: -1)
+
+        settings.resetToolbarLayout()
+
+        XCTAssertEqual(
+            defaults.stringArray(forKey: Self.orderKey),
+            ToolbarLayout.defaultOrder.map(\.rawValue)
+        )
+        XCTAssertEqual(defaults.stringArray(forKey: Self.hiddenKey), [])
+
+        let rehydrated = ToolbarLayout.resolve(
+            savedOrder: defaults.stringArray(forKey: Self.orderKey) ?? [],
+            hidden: Set(defaults.stringArray(forKey: Self.hiddenKey) ?? [])
+        )
+        XCTAssertEqual(rehydrated.order, ToolbarLayout.defaultOrder)
+        XCTAssertEqual(rehydrated.hidden, ToolbarLayout.defaultHidden)
     }
 }

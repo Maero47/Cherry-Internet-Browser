@@ -156,8 +156,13 @@ struct NavigationBarView: View {
         HStack(spacing: 4) {
             // Navigation buttons
             navigationButtons
+                .customizeToolbarContextMenu { onSettings?() }
 
-            // Omnibox
+            // Omnibox. Note what is NOT here: the customise context menu. It
+            // is attached to the button clusters and the bar's background, so
+            // no SwiftUI menu sits above the address field and its secondary
+            // click still reaches AppKit's field editor — Cut/Copy/Paste/Look
+            // Up are exactly as they were.
             OmniboxView(
                 text: $addressText,
                 isLoading: showsLoadingChrome,
@@ -243,10 +248,12 @@ struct NavigationBarView: View {
             // so never show their buttons there, regardless of showExtensionButtons.
             if showExtensionButtons && !isPrivateMode {
                 extensionButtons
+                    .customizeToolbarContextMenu { onSettings?() }
             }
 
             // Action buttons
             actionButtons
+                .customizeToolbarContextMenu { onSettings?() }
         }
         // Hierarchical styles (.primary/.secondary) on the buttons resolve
         // against this, so the whole toolbar's icons/text follow the theme's
@@ -257,6 +264,10 @@ struct NavigationBarView: View {
         .padding(.vertical, 8)
         .padding(.top, showWindowDragArea ? 6 : 0)
         .background {
+            // The bar's own background is also the right-click target for the
+            // empty space between the buttons — see `customizeToolbarMenu` for
+            // why the menu is attached here and to the button clusters rather
+            // than to the whole bar.
             ZStack {
                 if !isPrivateMode && FirefoxThemeManager.shared.hasHeaderBackdrop {
                     // Firefox compositing: the opaque frame color + header
@@ -275,18 +286,8 @@ struct NavigationBarView: View {
                     if isPrivateMode { Color.purple.opacity(0.12) }
                 }
             }
-        }
-        // Right-click the bar — the empty background between the buttons, and
-        // the buttons themselves, the way Safari's toolbar behaves — to reach
-        // the customisation UI. `contextMenu` answers secondary clicks only,
-        // so every left click the buttons and the omnibox used to get still
-        // reaches them.
-        .contextMenu {
-            Button {
-                onSettings?()
-            } label: {
-                Label("Customise Toolbar…", systemImage: "slider.horizontal.3")
-            }
+            .contentShape(Rectangle())
+            .customizeToolbarContextMenu { onSettings?() }
         }
         .overlay(alignment: .top) {
             if showWindowDragArea {
@@ -535,14 +536,12 @@ struct NavigationBarView: View {
 
             Divider()
 
-            Button {
-                onAskThisPage?()
-            } label: {
-                Label("Ask This Page", systemImage: "sparkles")
-            }
-
-            Divider()
-
+            // No standalone "Ask This Page" entry: it is a catalogue item, so
+            // it is on the bar when visible, in the hidden-items section above
+            // when hidden, and absent when its own condition doesn't hold —
+            // the same rule as every other customisable button. The old fixed
+            // entry duplicated the hidden-items one and fired on cherry://
+            // pages, where the button itself never appears.
             Button {
                 onPrint?()
             } label: {
@@ -588,6 +587,25 @@ struct NavigationBarView: View {
         .menuIndicator(.hidden)
         .frame(width: 28, height: 28)
         .help("Menu")
+    }
+}
+
+private extension View {
+    /// The nav bar's "Customise Toolbar…" secondary-click menu.
+    ///
+    /// Applied to the bar's background and to each button cluster — and
+    /// deliberately NOT to the bar as a whole, because that would put a
+    /// SwiftUI context menu above the omnibox. The address field's secondary
+    /// click belongs to AppKit's field editor (Cut / Copy / Paste / Look Up /
+    /// Substitutions); a menu on any ancestor of it would take that click.
+    /// Keeping this modifier off the omnibox's ancestors is what guarantees
+    /// the split, rather than whichever gesture happens to win.
+    func customizeToolbarContextMenu(_ openSettings: @escaping () -> Void) -> some View {
+        contextMenu {
+            Button(action: openSettings) {
+                Label("Customise Toolbar…", systemImage: "slider.horizontal.3")
+            }
+        }
     }
 }
 
