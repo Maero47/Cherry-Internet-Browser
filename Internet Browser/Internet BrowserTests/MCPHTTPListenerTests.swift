@@ -1,0 +1,241 @@
+//
+//  MCPHTTPListenerTests.swift
+//  Internet BrowserTests
+//
+//  The loopback bind is the primary security control on this feature — the
+//  bearer token is the second line, not the only one. "We set
+//  `requiredLocalEndpoint`" is not evidence; opening a real socket and being
+//  refused from the machine's own LAN address is.
+//
+//  Also pins the off-by-default rule, which is the other property that cannot
+//  be allowed to regress quietly.
+//
+
+import XCTest
+import Network
+import MCP
+@testable import Cherry
+
+final class MCPHTTPListenerTests: XCTestCase {
+
+    private var listener: MCPHTTPListener?
+    private var port: UInt16 = 0
+
+    override func tearDown() {
+        listener?.stop()
+        listener = nil
+        super.tearDown()
+    }
+
+    // MARK: - Setup
+
+    /// Bind on a high port picked per-run, so two test runs (or a running copy
+    /// of Cherry on 8787) cannot collide.
+    private func startListener(
+        handler: @escaping MCPHTTPListener.RequestHandler
+    ) throws -> UInt16 {
+        var candidate = UInt16.random(in: 20000...40000)
+
+        for _ in 0..<10 {
+            let settled = XCTestExpectation(description: "listener settled on \(candidate)")
+            settled.assertForOverFulfill = false
+
+            let listener = MCPHTTPListener(handler: handler, statusChanged: { status in
+                switch status {
+                case .ready, .failed: settled.fulfill()
+                case .idle, .starting, .cancelled: break
+                }
+            })
+            listener.start(port: candidate)
+            _ = XCTWaiter().wait(for: [settled], timeout: 3)
+
+            if listener.currentStatus.isReady {
+                self.listener = listener
+                self.port = candidate
+                return candidate
+            }
+            listener.stop()
+            candidate = candidate &+ 137
+        }
+        throw XCTSkip("could not bind any loopback port in this environment")
+    }
+
+    private func post(to host: String, port: UInt16, timeout: TimeInterval = 5) -> (status: Int?, body: String?, error: Error?) {
+        var request = URLRequest(url: URL(string: "http://\(host):\(port)/mcp")!)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.httpBody = Data(#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#.utf8)
+        request.timeoutInterval = timeout
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = timeout
+        configuration.timeoutIntervalForResource = timeout
+
+        var result: (Int?, String?, Error?) = (nil, nil, nil)
+        let done = expectation(description: "request to \(host)")
+        URLSession(configuration: configuration).dataTask(with: request) { data, response, error in
+            result = (
+                (response as? HTTPURLResponse)?.statusCode,
+                data.map { String(decoding: $0, as: UTF8.self) },
+                error
+            )
+            done.fulfill()
+        }.resume()
+        wait(for: [done], timeout: timeout + 5)
+        return result
+    }
+
+    /// The machine's own non-loopback IPv4 address, if it has one.
+    private func lanAddress() -> String? {
+        var head: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&head) == 0, let first = head else { return nil }
+        defer { freeifaddrs(head) }
+
+        var candidate: String?
+        for pointer in sequence(first: first, next: { $0.pointee.ifa_next }) {
+            let interface = pointer.pointee
+            guard interface.ifa_addr?.pointee.sa_family == UInt8(AF_INET),
+                  (interface.ifa_flags & UInt32(IFF_LOOPBACK)) == 0,
+                  (interface.ifa_flags & UInt32(IFF_UP)) != 0
+            else {
+                continue
+            }
+            var buffer = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+            guard getnameinfo(
+                interface.ifa_addr,
+                socklen_t(interface.ifa_addr.pointee.sa_len),
+                &buffer, socklen_t(buffer.count),
+                nil, 0, NI_NUMERICHOST
+            ) == 0 else {
+                continue
+            }
+            let address = String(cString: buffer)
+            if !address.hasPrefix("127.") { candidate = address }
+        }
+        return candidate
+    }
+
+    // MARK: - Loopback binding
+
+    func testAnswersOnLoopback() throws {
+        let port = try startListener { _ in
+            .data(Data(#"{"stub":true}"#.utf8), headers: ["Content-Type": "application/json"])
+        }
+
+        let response = post(to: "127.0.0.1", port: port)
+        XCTAssertNil(response.error, "\(String(describing: response.error))")
+        XCTAssertEqual(response.status, 200)
+        XCTAssertEqual(response.body, #"{"stub":true}"#)
+    }
+
+    /// The requirement that matters: nothing on the LAN can reach the socket.
+    func testRefusesTheMachinesOwnLANAddress() throws {
+        let port = try startListener { _ in .data(Data(#"{"stub":true}"#.utf8)) }
+
+        guard let lan = lanAddress() else {
+            throw XCTSkip("this machine has no non-loopback IPv4 address to test against")
+        }
+
+        let response = post(to: lan, port: port, timeout: 3)
+        XCTAssertNil(response.status, "the listener answered on \(lan):\(port) — the bind is not loopback-only")
+        XCTAssertNotNil(response.error, "expected a connection failure from \(lan)")
+    }
+
+    func testStoppingClosesTheSocket() throws {
+        let port = try startListener { _ in .data(Data(#"{"stub":true}"#.utf8)) }
+        XCTAssertEqual(post(to: "127.0.0.1", port: port).status, 200, "precondition")
+
+        listener?.stop()
+        listener = nil
+
+        let response = post(to: "127.0.0.1", port: port, timeout: 3)
+        XCTAssertNil(response.status, "the socket was still answering after stop()")
+    }
+
+    // MARK: - Framing over a real socket
+
+    func testHandlerSeesTheParsedRequest() throws {
+        let seen = SeenRequest()
+        let port = try startListener { request in
+            seen.record(request)
+            return .data(Data("ok".utf8))
+        }
+
+        _ = post(to: "127.0.0.1", port: port)
+
+        XCTAssertEqual(seen.method, "POST")
+        XCTAssertEqual(seen.path, "/mcp")
+        XCTAssertEqual(seen.contentType, "application/json")
+        XCTAssertEqual(seen.body, #"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#)
+    }
+
+    func testStatusReportsReadyThenIdle() throws {
+        let port = try startListener { _ in .data(Data("ok".utf8)) }
+        XCTAssertEqual(listener?.currentStatus, .ready(port: port))
+        listener?.stop()
+        XCTAssertEqual(listener?.currentStatus, .idle)
+    }
+
+    func testStatusKnowsWhenARestartIsNeeded() {
+        XCTAssertFalse(MCPListenerStatus.ready(port: 8787).needsRestart)
+        XCTAssertFalse(MCPListenerStatus.idle.needsRestart)
+        XCTAssertFalse(MCPListenerStatus.starting.needsRestart)
+        XCTAssertTrue(MCPListenerStatus.cancelled.needsRestart)
+        XCTAssertTrue(MCPListenerStatus.failed(reason: "in use").needsRestart)
+    }
+
+    // MARK: - Off by default
+
+    /// A fresh install opens no socket. This reads the same code path `init`
+    /// uses, against a throwaway suite.
+    func testFeatureIsOffOnFreshUserDefaults() throws {
+        let suiteName = "MCPHTTPListenerTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        XCTAssertFalse(SettingsManager.mcpServerEnabled(from: defaults))
+        XCTAssertEqual(SettingsManager.mcpServerPort(from: defaults), 8787)
+    }
+
+    func testStoredPortIsHonouredAndOutOfRangeValuesFallBack() throws {
+        let suiteName = "MCPHTTPListenerTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        defaults.set(9999, forKey: "mcpServerPort")
+        XCTAssertEqual(SettingsManager.mcpServerPort(from: defaults), 9999)
+
+        for invalid in [0, 80, 1023, 65536, -1] {
+            defaults.set(invalid, forKey: "mcpServerPort")
+            XCTAssertEqual(
+                SettingsManager.mcpServerPort(from: defaults), 8787,
+                "port \(invalid) should have fallen back to the default"
+            )
+        }
+    }
+}
+
+/// Captures what the listener handed the handler. The handler runs off the main
+/// thread on the listener's queue, so this is lock-guarded.
+private final class SeenRequest: @unchecked Sendable {
+    private let lock = NSLock()
+    private var request: HTTPRequest?
+
+    func record(_ request: HTTPRequest) {
+        lock.lock()
+        self.request = request
+        lock.unlock()
+    }
+
+    private var snapshot: HTTPRequest? {
+        lock.lock()
+        defer { lock.unlock() }
+        return request
+    }
+
+    var method: String? { snapshot?.method }
+    var path: String? { snapshot?.path }
+    var contentType: String? { snapshot?.header("Content-Type") }
+    var body: String? { snapshot?.body.map { String(decoding: $0, as: UTF8.self) } }
+}

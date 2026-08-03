@@ -502,6 +502,47 @@ final class SettingsManager {
         didSet { UserDefaults.standard.set(restorePreviousSession, forKey: Keys.restorePreviousSession) }
     }
 
+    // MARK: - MCP Server
+
+    /// Whether Cherry serves its MCP tools on loopback.
+    ///
+    /// **Off on a fresh install and it must stay that way.** Switching this on
+    /// exposes open tabs, page text, history and bookmarks to any local client
+    /// holding the bearer token, so it is only ever the user's deliberate act.
+    var mcpServerEnabled: Bool {
+        didSet { UserDefaults.standard.set(mcpServerEnabled, forKey: Keys.mcpServerEnabled) }
+    }
+
+    /// The loopback port the MCP server binds. Fixed rather than ephemeral,
+    /// because the `claude mcp add` command the user copies has to keep working
+    /// across restarts.
+    var mcpServerPort: Int {
+        didSet { UserDefaults.standard.set(mcpServerPort, forKey: Keys.mcpServerPort) }
+    }
+
+    /// The default MCP port. Unassigned by IANA and not in common use.
+    static let defaultMCPServerPort = 8787
+
+    /// Ports below 1024 need root, and 65535 is the ceiling. A stored value
+    /// outside that range came from a hand-edited defaults plist, not the UI.
+    static func isValidMCPServerPort(_ port: Int) -> Bool {
+        (1024...65535).contains(port)
+    }
+
+    /// Read the MCP switch out of a defaults store.
+    ///
+    /// Split out from `init` so the "off on a fresh install" guarantee can be
+    /// tested against a throwaway suite rather than against whatever the
+    /// developer's own `UserDefaults` happens to hold.
+    static func mcpServerEnabled(from defaults: UserDefaults) -> Bool {
+        defaults.object(forKey: Keys.mcpServerEnabled) as? Bool ?? false
+    }
+
+    static func mcpServerPort(from defaults: UserDefaults) -> Int {
+        let stored = defaults.object(forKey: Keys.mcpServerPort) as? Int
+        return stored.flatMap { isValidMCPServerPort($0) ? $0 : nil } ?? defaultMCPServerPort
+    }
+
     // MARK: - Init
 
     private init() {
@@ -598,6 +639,11 @@ final class SettingsManager {
         self.tabSleepEnabled = defaults.object(forKey: Keys.tabSleepEnabled) as? Bool ?? true
         self.tabSleepTimeout = defaults.object(forKey: Keys.tabSleepTimeout) as? Int ?? 30
         self.restorePreviousSession = defaults.object(forKey: Keys.restorePreviousSession) as? Bool ?? true
+
+        // MCP server. Off on a fresh `UserDefaults` is a security default, not
+        // a style choice — see `mcpServerEnabled(from:)`.
+        self.mcpServerEnabled = Self.mcpServerEnabled(from: defaults)
+        self.mcpServerPort = Self.mcpServerPort(from: defaults)
 
         // Re-apply the persisted cookie policy at launch. It used to run only
         // from `blockCookies.didSet`, so a policy chosen in an earlier session
@@ -740,5 +786,7 @@ final class SettingsManager {
         static let passwordGeneratorLength = "passwordGeneratorLength"
         static let passwordGeneratorIncludeSymbols = "passwordGeneratorIncludeSymbols"
         static let restorePreviousSession = "restorePreviousSession"
+        static let mcpServerEnabled = "mcpServerEnabled"
+        static let mcpServerPort = "mcpServerPort"
     }
 }

@@ -361,6 +361,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             await ExtensionManager.shared.reloadPersistedExtensions()
         }
 
+        // The MCP server, if the user has switched it on. `startIfEnabled`
+        // checks the persisted flag, which defaults to false — a fresh install
+        // opens no socket.
+        MCPServerManager.shared.startIfEnabled()
+
         for window in NSApplication.shared.windows {
             configureWindow(window)
         }
@@ -403,6 +408,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        // Belt and braces — process exit closes the socket anyway. Doing it
+        // here means the listener's shutdown path is exercised in normal use
+        // rather than only when something has gone wrong.
+        MCPServerManager.shared.stop()
+
         // Save session for all non-private windows
         for (_, vm) in BrowserViewModel.windowViewModels {
             guard !vm.isPrivateMode else { continue }
