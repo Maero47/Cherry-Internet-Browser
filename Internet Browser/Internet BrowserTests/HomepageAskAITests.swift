@@ -12,6 +12,7 @@
 //
 
 import XCTest
+import WebKit
 @testable import Cherry
 
 // MARK: - Opening where there is no page to read
@@ -97,6 +98,21 @@ final class AskCherryAIOpeningTests: XCTestCase {
         XCTAssertEqual(viewModel.askThisPageSeed, "first question")
     }
 
+    /// The question the user typed is the thing that must not be destroyed.
+    /// The homepage clears its field only when the ask reports that it took
+    /// the question somewhere; with the panel already open nothing happens to
+    /// it, so the field has to keep it.
+    func testAnAskThatDoesNothingSaysSoSoTheFieldCanKeepTheQuestion() {
+        let viewModel = homePageViewModel()
+
+        XCTAssertTrue(viewModel.askCherryAI(seed: "first question"))
+        XCTAssertFalse(
+            viewModel.askCherryAI(seed: "second question"),
+            "the panel was already open, so nothing happened to the second question"
+        )
+        XCTAssertEqual(viewModel.askThisPageSeed, "first question")
+    }
+
     /// A seed belongs to the one opening it was typed for: without this, a
     /// homepage question would reappear in the composer the next time the
     /// panel was opened from a page.
@@ -112,6 +128,103 @@ final class AskCherryAIOpeningTests: XCTestCase {
 
         XCTAssertTrue(viewModel.showAskThisPage)
         XCTAssertEqual(viewModel.askThisPageSeed, "", "a later opening must start with an empty composer")
+    }
+}
+
+// MARK: - What the panel grounds on
+
+/// The two halves of "is there something ON SCREEN to ground on", exercised
+/// against a real, loaded `WKWebView` because that is where the distinction
+/// lives. `Tab.openInternalPage` deliberately KEEPS the web view — a
+/// `cherry://` page covers a live site whose back/forward list and scroll
+/// position have to survive — so "is there a web view" answers yes on
+/// cherry://history and grounds the chat on a page the user is not looking at.
+@MainActor
+final class AskCherryAIGroundingTests: XCTestCase {
+
+    private static let article = """
+    <html><head><title>The covered article</title></head>
+    <body><article><p>Sodium metal reacts vigorously with water, producing hydrogen
+    gas and sodium hydroxide, and the reaction is exothermic enough to ignite the
+    hydrogen it releases.</p></article></body></html>
+    """
+
+    /// Polls the main actor until `condition` holds, so an async extraction
+    /// is given every chance to land before the assertions run — including in
+    /// the test where that extraction is the path that must NOT be taken.
+    private func wait(
+        upTo timeout: TimeInterval = 15,
+        for condition: () -> Bool
+    ) async {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !condition(), Date() < deadline {
+            try? await Task.sleep(nanoseconds: 20_000_000)
+        }
+    }
+
+    /// A tab showing a real, loaded, extractable page. Asserts the page really
+    /// is readable, so a later "the panel opened empty" means the guard
+    /// declined it rather than the fixture being unreadable.
+    private func tabOnALoadedArticle(
+        in viewModel: BrowserViewModel
+    ) async throws -> Tab {
+        let tab = try XCTUnwrap(viewModel.tabManager.focusedTab)
+        let webView = WKWebView(frame: CGRect(x: 0, y: 0, width: 900, height: 700))
+        tab.webView = webView
+        tab.url = URL(string: "https://example.com/sodium")
+        tab.showHomePage = false
+        webView.loadHTMLString(Self.article, baseURL: URL(string: "https://example.com/sodium"))
+
+        var extracted: ExtractedPageContent?
+        await wait { !webView.isLoading }
+        await wait {
+            let done = extracted != nil
+            if !done { Task { extracted = await PageAIService.extractPageText(from: webView) } }
+            return done
+        }
+        let content = try XCTUnwrap(extracted, "the fixture page should be readable, or these tests prove nothing")
+        XCTAssertEqual(content.title, "The covered article")
+        return tab
+    }
+
+    func testAskingOnAnInternalPageDoesNotGroundOnTheCoveredSite() async throws {
+        let viewModel = BrowserViewModel()
+        let tab = try await tabOnALoadedArticle(in: viewModel)
+
+        // cherry://history now covers it. The web view stays alive by design.
+        tab.openInternalPage(.history)
+        XCTAssertNotNil(tab.webView, "openInternalPage keeps the web view — that is the trap")
+
+        viewModel.toggleAskThisPage()
+        await wait { viewModel.showAskThisPage }
+
+        XCTAssertTrue(viewModel.showAskThisPage, "the panel must still open on an internal page")
+        XCTAssertEqual(
+            viewModel.askThisPageText, "",
+            "the chat must not be grounded on a page the user is not looking at"
+        )
+        XCTAssertEqual(
+            viewModel.askThisPageTitle, "",
+            "the tab chip must not be labelled with the covered site"
+        )
+    }
+
+    /// The other direction, and the reason the guard is three conditions
+    /// rather than "never ground on anything": a page that IS on screen must
+    /// still be read exactly as it always was.
+    func testAskingOnAPageThatIsOnScreenStillGroundsOnIt() async throws {
+        let viewModel = BrowserViewModel()
+        _ = try await tabOnALoadedArticle(in: viewModel)
+
+        viewModel.toggleAskThisPage()
+        await wait { viewModel.showAskThisPage }
+
+        XCTAssertTrue(viewModel.showAskThisPage)
+        XCTAssertEqual(viewModel.askThisPageTitle, "The covered article")
+        XCTAssertTrue(
+            viewModel.askThisPageText.contains("Sodium metal reacts vigorously"),
+            "the page on screen must still ground the chat: \(viewModel.askThisPageText)"
+        )
     }
 }
 

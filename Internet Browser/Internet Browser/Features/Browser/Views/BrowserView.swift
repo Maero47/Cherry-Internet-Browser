@@ -939,8 +939,12 @@ struct BrowserContentView: View {
                         onNavigate(query)
                     },
                     onAskAI: { query in
-                        onFocusPane?()
-                        viewModel.askCherryAI(seed: query)
+                        // Focus follows the ask only when the ask took: a
+                        // press that did nothing must not steal pane focus
+                        // either.
+                        let taken = viewModel.askCherryAI(seed: query)
+                        if taken { onFocusPane?() }
+                        return taken
                     }
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)

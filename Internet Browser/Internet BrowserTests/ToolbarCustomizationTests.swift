@@ -239,69 +239,13 @@ final class ToolbarCustomizationTests: XCTestCase {
 
     // MARK: - Ask Cherry AI availability
 
-    /// The widened rule, stated as the surfaces it used to exclude. The old
-    /// condition was `onAskThisPage != nil && tab.url != nil &&
-    /// tab.internalPage == nil && !tab.showHomePage`, so the button vanished
-    /// on the home page — which is where the panel's general chat is most
-    /// useful, and (since the panel opens everywhere) where it now works.
-    func testAskCherryAIIsAvailableOnTheHomePage() {
-        XCTAssertTrue(
-            ToolbarLayout.askThisPageIsAvailable(
-                hasAction: true, hasURL: false, isInternalPage: false, isShowingHomePage: true
-            )
-        )
-    }
-
-    func testAskCherryAIIsAvailableOnAnInternalCherryPage() {
-        XCTAssertTrue(
-            ToolbarLayout.askThisPageIsAvailable(
-                hasAction: true, hasURL: true, isInternalPage: true, isShowingHomePage: false
-            )
-        )
-    }
-
-    /// The surface it always worked on keeps working — this is a widening,
-    /// not a move.
-    func testAskCherryAIIsStillAvailableOnARealPage() {
-        XCTAssertTrue(
-            ToolbarLayout.askThisPageIsAvailable(
-                hasAction: true, hasURL: true, isInternalPage: false, isShowingHomePage: false
-            )
-        )
-    }
-
-    /// The one thing that can still take the button away: a window that wires
-    /// no action to it.
-    func testAskCherryAINeedsAnActionToInvoke() {
-        for isShowingHomePage in [true, false] {
-            XCTAssertFalse(
-                ToolbarLayout.askThisPageIsAvailable(
-                    hasAction: false,
-                    hasURL: !isShowingHomePage,
-                    isInternalPage: false,
-                    isShowingHomePage: isShowingHomePage
-                )
-            )
-        }
-    }
-
-    /// The `⋯` entry reads the very same rule, so hiding the button on the
-    /// home page still leaves the feature reachable there.
-    func testHiddenAskCherryAIIsOfferedInTheOverflowMenuOnTheHomePage() {
-        let layout = ToolbarLayout.resolve(savedOrder: defaultIDs, hidden: ["askThisPage"])
-
-        let overflow = ToolbarLayout.overflowItems(
-            order: layout.order,
-            hidden: layout.hidden,
-            isAvailable: { item in
-                guard item == .askThisPage else { return true }
-                return ToolbarLayout.askThisPageIsAvailable(
-                    hasAction: true, hasURL: false, isInternalPage: false, isShowingHomePage: true
-                )
-            }
-        )
-
-        XCTAssertEqual(overflow, [.askThisPage])
+    /// The whole rule, and the only thing that can still take the button away.
+    /// It used to also demand `tab.url != nil && tab.internalPage == nil &&
+    /// !tab.showHomePage`; any return of a surface condition has to change
+    /// this signature, which is what makes this assertion able to fail.
+    func testAskCherryAIIsAvailableWheneverThereIsAnActionToInvoke() {
+        XCTAssertTrue(ToolbarLayout.askThisPageIsAvailable(hasAction: true))
+        XCTAssertFalse(ToolbarLayout.askThisPageIsAvailable(hasAction: false))
     }
 
     /// Settings and the `⋯` menu both print this. "Ask This Page" is a promise

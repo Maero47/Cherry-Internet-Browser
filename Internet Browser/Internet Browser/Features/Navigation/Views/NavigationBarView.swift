@@ -108,12 +108,7 @@ struct NavigationBarView: View {
     private func isAvailable(_ item: ToolbarButtonID) -> Bool {
         switch item {
         case .askThisPage:
-            ToolbarLayout.askThisPageIsAvailable(
-                hasAction: onAskThisPage != nil,
-                hasURL: tab.url != nil,
-                isInternalPage: tab.internalPage != nil,
-                isShowingHomePage: tab.showHomePage
-            )
+            ToolbarLayout.askThisPageIsAvailable(hasAction: onAskThisPage != nil)
         case .home:
             true
         case .bookmark:

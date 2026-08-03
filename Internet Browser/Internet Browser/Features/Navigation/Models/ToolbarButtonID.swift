@@ -140,23 +140,19 @@ enum ToolbarLayout {
         return (order, Set(hidden.compactMap(ToolbarButtonID.init(rawValue:))))
     }
 
-    /// Whether the Ask Cherry AI button exists right now.
+    /// Whether the Ask Cherry AI button exists right now: only whether the
+    /// window wired an action to it.
     ///
-    /// The surface flags are taken and deliberately ignored. They spell out
-    /// the condition this rule USED to carry — `tab.url != nil &&
-    /// tab.internalPage == nil && !tab.showHomePage` — which removed the
-    /// button from the home page and from every `cherry://` page: precisely
-    /// the surfaces with no web view, and so precisely the ones the panel's
-    /// general chat is for. Now that the panel opens everywhere, the only
-    /// thing that can take the button away is a window that wires no action to
-    /// it. Keeping the flags in the signature means the widening is asserted
-    /// by name in the tests rather than by an absence nobody can see.
-    static func askThisPageIsAvailable(
-        hasAction: Bool,
-        hasURL: Bool,
-        isInternalPage: Bool,
-        isShowingHomePage: Bool
-    ) -> Bool {
+    /// It used to carry the page-shaped condition `tab.url != nil &&
+    /// tab.internalPage == nil && !tab.showHomePage`, which removed the button
+    /// from the home page and from every `cherry://` page — the surfaces where
+    /// there is nothing on screen to read, and so exactly the ones the panel's
+    /// general chat is for. (Note a `cherry://` page still HAS a web view:
+    /// `Tab.openInternalPage` keeps the covered site's one alive. Nothing here
+    /// or in `BrowserViewModel.toggleAskThisPage` may reason from a web view's
+    /// existence to what is on screen.) The panel now opens everywhere, so
+    /// those conditions are gone rather than restated.
+    static func askThisPageIsAvailable(hasAction: Bool) -> Bool {
         hasAction
     }
 

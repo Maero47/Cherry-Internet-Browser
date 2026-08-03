@@ -150,7 +150,11 @@ struct HomePageView: View {
     /// routed to the chat instead of to the search engine. Empty text opens a
     /// general chat, which is the same thing the panel does with a page it
     /// can't read.
-    let onAskAI: (String) -> Void
+    ///
+    /// Returns whether the question was taken. `false` means nothing happened
+    /// to it, and the field keeps what the user typed rather than emptying
+    /// into nowhere.
+    let onAskAI: (String) -> Bool
 
     @Environment(\.colorScheme) private var colorScheme
     @FocusState private var isSearchFocused: Bool
@@ -346,8 +350,13 @@ struct HomePageView: View {
     /// Sends the field to the AI instead of the search engine. Unguarded, in
     /// contrast to `submitSearch`: an empty field is a general chat, not a
     /// reason to do nothing.
+    ///
+    /// The field is emptied only when the question was actually taken. A
+    /// question the ask could not take (the panel is already open, so nothing
+    /// happens to it) stays in the field where the user can still see it,
+    /// rather than being destroyed by a press with no visible effect.
     private func askAI() {
-        onAskAI(searchText.trimmingCharacters(in: .whitespacesAndNewlines))
+        guard onAskAI(searchText.trimmingCharacters(in: .whitespacesAndNewlines)) else { return }
         searchText = ""
     }
 }
@@ -358,10 +367,18 @@ struct HomePageView: View {
 ///
 /// Colour follows the rule the leading magnifier already sets — the accent is
 /// a reply to the user (hover, press, keyboard focus) and never a resting
-/// state. It rests one rung heavier than the magnifier at `0.62` rather than
+/// state. It rests one rung heavier than the magnifier, at `0.62` rather than
 /// `0.42`: the magnifier is decoration, this is a control, and `0.42`
 /// composited on the field's material measures ~2.6:1 in light mode against a
-/// 4.5:1 floor (`0.62` measures 4.5–5.1:1 light, 5.1–7.3:1 dark).
+/// 4.5:1 floor, where `0.62` measures 4.5–5.1:1 light and 5.1–7.3:1 dark.
+///
+/// Those numbers cover the SCHEME-ADAPTIVE foreground only — the colours the
+/// homepage picks itself. Under an imported theme `foreground` is the theme's
+/// `ntp_text` over its `ntp_background`, and the engaged colour is whatever
+/// accent the user chose; both are the user's own colours and neither is
+/// measured here. What is guaranteed in those cases is only that this control
+/// is drawn at the same weight as the page's own secondary text (the greeting
+/// shares `0.62`), so it is never the least legible thing on the page.
 private struct AskAIButton: View {
     let foreground: Color
     let accent: Color
@@ -405,8 +422,13 @@ private struct AskAIButton: View {
                 .opacity(isFocused ? 1 : 0)
         }
         .onHover { isHovering = $0 }
-        .keyboardShortcut(.return, modifiers: .command)
-        .help("\(actionName) (Cmd+Return)")
+        // No `.keyboardShortcut` here on purpose. The menu bar
+        // (`BrowserCommand`) is the single owner of every shortcut in this
+        // app — see the note on `BrowserView.escapeShortcut` — and ⌘⇧K
+        // already opens the panel through it. A view-level binding would also
+        // be window-scoped, so in split view it would fire from whichever
+        // pane happened to register it.
+        .help(actionName)
         .accessibilityLabel(actionName)
     }
 }

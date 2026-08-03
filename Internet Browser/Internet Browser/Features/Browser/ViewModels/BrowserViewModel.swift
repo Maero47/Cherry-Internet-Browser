@@ -1211,14 +1211,21 @@ final class BrowserViewModel {
             showAskThisPage = false
             return
         }
-        guard let webView = tabManager.focusedTab?.webView else {
-            // No web view — the home page, or any surface whose page was
-            // released — so there is nothing to extract. This used to `return`,
-            // which made the toolbar button, the ⋯ entry, ⌘⇧K and the command
-            // palette all do NOTHING here. The panel has handled this since
-            // general chat existed: an empty snapshot is exactly what
-            // `AskThisPagePanel.isGeneralChat` reads as "nothing to ground on",
-            // so open it with one instead of swallowing the command.
+        // The question is "is there something ON SCREEN to ground on", not "is
+        // there a web view". `Tab.openInternalPage` deliberately KEEPS the web
+        // view — the covered site's back/forward list and scroll position have
+        // to survive — so on a cherry:// page there is a live, readable web
+        // view showing a page the user is not looking at. Same shape as
+        // `AskThisPagePanel.refreshSnapshot`, which is what keeps the panel's
+        // live snapshot and this opening snapshot answering the same question.
+        guard let tab = tabManager.focusedTab,
+              tab.internalPage == nil, !tab.showHomePage,
+              let webView = tab.webView else {
+            // Nothing readable on screen. Open on an EMPTY snapshot: that is
+            // exactly what `AskThisPagePanel.isGeneralChat` reads as "nothing
+            // to ground on", so the panel lands in general chat. This used to
+            // `return`, which made the toolbar button, the ⋯ entry, ⌘⇧K and
+            // the command palette all do NOTHING on the home page.
             askThisPageTitle = ""
             askThisPageText = ""
             showAskThisPage = true
@@ -1245,10 +1252,17 @@ final class BrowserViewModel {
     /// panel. With the panel already open the running conversation is left
     /// exactly as it is — the seed is consumed once, when the panel appears,
     /// so it can't reach in and overwrite a draft the user is typing there.
-    func askCherryAI(seed: String) {
-        guard !showAskThisPage else { return }
+    ///
+    /// Returns whether the question was TAKEN. `false` means nothing at all
+    /// happened to it, and the caller still owns it: the homepage clears its
+    /// search field only on `true`, so a question typed behind an already-open
+    /// panel is never destroyed by a press that did nothing.
+    @discardableResult
+    func askCherryAI(seed: String) -> Bool {
+        guard !showAskThisPage else { return false }
         askThisPageSeed = seed
         toggleAskThisPage()
+        return true
     }
 
     // MARK: - Picture-in-Picture
