@@ -319,9 +319,19 @@ struct BrowserView: View {
                         },
                         onSplitOnEdge: { tab, edge in viewModel.splitWith(tab: tab, edge: edge) }
                     )
-                    Rectangle()
-                        .fill(Color.primary.opacity(0.08))
-                        .frame(height: 0.5)
+                    // Chrome-on-chrome separator: the tab strip and the toolbar
+                    // below it are two slices of ONE themed backdrop, so under a
+                    // theme this hairline paints a grey line straight across the
+                    // header art. The theme supplies its own separation — the
+                    // stock look keeps the separator, themed chrome doesn't get
+                    // one overdrawn on it. Private windows are never themed
+                    // (every themed branch gates on !isPrivateMode), so theirs
+                    // stays even while a theme is loaded.
+                    if viewModel.isPrivateMode || !FirefoxThemeManager.shared.hasHeaderBackdrop {
+                        Rectangle()
+                            .fill(Color.primary.opacity(0.08))
+                            .frame(height: 0.5)
+                    }
                 }
 
                 if viewModel.tabManager.isSplitActive,
@@ -454,6 +464,10 @@ struct BrowserView: View {
     private var devToolsPanelOverlay: some View {
         if viewModel.showDevToolsPanel && !viewModel.isVideoFullscreen,
            let focusedTabID = viewModel.tabManager.focusedTab?.id {
+            // Unconditional on purpose: this sits at the BOTTOM of the window
+            // between page content and the dev tools panel. No themed backdrop
+            // reaches down here, so there is nothing to overdraw — themed or
+            // not, the panel needs its top edge.
             Rectangle()
                 .fill(Color.primary.opacity(0.08))
                 .frame(height: 0.5)
@@ -887,6 +901,11 @@ struct BrowserContentView: View {
             if tab.isLoading && tab.internalPage == nil && !tab.showHomePage && !viewModel.isVideoFullscreen {
                 ProgressBarView(progress: tab.loadingProgress)
             } else if !viewModel.isVideoFullscreen {
+                // Unconditional on purpose: this is the chrome↔page boundary,
+                // the last row below the nav/bookmark bars, standing in for the
+                // progress bar. It marks where the themed chrome ENDS rather
+                // than cutting across it (Firefox keeps its toolbox bottom
+                // border under a theme too), and the page below is never themed.
                 Rectangle()
                     .fill(Color.primary.opacity(0.08))
                     .frame(height: 0.5)

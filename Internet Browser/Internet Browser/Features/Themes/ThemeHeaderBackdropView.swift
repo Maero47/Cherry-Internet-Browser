@@ -94,14 +94,15 @@ private struct ThemeHeaderCanvasRepresentable: NSViewRepresentable {
 /// first (the persisted list is topmost-first, mirroring CSS
 /// `background-image` order), each anchored/tiled within the window-sized
 /// virtual canvas and translated by this surface's offset inside it.
-/// Animated layers (GIF/APNG) are advanced by a timer that only runs while
-/// the view is in a window and at least one layer actually animates.
-final class ThemeHeaderCanvasNSView: NSView {
+/// Animated layers (GIF/APNG) show whichever frame `ThemeAnimationClock`
+/// says is current for the theme — every surface therefore shows the SAME
+/// frame — and register for redraws with the shared ticker only while in a
+/// window and only while some layer actually animates.
+final class ThemeHeaderCanvasNSView: NSView, ThemeAnimationTickReceiver {
     private(set) var themeID: String = ""
     private var renderers: [BackgroundLayerRenderer] = []
     private var canvasSize: CGSize = .zero
     private var originInCanvas: CGPoint = .zero
-    private var timer: Timer?
 
     // Top-left origin, matching the canvas coordinates the anchors are
     // computed in.
@@ -111,7 +112,7 @@ final class ThemeHeaderCanvasNSView: NSView {
         self.themeID = themeID
         renderers = backgrounds.map(BackgroundLayerRenderer.init)
         needsDisplay = true
-        restartTimerIfNeeded()
+        updateTickerRegistration()
     }
 
     func updateLayout(canvasSize: CGSize, originInCanvas: CGPoint) {
@@ -123,39 +124,47 @@ final class ThemeHeaderCanvasNSView: NSView {
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        restartTimerIfNeeded()
+        updateTickerRegistration()
     }
 
     // viewDidMoveToWindow(nil) covers normal removal, but a closing window
-    // can dealloc the view tree without it — without this, the repeating
-    // .common-mode timer (which does not retain self) would keep firing.
+    // can dealloc the view tree without it — without this, the shared ticker
+    // (which does not retain its receivers) would keep firing for a window
+    // that is gone.
     deinit {
-        timer?.invalidate()
+        ThemeAnimationClock.shared.removeReceiver(self)
     }
 
-    private func restartTimerIfNeeded() {
-        timer?.invalidate()
-        timer = nil
-        guard window != nil else { return }
-        guard let shortestDelay = renderers.compactMap(\.minimumFrameDelay).min() else { return }
-        let newTimer = Timer(timeInterval: max(shortestDelay, 1.0 / 60.0), repeats: true) { [weak self] _ in
-            self?.advanceAnimations()
+    private func updateTickerRegistration() {
+        guard window != nil, let shortestDelay = renderers.compactMap(\.minimumFrameDelay).min() else {
+            ThemeAnimationClock.shared.removeReceiver(self)
+            return
         }
-        // .common so the animation keeps running during scrolling/tracking.
-        RunLoop.main.add(newTimer, forMode: .common)
-        timer = newTimer
+        ThemeAnimationClock.shared.addReceiver(self, shortestFrameDelay: shortestDelay)
     }
 
-    private func advanceAnimations() {
-        let now = CACurrentMediaTime()
+    func themeAnimationDidTick() {
+        if syncFrames() { needsDisplay = true }
+    }
+
+    /// Pulls every layer onto the frame the theme's shared clock says is
+    /// current. Returns true when that changed anything.
+    @discardableResult
+    private func syncFrames() -> Bool {
+        guard !renderers.isEmpty else { return false }
+        let elapsed = ThemeAnimationClock.shared.elapsed(themeID: themeID)
         var changed = false
-        for renderer in renderers where renderer.advanceIfNeeded(now: now) {
+        for renderer in renderers where renderer.updateFrame(elapsed: elapsed) {
             changed = true
         }
-        if changed { needsDisplay = true }
+        return changed
     }
 
     override func draw(_ dirtyRect: NSRect) {
+        // Synced here and not only on the tick, so a surface appearing
+        // mid-loop paints the shared frame on its very first draw instead of
+        // showing frame 0 until the next tick.
+        syncFrames()
         let canvas = CGSize(
             width: canvasSize.width > 0 ? canvasSize.width : bounds.width,
             height: canvasSize.height > 0 ? canvasSize.height : bounds.height
@@ -189,11 +198,10 @@ private final class BackgroundLayerRenderer {
     private let frameSource: CGImageSource?
     private let frameDelays: [TimeInterval]
     private var frameIndex = 0
-    private var nextFrameTime: TimeInterval = 0
     private var currentFrameImage: NSImage?
 
-    /// Nil for static layers — the view only runs its timer when some layer
-    /// returns a delay.
+    /// Nil for static layers — the view only registers with the shared
+    /// redraw ticker when some layer returns a delay.
     var minimumFrameDelay: TimeInterval? {
         frameSource != nil ? frameDelays.min() : nil
     }
@@ -213,17 +221,18 @@ private final class BackgroundLayerRenderer {
         }
     }
 
-    /// Moves to the next animation frame when its display time has elapsed.
-    /// Returns true when the layer needs redrawing.
-    func advanceIfNeeded(now: TimeInterval) -> Bool {
+    /// Adopts the frame this layer should be showing `elapsed` seconds into
+    /// the theme's shared animation clock — a function of the shared time
+    /// only, so two surfaces asking with the same `elapsed` land on the same
+    /// frame no matter when either was created. Returns true when the frame
+    /// changed, i.e. the layer needs redrawing.
+    func updateFrame(elapsed: TimeInterval) -> Bool {
         guard frameSource != nil, !frameDelays.isEmpty else { return false }
-        if nextFrameTime == 0 {
-            nextFrameTime = now + frameDelays[frameIndex]
-            return false
-        }
-        guard now >= nextFrameTime else { return false }
-        frameIndex = (frameIndex + 1) % frameDelays.count
-        nextFrameTime = now + frameDelays[frameIndex]
+        let index = ThemeAnimationClock.frameIndex(elapsed: elapsed, delays: frameDelays)
+        guard index != frameIndex else { return false }
+        frameIndex = index
+        // Dropped, not replaced: `displayImage` re-decodes on demand, so only
+        // the one visible frame is ever held.
         currentFrameImage = nil
         return true
     }
