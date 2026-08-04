@@ -123,6 +123,86 @@ final class MCPBrowserBridgeTests: XCTestCase {
                        "the wording differed, which makes the id an oracle")
     }
 
+    /// The blocker the window-level filter alone did not cover.
+    ///
+    /// `BrowserViewModel.transferTab(tabID:to:)` moves a `Tab` between windows with
+    /// no privacy check, and it is wired to the tab bar — drag an incognito tab onto
+    /// a normal window and it now lives in a non-private window's `TabManager` while
+    /// still carrying `isPrivate == true` and its live private-store `WKWebView`.
+    /// Filtering only on the window published its URL and title in `list_tabs`, and
+    /// `read_page` extracted the private page in full: not asleep, not internal, not
+    /// the home page, and it has a web view, so every rung passed.
+    func testAPrivateTabMovedIntoANormalWindowIsStillInvisible() async throws {
+        let sentinel = "SAFFRON-PRIVATE-BODY"
+        let normal = window(tabs: ["https://swift.org/blog"])
+        // Two tabs, and only one moves: `TabManager.removeTab` closes the window and
+        // calls `NSApp.terminate` when it empties a manager, which in a test bundle
+        // would take the whole run down with it.
+        let incognito = window(isPrivate: true, tabs: [
+            "https://private.example/embarrassing",
+            "https://private.example/stays",
+        ])
+        let bridge = makeBridge(windows: [normal, incognito])
+
+        let privateTab = try XCTUnwrap(incognito.tabManager.tabs.first)
+        privateTab.isPrivate = true
+        try await MCPPageFixture.load(
+            MCPPageFixture.article(repeating: sentinel, paragraphs: 8),
+            into: privateTab.createWebView()
+        )
+        // The page really is readable — otherwise this test proves nothing.
+        let direct = await PageAIExtractor.extract(from: try XCTUnwrap(privateTab.webView))
+        XCTAssertTrue(direct?.text.contains(sentinel) == true, "the sentinel page is not readable")
+
+        // Exactly what dragging the tab onto the normal window's tab bar does.
+        XCTAssertTrue(BrowserViewModel.transferTab(tabID: privateTab.id, to: normal))
+        XCTAssertTrue(normal.tabManager.tabs.contains { $0 === privateTab }, "precondition")
+        XCTAssertFalse(normal.isPrivateMode, "precondition: the destination window is NOT private")
+        XCTAssertTrue(privateTab.isPrivate, "precondition: the tab still knows it is private")
+
+        // list_tabs: absent, and not counted.
+        let listed = bridge.listTabs(windowID: nil)
+        let body = try json(of: listed)
+        XCTAssertEqual(listed.totalTabs, 1, "the private tab was counted in total_tabs")
+        XCTAssertEqual(listed.windows.first?.tabCount, 1, "tab_count reported the private tab")
+        XCTAssertFalse(body.contains(privateTab.id.uuidString), "the private tab's id leaked")
+        XCTAssertFalse(body.contains("private.example"), "the private tab's URL leaked")
+
+        // read_page: refused, with the same bytes as an id that never existed.
+        let outcome = await bridge.readPage(tabID: privateTab.id, offset: 0)
+        XCTAssertEqual(outcome.reason, .notFound)
+        XCTAssertNil(outcome.text)
+        XCTAssertFalse(try json(of: outcome).contains(sentinel), "the private page's text leaked")
+
+        let unknown = await bridge.readPage(tabID: UUID(), offset: 0)
+        guard case .unreadable(let moved) = outcome, case .unreadable(let never) = unknown else {
+            return XCTFail("both should be refusals")
+        }
+        XCTAssertEqual(moved.detail, never.detail)
+        XCTAssertNil(moved.url, "the refusal handed back the private tab's URL")
+    }
+
+    /// …including when it is the focused tab, which is what `read_page` with no
+    /// `tab_id` resolves to. `TabManager.focusedTab` knows nothing about privacy.
+    func testAFocusedPrivateTabIsNotWhatReadPageFallsBackTo() async throws {
+        let normal = window(tabs: ["https://swift.org/blog"])
+        let incognito = window(isPrivate: true, tabs: [
+            "https://private.example/secret",
+            "https://private.example/stays",
+        ])
+        let bridge = makeBridge(windows: [normal, incognito])
+
+        let privateTab = try XCTUnwrap(incognito.tabManager.tabs.first)
+        privateTab.isPrivate = true
+        XCTAssertTrue(BrowserViewModel.transferTab(tabID: privateTab.id, to: normal))
+        normal.tabManager.selectedTabID = privateTab.id
+        XCTAssertTrue(normal.tabManager.focusedTab === privateTab, "precondition")
+
+        let outcome = await bridge.readPage(tabID: nil, offset: 0)
+        XCTAssertEqual(outcome.reason, .notFound, "read_page fell back to a private tab")
+        XCTAssertFalse(try json(of: outcome).contains("private.example"))
+    }
+
     /// `list_tabs` naming a private window by id must not confirm it exists.
     func testAskingForAPrivateWindowByIDLooksLikeAWindowThatIsNotOpen() throws {
         let normal = window(tabs: ["https://swift.org"])
@@ -226,7 +306,12 @@ final class MCPBrowserBridgeTests: XCTestCase {
 
     /// Past the cap the answer says so, and says how to get the rest. A silent
     /// 300-of-400 reads to a model as "these are all the tabs".
-    func testTabsBeyondTheCapAreReportedNotDropped() {
+    ///
+    /// The binding limit is the RESULT SIZE budget, not the 300-tab cap. Per-field
+    /// caps never bounded a payload: 300 tabs at 120 title + 500 url is ~210,000
+    /// characters, far past the ~25,000-token hard limit this design is sized
+    /// against, and `list_tabs` has no chunking to fall back on.
+    func testTabsBeyondTheCapAreReportedNotDropped() throws {
         let viewModel = window(tabs: [])
         for index in 0..<(MCPResultCaps.tabs + 12) {
             viewModel.tabManager.newTab(url: URL(string: "https://example.com/\(index)")!, switchTo: false)
@@ -234,12 +319,53 @@ final class MCPBrowserBridgeTests: XCTestCase {
         let bridge = makeBridge(windows: [viewModel])
 
         let listed = bridge.listTabs(windowID: nil)
-        XCTAssertEqual(listed.windows[0].tabs.count, MCPResultCaps.tabs)
         XCTAssertEqual(listed.windows[0].tabCount, MCPResultCaps.tabs + 12,
                        "the window must still report how many tabs it really has")
         XCTAssertEqual(listed.totalTabs, MCPResultCaps.tabs + 12)
         XCTAssertTrue(listed.truncated)
-        XCTAssertEqual(listed.note, "300 of 312 tabs shown; pass window_id to narrow.")
+        XCTAssertLessThan(listed.windows[0].tabs.count, MCPResultCaps.tabs + 12)
+
+        let note = try XCTUnwrap(listed.note)
+        XCTAssertTrue(note.contains("of \(MCPResultCaps.tabs + 12) tabs shown"), note)
+        XCTAssertTrue(note.contains("window_id"), note)
+        XCTAssertTrue(note.contains("result size limit") || note.contains("cap of"), note)
+
+        // The point of the budget: the body actually fits.
+        XCTAssertLessThan(try json(of: listed).count, MCPResultCaps.payloadChars,
+                          "list_tabs emitted more than its own declared budget")
+    }
+
+    /// The budget binds on total size, not on row count — a handful of tabs with
+    /// pathological titles and URLs must not blow the envelope either.
+    func testAFewEnormousTabsAlsoFitTheBudget() throws {
+        let viewModel = window(tabs: [])
+        for index in 0..<200 {
+            let tab = viewModel.tabManager.newTab(
+                url: URL(string: "https://example.com/" + String(repeating: "p", count: 900))!,
+                switchTo: false
+            )
+            tab.title = "\(index) " + String(repeating: "T", count: 400)
+        }
+        let bridge = makeBridge(windows: [viewModel])
+
+        let listed = bridge.listTabs(windowID: nil)
+        XCTAssertTrue(listed.truncated)
+        XCTAssertLessThan(try json(of: listed).count, MCPResultCaps.payloadChars)
+        XCTAssertTrue(try XCTUnwrap(listed.note).contains("result size limit"), listed.note ?? "")
+    }
+
+    /// A budget that returned nothing would be worse than one that overflows: the
+    /// first row is always admitted, whatever it costs.
+    func testTheFirstRowIsAlwaysReturnedEvenIfItIsHuge() throws {
+        let viewModel = window(tabs: [])
+        let tab = viewModel.tabManager.newTab(
+            url: URL(string: "https://example.com/" + String(repeating: "p", count: 5_000))!,
+            switchTo: true
+        )
+        tab.title = String(repeating: "T", count: 5_000)
+        let bridge = makeBridge(windows: [viewModel])
+
+        XCTAssertEqual(bridge.listTabs(windowID: nil).windows.first?.tabs.count, 1)
     }
 
     func testLongTitlesAndURLsAreTruncatedVisibly() {
@@ -405,37 +531,98 @@ final class MCPBrowserBridgeTests: XCTestCase {
         XCTAssertEqual(outcome.reason, .internalPage)
     }
 
-    /// A PDF the window is displaying is refused…
-    func testPDFIsRefused() async {
-        let viewModel = window(tabs: ["https://example.com/paper"])
-        viewModel.isViewingPDF = true
+    /// A real PDF in a real `WKWebView`, refused because the DOCUMENT says it is one.
+    ///
+    /// Detection is `document.contentType`, not the URL: this fixture's URL is
+    /// `arxiv.org/pdf/2401.00001`, whose `pathExtension` is `"00001"`, which is
+    /// exactly the extensionless shape the old `pathExtension == "pdf"` check missed
+    /// — and which `BrowserViewModel.isViewingPDF` also misses, since
+    /// `WebViewWrapper` computes it the same way.
+    func testARealPDFIsRefusedEvenWithNoPDFExtensionInTheURL() async throws {
+        let viewModel = window(tabs: ["https://arxiv.org/pdf/2401.00001"])
         let bridge = makeBridge(windows: [viewModel])
+        let tab = viewModel.tabManager.tabs[0]
+        try await MCPPageFixture.loadPDF(into: tab.createWebView(),
+                                         baseURL: URL(string: "https://arxiv.org/pdf/2401.00001")!)
 
-        let outcome = await bridge.readPage(tabID: viewModel.tabManager.tabs[0].id, offset: 0)
-        XCTAssertEqual(outcome.reason, .pdf)
+        let outcome = await bridge.readPage(tabID: tab.id, offset: 0)
+        XCTAssertEqual(outcome.reason, .pdf, "a real PDF was not refused")
+        XCTAssertNil(outcome.text)
     }
 
-    /// …but `isViewingPDF` is a per-WINDOW flag set from the DISPLAYED page, so it
-    /// must not condemn the window's other tabs. Getting this wrong is the same
-    /// shape of bug as reading a `cherry://` tab's covered site: one tab's state
-    /// answering for another's.
-    func testAPDFInOneTabDoesNotMakeTheWindowsOtherTabsUnreadable() async {
-        let viewModel = window(tabs: ["https://example.com/paper", "https://swift.org/blog"])
-        viewModel.isViewingPDF = true
-        viewModel.tabManager.selectedTabID = viewModel.tabManager.tabs[0].id
-        let bridge = makeBridge(windows: [viewModel])
-
-        let other = await bridge.readPage(tabID: viewModel.tabManager.tabs[1].id, offset: 0)
-        XCTAssertNotEqual(other.reason, .pdf, "a background tab inherited the window's PDF state")
-        XCTAssertEqual(other.reason, .notRendered)
-    }
-
-    func testAPDFURLIsRefusedEvenInABackgroundTab() async {
+    /// A `.pdf` URL that is really HTML must NOT be refused. The old heuristic did
+    /// refuse it; asking the document cannot.
+    func testAnHTMLPageServedAtAPDFPathIsStillReadable() async throws {
         let viewModel = window(tabs: ["https://example.com/report.pdf"])
         let bridge = makeBridge(windows: [viewModel])
+        let tab = viewModel.tabManager.tabs[0]
+        try await MCPPageFixture.load(
+            MCPPageFixture.article(repeating: "TAMARIND-NOT-A-PDF", paragraphs: 6),
+            into: tab.createWebView()
+        )
 
-        let outcome = await bridge.readPage(tabID: viewModel.tabManager.tabs[0].id, offset: 0)
-        XCTAssertEqual(outcome.reason, .pdf)
+        guard case .page(let payload) = await bridge.readPage(tabID: tab.id, offset: 0) else {
+            return XCTFail("an HTML page at a .pdf path was refused")
+        }
+        XCTAssertTrue(payload.text.contains("TAMARIND-NOT-A-PDF"))
+    }
+
+    /// A PDF in one split pane must not refuse the article in the other.
+    ///
+    /// `BrowserViewModel.isViewingPDF` is per-WINDOW and last-writer-wins across
+    /// panes, and `isSelected` is true for BOTH panes, so gating on it refused a
+    /// perfectly readable pane — the same "one tab's state answering for another's"
+    /// bug as reading a `cherry://` tab's covered site. The bridge no longer reads
+    /// that flag at all; this test is what would notice if it came back.
+    func testAPDFInOneSplitPaneDoesNotRefuseTheOther() async throws {
+        let viewModel = window(tabs: ["https://arxiv.org/pdf/2401.00001", "https://swift.org/blog"])
+        let bridge = makeBridge(windows: [viewModel])
+        let manager = viewModel.tabManager
+        let pdfTab = manager.tabs[0]
+        let articleTab = manager.tabs[1]
+
+        try await MCPPageFixture.loadPDF(into: pdfTab.createWebView(),
+                                         baseURL: URL(string: "https://arxiv.org/pdf/2401.00001")!)
+        try await MCPPageFixture.load(
+            MCPPageFixture.article(repeating: "GUAVA-OTHER-PANE", paragraphs: 6),
+            into: articleTab.createWebView()
+        )
+
+        // Both panes on screen, which is what made `isViewingPDF` ambiguous.
+        manager.selectedTabID = pdfTab.id
+        manager.openSplit(with: articleTab.id)
+        viewModel.isViewingPDF = true
+
+        let pdfOutcome = await bridge.readPage(tabID: pdfTab.id, offset: 0)
+        XCTAssertEqual(pdfOutcome.reason, .pdf)
+
+        guard case .page(let payload) = await bridge.readPage(tabID: articleTab.id, offset: 0) else {
+            return XCTFail("the article pane was refused because the other pane holds a PDF")
+        }
+        XCTAssertTrue(payload.text.contains("GUAVA-OTHER-PANE"))
+    }
+
+    /// `showSettingsPage` is a cover-the-web-view flag of exactly the same shape as
+    /// `internalPage` — `BrowserView` still has a live render branch for it and
+    /// `BrowserViewModel.canZoom` checks all three together. Vestigial today, but if
+    /// it is ever set again the rung already holds, and it holds without leaking.
+    func testTheSettingsPageFlagIsAlsoARefusalAndAlsoDoesNotLeak() async throws {
+        let sentinel = "CARDAMOM-COVERED-BY-SETTINGS"
+        let viewModel = window(tabs: ["https://covered.example/secret"])
+        let bridge = makeBridge(windows: [viewModel])
+        let tab = viewModel.tabManager.tabs[0]
+        try await MCPPageFixture.load(
+            MCPPageFixture.article(repeating: sentinel, paragraphs: 8),
+            into: tab.createWebView()
+        )
+
+        tab.showSettingsPage = true
+        let outcome = await bridge.readPage(tabID: tab.id, offset: 0)
+        XCTAssertEqual(outcome.reason, .internalPage)
+
+        let body = try json(of: outcome)
+        XCTAssertFalse(body.contains(sentinel), "the covered site leaked through showSettingsPage")
+        XCTAssertFalse(body.contains("covered.example"))
     }
 
     /// A tab that has never been displayed has no web view and nothing loaded —
@@ -570,6 +757,63 @@ final class MCPBrowserBridgeTests: XCTestCase {
         XCTAssertEqual(payload.tabID, second.id.uuidString)
     }
 
+    /// The honesty limit of "genuinely displayed", made visible instead of hidden.
+    ///
+    /// `read_page`'s promise holds at the tab boundary — a sleeping tab, a
+    /// `cherry://` page and a PDF are all refused. Below it, the extractor's
+    /// last-resort branches read `textContent`, which is layout-independent, so a
+    /// `display:none` panel comes back as text. That was measured, not assumed: on a
+    /// page whose only bulk text is hidden, `document.body.innerText.length` is 13
+    /// and the extractor returns 1,199 characters including the hidden block.
+    ///
+    /// Constraining extraction to the visible paths would break the branches that
+    /// make a mid-load or never-laid-out page readable at all, which the plan wants.
+    /// So the payload reports which path produced the text and the description tells
+    /// the model what to do about it.
+    func testTextFromHiddenDOMIsLabelledAsNotDisplayed() async throws {
+        let hidden = String(repeating: "PAPRIKA-HIDDEN-PANEL ", count: 60)
+        let viewModel = window(tabs: ["https://app.example/dashboard"])
+        let bridge = makeBridge(windows: [viewModel])
+        let tab = viewModel.tabManager.tabs[0]
+        try await MCPPageFixture.load(
+            "<html><body><div style=\"display:none\"><p>\(hidden)</p></div><p>tiny</p></body></html>",
+            into: tab.createWebView()
+        )
+
+        guard case .page(let payload) = await bridge.readPage(tabID: tab.id, offset: 0) else {
+            return XCTFail("the page was refused rather than read")
+        }
+        XCTAssertTrue(payload.text.contains("PAPRIKA-HIDDEN-PANEL"),
+                      "precondition: the extractor really does surface hidden DOM")
+        XCTAssertEqual(payload.sourceDisplayed, false,
+                       "hidden text was presented as though it were on screen")
+        XCTAssertEqual(payload.textSource, PageTextSource.rawClone.rawValue)
+        XCTAssertTrue(try XCTUnwrap(payload.note).contains("not being displayed"), payload.note ?? "")
+    }
+
+    /// The success payload reports the LIVE document's URL, not the tab model's.
+    ///
+    /// They diverge during navigation and across redirects, and a mismatch means
+    /// text from page A labelled as page B. Only on this branch: on a `cherry://`
+    /// tab `webView.url` IS the covered site, so the refusals keep using
+    /// `displayURL` — which the covered-site tests above pin.
+    func testTheSuccessPayloadReportsTheLiveDocumentsURL() async throws {
+        let viewModel = window(tabs: ["https://stale.example/old-address"])
+        let bridge = makeBridge(windows: [viewModel])
+        let tab = viewModel.tabManager.tabs[0]
+        try await MCPPageFixture.load(
+            MCPPageFixture.article(repeating: "FENNEL-LIVE-URL", paragraphs: 6),
+            into: tab.createWebView()
+        )
+
+        guard case .page(let payload) = await bridge.readPage(tabID: tab.id, offset: 0) else {
+            return XCTFail("expected text")
+        }
+        XCTAssertEqual(payload.url, tab.webView?.url?.absoluteString)
+        XCTAssertNotEqual(payload.url, "https://stale.example/old-address",
+                          "the tab model's URL was reported for text from a different document")
+    }
+
     /// A page with no meaningful text is a refusal with a reason, not an empty
     /// success a model would fill in for itself.
     func testAnEmptyPageIsNoContent() async throws {
@@ -623,6 +867,55 @@ final class MCPBrowserBridgeTests: XCTestCase {
         XCTAssertEqual(chunks, 4, "160,000 chars at 40,000 per call")
         XCTAssertEqual(seenOffsets, [0, 40_000, 80_000, 120_000])
         XCTAssertEqual(reassembled, original, "the walk lost or repeated text")
+    }
+
+    /// A page longer than `read_page` will ever serve is cut, and the payload says
+    /// so rather than presenting the first slice of it as the whole page.
+    ///
+    /// This also bounds the work: `chunk` used to open with `Array(content.text)`,
+    /// full grapheme segmentation of the entire page on the main actor, with nothing
+    /// capping the page first — so walking an N-character page was O(N) allocation
+    /// per call, repeated freely, since only `open_tab` is rate-limited.
+    func testAPageLongerThanTheTotalCapIsClampedAndSaysSo() throws {
+        let huge = String(repeating: "y", count: MCPResultCaps.readPageTotalChars + 12_345)
+        let payload = MCPBrowserBridge.chunk(
+            ExtractedPageContent(title: "Huge", text: huge), offset: 0,
+            tabID: "t", windowID: "w", url: "https://example.com", fallbackTitle: "",
+            loading: false
+        )
+
+        XCTAssertEqual(payload.totalChars, MCPResultCaps.readPageTotalChars)
+        XCTAssertEqual(payload.pageClamped, true)
+        let note = try XCTUnwrap(payload.note)
+        XCTAssertTrue(note.contains("\(huge.count) characters and was clamped"), note)
+        XCTAssertTrue(note.contains("not reachable"), note)
+
+        // And the walk still terminates exactly at the clamped total.
+        var offset = 0
+        var covered = 0
+        while true {
+            let chunk = MCPBrowserBridge.chunk(
+                ExtractedPageContent(title: "Huge", text: huge), offset: offset,
+                tabID: "t", windowID: "w", url: "https://example.com", fallbackTitle: "",
+                loading: false
+            )
+            covered += chunk.returnedChars
+            guard chunk.hasMore, let next = chunk.nextOffset else { break }
+            offset = next
+        }
+        XCTAssertEqual(covered, MCPResultCaps.readPageTotalChars)
+    }
+
+    /// A page that fits is not marked clamped — the flag's presence is the signal.
+    func testAnOrdinaryPageIsNotMarkedClamped() {
+        let payload = MCPBrowserBridge.chunk(
+            ExtractedPageContent(title: "Fine", text: String(repeating: "z", count: 5_000)),
+            offset: 0,
+            tabID: "t", windowID: "w", url: "https://example.com", fallbackTitle: "",
+            loading: false
+        )
+        XCTAssertNil(payload.pageClamped)
+        XCTAssertNil(payload.note)
     }
 
     /// Reading past the end says so instead of looking like a short page.

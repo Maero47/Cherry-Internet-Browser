@@ -89,7 +89,22 @@ nonisolated enum MCPPayloadEncoding {
 /// `note` — and never with silence.
 nonisolated enum MCPResultCaps {
 
-    /// Tab titles. Long enough to identify a page, short enough that 300 of them
+    /// The ceiling on ONE tool result's JSON body, for every tool.
+    ///
+    /// This exists because per-field and per-item caps do not bound a payload.
+    /// 300 tabs at 120 title + 500 url + scaffolding is ~210,000 characters;
+    /// 200 bookmarks is ~168,000; 100 history rows ~73,000 — all single-call, none
+    /// chunked, and all far past the ~25,000-token hard limit this file's header
+    /// names as the design constraint. A user with 300 tabs trips that without
+    /// anyone being adversarial.
+    ///
+    /// 40,000 characters is ~10k tokens, the same number `read_page` chunks at, so
+    /// every tool now answers within one budget and every tool that hits it says
+    /// so. Paired with `anthropic/maxResultSizeChars = 60,000` declared on all four
+    /// data-returning tools, which leaves the JSON envelope room on top.
+    static let payloadChars = 40_000
+
+    /// Tab titles. Long enough to identify a page, short enough that many of them
     /// are not the whole payload.
     static let tabTitleChars = 120
 
@@ -112,6 +127,16 @@ nonisolated enum MCPResultCaps {
     /// `anthropic/maxResultSizeChars` of 60,000 so the JSON envelope has room.
     static let readPageChars = 40_000
 
+    /// The most extracted text `read_page` will ever make reachable from one page,
+    /// i.e. ten full chunks.
+    ///
+    /// Without this, nothing bounded the extracted string at all: the per-call cap
+    /// applies AFTER the whole page is in hand, so a client walking an N-character
+    /// page by `next_offset` did O(N) main-actor work per call for O(N/40000)
+    /// calls, unbounded and unrated-limited. Clamping the page bounds every call to
+    /// this size, and the payload says when it clamped.
+    static let readPageTotalChars = 400_000
+
     /// `search_history`'s `limit`, matching the tool's input schema.
     static let historyLimitDefault = 25
     static let historyLimitMaximum = 100
@@ -119,6 +144,72 @@ nonisolated enum MCPResultCaps {
     /// `search_bookmarks`'s `limit`, matching the tool's input schema.
     static let bookmarkLimitDefault = 50
     static let bookmarkLimitMaximum = 200
+}
+
+/// A running character-and-item allowance for one tool result.
+///
+/// Built while a payload is assembled rather than checked afterwards, so nothing
+/// is serialised only to be thrown away, and so the reason the answer stopped is
+/// known and can be said out loud.
+nonisolated struct MCPBudget {
+
+    private let charLimit: Int
+    private let itemLimit: Int
+    private var chars = 0
+    private var items = 0
+
+    /// Which limit ran out first. `nil` while both still have room.
+    private(set) var exhaustedBy: Limit?
+
+    enum Limit { case chars, items }
+
+    init(chars: Int, items: Int) {
+        self.charLimit = chars
+        self.itemLimit = items
+    }
+
+    var hasRoom: Bool { exhaustedBy == nil }
+
+    /// Charges `chars` to the budget and says whether the item fits.
+    ///
+    /// The first item is always admitted, whatever it costs: an answer of "nothing,
+    /// because the first row was too big" is useless, and a single row is bounded
+    /// by the per-field caps anyway.
+    mutating func admit(chars cost: Int) -> Bool {
+        guard hasRoom else { return false }
+        if items > 0, self.chars + cost > charLimit {
+            exhaustedBy = .chars
+            return false
+        }
+        self.chars += cost
+        items += 1
+        if items >= itemLimit { exhaustedBy = .items }
+        return true
+    }
+
+    /// What to put in a `note`, so a client knows whether to narrow its query or
+    /// simply ask for the next page.
+    var limitHitDescription: String {
+        switch exhaustedBy {
+        case .chars: "result size limit of \(charLimit) characters reached"
+        case .items: "cap of \(itemLimit) reached"
+        case nil: "no limit reached"
+        }
+    }
+}
+
+extension MCPTabPayload {
+    /// Roughly how many characters this row costs once serialised. Deliberately an
+    /// over-estimate: the constant covers the key names, quoting and the booleans.
+    var approximateChars: Int { title.count + url.count + tabID.count + 130 }
+}
+
+extension MCPHistoryEntryPayload {
+    var approximateChars: Int { title.count + url.count + 90 }
+}
+
+extension MCPBookmarkEntryPayload {
+    var approximateChars: Int { title.count + url.count + (folder?.count ?? 0) + 110 }
 }
 
 extension String {
@@ -271,6 +362,38 @@ nonisolated struct MCPReadPagePayload: Encodable, Sendable {
     /// `PageAIExtractor` has a layout-independent last resort — and this flag
     /// says the text may be incomplete rather than wrong.
     let loading: Bool
+
+    /// Which branch of the extractor produced `text` (`PageTextSource`).
+    ///
+    /// The tool's description promises what is "genuinely displayed", and that
+    /// promise holds at the tab boundary — a sleeping tab, a `cherry://` page and a
+    /// PDF are all refused. Below the tab boundary it does not always hold: the
+    /// extractor's last-resort branches read `textContent`, which is
+    /// layout-independent and so also picks up `display:none` panels, collapsed
+    /// accordions and off-screen nav. Those branches fire exactly on app-shaped
+    /// pages — SPAs, webmail, dashboards — where hidden DOM is most likely to hold
+    /// something the user never displayed.
+    ///
+    /// Reporting it was chosen over constraining extraction to the visible-text
+    /// paths, because those same branches are what make a mid-load or
+    /// never-laid-out page readable at all, which the plan explicitly wants. So the
+    /// model is told which kind of text it got and can weigh it.
+    let textSource: String?
+
+    /// The one-bit form of `text_source`: whether the element the text came from
+    /// was being laid out at all. False means it was not — the text is DOM the user
+    /// cannot see. Absent when the extractor reported no path.
+    ///
+    /// It does NOT claim that every character of a `true` result was visible: a
+    /// displayed container is read via `textContent`, so its own collapsed or hidden
+    /// descendants come along. That caveat is in the tool's description, where it
+    /// belongs, rather than repeated in every payload.
+    let sourceDisplayed: Bool?
+
+    /// True when the extracted page was longer than `read_page` will serve and was
+    /// cut. Absent otherwise, so its presence is the signal.
+    let pageClamped: Bool?
+
     let note: String?
 
     private enum CodingKeys: String, CodingKey {
@@ -281,6 +404,9 @@ nonisolated struct MCPReadPagePayload: Encodable, Sendable {
         case totalChars = "total_chars"
         case hasMore = "has_more"
         case nextOffset = "next_offset"
+        case textSource = "text_source"
+        case sourceDisplayed = "source_displayed"
+        case pageClamped = "page_clamped"
     }
 }
 

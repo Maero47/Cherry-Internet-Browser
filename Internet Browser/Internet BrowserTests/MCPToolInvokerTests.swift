@@ -127,11 +127,19 @@ final class MCPToolInvokerTests: XCTestCase {
         let body = try object(of: result)
         XCTAssertEqual(body["status"] as? String, "ok")
         for key in ["tab_id", "window_id", "title", "url", "text", "offset",
-                    "returned_chars", "total_chars", "has_more", "loading"] {
+                    "returned_chars", "total_chars", "has_more", "loading",
+                    "text_source", "source_displayed"] {
             XCTAssertNotNil(body[key], "read_page is missing \(key)")
         }
         XCTAssertNil(body["next_offset"], "next_offset must be absent when there is no more")
+        XCTAssertNil(body["page_clamped"], "page_clamped must be absent for a page that fits")
         XCTAssertTrue((body["text"] as? String)?.contains("MULBERRY-KEYS") == true)
+
+        // The fixture's `<article>` IS laid out (measured: one client rect,
+        // 2,780pt tall, even in a zero-size web view), so this reports the container
+        // as displayed. The hidden-DOM counterpart is in MCPBrowserBridgeTests.
+        XCTAssertEqual(body["source_displayed"] as? Bool, true)
+        XCTAssertEqual(body["text_source"] as? String, PageTextSource.renderedClone.rawValue)
     }
 
     func testSearchHistoryKeys() async throws {
@@ -149,7 +157,7 @@ final class MCPToolInvokerTests: XCTestCase {
         XCTAssertEqual(entry["visit_count"] as? Int, 7)
         XCTAssertTrue((entry["visited_at"] as? String)?.hasSuffix("Z") == true,
                       "visited_at should be ISO-8601 UTC: \(entry["visited_at"] ?? "nil")")
-        XCTAssertFalse(text(of: result).contains("favicon"), "a favicon reached an MCP client")
+        assertFaviconWasDropped(from: entry, whole: result)
     }
 
     func testSearchBookmarksKeys() async throws {
@@ -166,7 +174,32 @@ final class MCPToolInvokerTests: XCTestCase {
         XCTAssertEqual(Set(entry.keys), ["title", "url", "folder", "in_bookmark_bar", "created_at"])
         XCTAssertEqual(entry["folder"] as? String, "Reading")
         XCTAssertEqual(entry["in_bookmark_bar"] as? Bool, true)
-        XCTAssertFalse(text(of: result).contains("favicon"), "a favicon reached an MCP client")
+        assertFaviconWasDropped(from: entry, whole: result)
+    }
+
+    /// A favicon really was there to drop, and none of it came through.
+    ///
+    /// The previous version of this check was `XCTAssertFalse(text.contains("favicon"))`,
+    /// which could never fail: the DTOs have no favicon property and the encoder
+    /// emits only declared keys, so the substring was unreachable by construction.
+    /// The fixtures now put real TIFF bytes on every row — `HistoryItem` and
+    /// `Bookmark` both carry an `NSImage` — so the assertion has something to catch:
+    /// no image-shaped key, and none of the actual bytes in any encoding.
+    private func assertFaviconWasDropped(
+        from entry: [String: Any],
+        whole result: CallTool.Result,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        let body = text(of: result)
+        XCTAssertFalse(entry.keys.contains { $0.contains("favicon") || $0.contains("icon") },
+                       "an icon field reached an MCP client: \(entry.keys.sorted())",
+                       file: file, line: line)
+        XCTAssertFalse(body.contains(MCPRepositoryFixture.faviconData.base64EncodedString()),
+                       "favicon bytes were serialised into the payload", file: file, line: line)
+        // TIFF magic, in case a future encoder chooses a different representation.
+        XCTAssertFalse(body.contains("MM\u{0}*") || body.contains("II*\u{0}"),
+                       "raw image bytes reached an MCP client", file: file, line: line)
     }
 
     func testOpenTabKeys() async throws {
@@ -328,6 +361,91 @@ final class MCPToolInvokerTests: XCTestCase {
         XCTAssertTrue(text(of: result).contains("whole number"), text(of: result))
     }
 
+    /// One MCP request used to kill the whole browser process.
+    ///
+    /// `optionalInt` matched `.double` and called the TRAPPING `Int(d)`, so any
+    /// out-of-range JSON number took the app down: every window and every unsaved
+    /// tab, from any client holding the token. The SDK does no `inputSchema`
+    /// validation, so the declared `"maximum": 100` never ran; and it decodes
+    /// Int-first-then-Double, so an integer literal beyond `Int64` arrives as
+    /// `.double` too. `infinity.rounded() == infinity`, so the old
+    /// `d == d.rounded()` guard let it straight through.
+    ///
+    /// Reachable on all three tools that take a number. Every shape below is a
+    /// separate way to trap `Int(_: Double)`.
+    func testOutOfRangeNumbersAreRefusedRatherThanTrapping() async {
+        let hostile: [(name: String, value: Value)] = [
+            ("1e300", .double(1e300)),
+            ("-1e300", .double(-1e300)),
+            ("1e999 → infinity", .double(.infinity)),
+            ("-infinity", .double(-.infinity)),
+            ("nan", .double(.nan)),
+            ("greatestFiniteMagnitude", .double(.greatestFiniteMagnitude)),
+            // Just past Int64.max, which is where Double(Int.max) itself lands.
+            ("Int64.max + 1", .double(9_223_372_036_854_775_808.0)),
+            // A bare integer literal past Int64, as the SDK would decode it.
+            ("99999999999999999999", .double(99_999_999_999_999_999_999.0)),
+            // Fractional: not a count, so refused rather than silently rounded.
+            ("2.5", .double(2.5)),
+            // And the string forms, which must also not overflow.
+            ("\"99999999999999999999\"", .string("99999999999999999999")),
+        ]
+
+        for (name, value) in hostile {
+            for (tool, key, extra) in [
+                ("search_history", "limit", ["query": Value.string("a")]),
+                ("search_history", "since_days", ["query": Value.string("a")]),
+                ("search_bookmarks", "limit", ["query": Value.string("a")]),
+                ("read_page", "offset", [:]),
+            ] as [(String, String, [String: Value])] {
+                var arguments = extra
+                arguments[key] = value
+                // Reaching the assertion at all is most of the point: before the fix
+                // this call did not return, it killed the process.
+                let result = await call(makeInvoker(), tool, arguments)
+                XCTAssertEqual(
+                    result.isError, true,
+                    "\(tool).\(key) accepted \(name): \(text(of: result))"
+                )
+            }
+        }
+    }
+
+    /// The in-range boundaries still work, so the fix did not just refuse everything.
+    func testTheIntegerBoundariesThemselvesAreStillAccepted() async throws {
+        let history = MCPRepositoryFixture.history([
+            (url: "https://example.com/x", title: "X", visitDate: Date(), visitCount: 1)
+        ])
+        for value in [Value.int(Int.max), .int(Int.min), .double(3.0), .int(1)] {
+            let result = await call(
+                makeInvoker(history: history),
+                "search_history",
+                ["query": .string("example"), "limit": value]
+            )
+            XCTAssertNil(result.isError, "\(value) was refused: \(text(of: result))")
+            XCTAssertEqual(try object(of: result)["returned"] as? Int, 1)
+        }
+    }
+
+    /// `read_page`'s offset is the other number a client controls, and a huge but
+    /// in-range one has to clamp rather than overflow while chunking.
+    func testAHugeInRangeOffsetClampsInsteadOfOverflowing() async throws {
+        let viewModel = window(tabs: ["https://swift.org/blog"])
+        let tab = viewModel.tabManager.tabs[0]
+        try await MCPPageFixture.load(
+            MCPPageFixture.article(repeating: "OREGANO-OFFSET", paragraphs: 6),
+            into: tab.createWebView()
+        )
+
+        let result = await call(
+            makeInvoker(windows: [viewModel]), "read_page", ["offset": .int(Int.max)]
+        )
+        XCTAssertNil(result.isError, text(of: result))
+        let body = try object(of: result)
+        XCTAssertEqual(body["returned_chars"] as? Int, 0)
+        XCTAssertEqual(body["has_more"] as? Bool, false)
+    }
+
     /// An explicit `null` means "not given", which is what several clients send
     /// for an unset optional.
     func testNullOptionalsAreTreatedAsAbsent() async throws {
@@ -429,6 +547,45 @@ final class MCPToolInvokerTests: XCTestCase {
         XCTAssertEqual((reading["results"] as? [[String: Any]])?.compactMap { $0["title"] as? String },
                        ["Alpha"], "folder matching should be case-insensitive")
         XCTAssertEqual(reading["total_matches"] as? Int, 1)
+    }
+
+    /// The searches are budgeted by total size too, not only by `limit`. 200
+    /// bookmarks at 200 title + 500 url is ~168,000 characters in one unchunked
+    /// answer, and 100 history rows ~73,000 — both past the hard limit.
+    func testSearchResultsFitTheSizeBudgetAndSayWhenTheyStopped() async throws {
+        let longTitle = String(repeating: "T", count: 400)
+        let longURL = "https://example.com/" + String(repeating: "p", count: 900)
+
+        let history = MCPRepositoryFixture.history((0..<100).map {
+            (url: "\(longURL)/\($0)", title: "\($0) \(longTitle)",
+             visitDate: Date().addingTimeInterval(Double(-$0)), visitCount: 1)
+        })
+        let historyBody = await call(
+            makeInvoker(history: history),
+            "search_history",
+            ["query": .string("example"), "limit": .int(100)]
+        )
+        XCTAssertLessThan(text(of: historyBody).count, MCPResultCaps.payloadChars,
+                          "search_history exceeded its own declared budget")
+        let historyNote = try XCTUnwrap(try object(of: historyBody)["note"] as? String)
+        XCTAssertTrue(historyNote.contains("result size limit"), historyNote)
+        XCTAssertTrue(historyNote.contains("will not return more"),
+                      "raising limit is useless here and the note must say so: \(historyNote)")
+
+        let bookmarks = MCPRepositoryFixture.bookmarks((0..<200).map {
+            (url: "\(longURL)/\($0)", title: "\($0) \(longTitle)", folder: "Reading",
+             inBar: false, createdAt: Date().addingTimeInterval(Double(-$0)))
+        })
+        let bookmarkBody = await call(
+            makeInvoker(bookmarks: bookmarks),
+            "search_bookmarks",
+            ["query": .string("example"), "limit": .int(200)]
+        )
+        XCTAssertLessThan(text(of: bookmarkBody).count, MCPResultCaps.payloadChars,
+                          "search_bookmarks exceeded its own declared budget")
+        XCTAssertTrue(
+            try XCTUnwrap(try object(of: bookmarkBody)["note"] as? String).contains("result size limit")
+        )
     }
 
     func testLongHistoryTitlesAreTruncatedVisibly() async throws {

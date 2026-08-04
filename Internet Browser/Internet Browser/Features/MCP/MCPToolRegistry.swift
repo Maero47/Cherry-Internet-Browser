@@ -43,6 +43,23 @@ nonisolated enum MCPToolRegistry {
         openWorldHint: false
     )
 
+    /// Claude Code persists an over-large tool result to disk and hands the model a
+    /// file reference instead. Every data-returning tool budgets its JSON body to
+    /// `MCPResultCaps.payloadChars` (40,000), so 60,000 leaves the envelope room
+    /// without tripping that.
+    ///
+    /// Declared on all four, not just `read_page`. It used to be on `read_page`
+    /// alone, which was the only tool whose output was actually sized against this
+    /// number — `list_tabs` could emit ~210,000 characters at 300 tabs,
+    /// `search_bookmarks` ~168,000 and `search_history` ~73,000, all single-call and
+    /// unchunked. Those are now budgeted at the source (see `MCPBudget`); this
+    /// declaration is the matching half.
+    static let maxResultSizeChars = 60_000
+
+    private static let resultSizeMeta = Metadata(additionalFields: [
+        "anthropic/maxResultSizeChars": .int(maxResultSizeChars)
+    ])
+
     // MARK: - 1. list_tabs
 
     static let listTabs = Tool(
@@ -56,7 +73,8 @@ nonisolated enum MCPToolRegistry {
 
             Do not use this to read page content — it returns titles and URLs only, never page text. Do not \
             assume the list is stable: the user is browsing, so tab ids may disappear between calls. Private \
-            and incognito windows are never included and their existence is not reported.
+            and incognito windows are never included, private tabs are never included even when they sit in \
+            an ordinary window, and the existence of either is not reported.
             """,
         inputSchema: [
             "type": "object",
@@ -68,16 +86,11 @@ nonisolated enum MCPToolRegistry {
             ],
             "additionalProperties": false,
         ],
-        annotations: readOnly
+        annotations: readOnly,
+        _meta: resultSizeMeta
     )
 
     // MARK: - 2. read_page
-
-    /// Claude Code persists an over-large tool result to disk and hands the
-    /// model a file reference instead. `read_page` chunks at 40,000 characters,
-    /// so raising the ceiling to 60,000 leaves the JSON envelope room to fit
-    /// without tripping that.
-    static let readPageMaxResultSizeChars = 60_000
 
     static let readPage = Tool(
         name: "read_page",
@@ -95,7 +108,14 @@ nonisolated enum MCPToolRegistry {
             use `open_tab` first if you need a page loaded, then read it.
 
             Long pages are returned in chunks. Check `has_more` and call again with `offset` set to \
-            `next_offset` if you need the rest; do not re-read from the start.
+            `next_offset` if you need the rest; do not re-read from the start. Very long pages are cut: \
+            `page_clamped` says the rest is not reachable at all.
+
+            Check `displayed_text_only`. When it is false, the text came from the document's raw contents \
+            rather than from what the browser laid out, so it may include things the user cannot see — \
+            collapsed panels, hidden menus, off-screen navigation. That happens on app-like pages and on \
+            pages still loading. Treat such text as "present in the page" rather than "on the user's screen", \
+            and do not tell the user they are looking at something on the strength of it.
             """,
         inputSchema: [
             "type": "object",
@@ -114,9 +134,7 @@ nonisolated enum MCPToolRegistry {
             "additionalProperties": false,
         ],
         annotations: readOnly,
-        _meta: Metadata(additionalFields: [
-            "anthropic/maxResultSizeChars": .int(readPageMaxResultSizeChars)
-        ])
+        _meta: resultSizeMeta
     )
 
     // MARK: - 3. search_history
@@ -158,7 +176,8 @@ nonisolated enum MCPToolRegistry {
             ],
             "additionalProperties": false,
         ],
-        annotations: readOnly
+        annotations: readOnly,
+        _meta: resultSizeMeta
     )
 
     // MARK: - 4. search_bookmarks
@@ -196,7 +215,8 @@ nonisolated enum MCPToolRegistry {
             ],
             "additionalProperties": false,
         ],
-        annotations: readOnly
+        annotations: readOnly,
+        _meta: resultSizeMeta
     )
 
     // MARK: - 5. open_tab

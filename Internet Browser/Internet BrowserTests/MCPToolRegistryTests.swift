@@ -85,12 +85,27 @@ final class MCPToolRegistryTests: XCTestCase {
         }
     }
 
-    /// `read_page` chunks at 40,000 characters; without the raised ceiling
-    /// Claude Code spills an over-large result to disk and hands the model a
-    /// file reference instead of the text.
-    func testReadPageRaisesItsResultSizeCeiling() {
-        let readPage = MCPToolRegistry.tool(named: "read_page")
-        XCTAssertEqual(readPage?._meta?["anthropic/maxResultSizeChars"]?.intValue, 60_000)
+    /// Every tool that returns data budgets its body to 40,000 characters, so every
+    /// one of them needs the raised ceiling — without it Claude Code spills an
+    /// over-large result to disk and hands the model a file reference instead.
+    ///
+    /// This used to be `read_page` alone, which was also the only tool whose output
+    /// size was ever reasoned about. `list_tabs` could emit ~210,000 characters at
+    /// 300 tabs and said nothing about it.
+    func testEveryDataReturningToolRaisesItsResultSizeCeiling() {
+        for name in ["list_tabs", "read_page", "search_history", "search_bookmarks"] {
+            let tool = MCPToolRegistry.tool(named: name)
+            XCTAssertEqual(
+                tool?._meta?["anthropic/maxResultSizeChars"]?.intValue, 60_000,
+                "\(name) does not raise its result-size ceiling"
+            )
+        }
+    }
+
+    /// The declared ceiling has to leave room above the body budget, or the
+    /// declaration is decorative.
+    func testTheDeclaredCeilingLeavesRoomAboveTheBodyBudget() {
+        XCTAssertGreaterThan(MCPToolRegistry.maxResultSizeChars, MCPResultCaps.payloadChars)
     }
 
     func testOnlyOpenTabIsWritable() {

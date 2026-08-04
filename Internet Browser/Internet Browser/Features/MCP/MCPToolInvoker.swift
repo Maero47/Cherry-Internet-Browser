@@ -212,20 +212,43 @@ nonisolated struct MCPArguments {
         return string
     }
 
+    /// A whole number, or a thrown error. Never a crash.
+    ///
+    /// `Int(someDouble)` TRAPS for anything outside `Int`'s range, and every
+    /// out-of-range JSON number reaches this: `1e300`, `1e999` (which decodes to
+    /// infinity, and `infinity.rounded() == infinity`, so a
+    /// `double == double.rounded()` guard waves it through), `-1e300`, `nan`, and
+    /// a bare integer literal past `Int64.max` — the SDK's `Value` decoder tries
+    /// `Int` first and falls back to `Double`, so an over-large integer arrives
+    /// here as `.double` too. The SDK performs no `inputSchema` validation, so the
+    /// tools' declared `"maximum"` never runs and cannot be relied on.
+    ///
+    /// One request with `{"limit": 1e300}` therefore took down the whole browser —
+    /// every window and every unsaved tab — from any client holding the token.
+    /// `Int(exactly:)` is the fix: it returns nil instead of trapping, and this
+    /// parser's whole contract is that it throws rather than defaulting silently.
     func optionalInt(_ key: String) throws -> Int? {
         guard let value = present(key) else { return nil }
         switch value {
         case .int(let int):
             return int
-        case .double(let double) where double == double.rounded():
-            return Int(double)
+        case .double(let double):
+            // `Int(exactly:)` rejects infinity, NaN, everything out of range, AND
+            // a fractional value — all four throw below. A `limit` of 2.5 is not a
+            // number of results, so rounding it would be guessing.
+            guard let int = Int(exactly: double) else { break }
+            return int
         case .string(let string):
+            // `Int(_: String)` already returns nil on overflow rather than trapping.
             guard let int = Int(string) else { break }
             return int
         default:
             break
         }
-        throw MCPArgumentError(message: "\(key) must be a whole number.")
+        throw MCPArgumentError(
+            message: "\(key) must be a whole number Cherry can use. "
+                + "Values outside the range of a 64-bit integer, and infinity, are refused."
+        )
     }
 
     func optionalBool(_ key: String) throws -> Bool? {
