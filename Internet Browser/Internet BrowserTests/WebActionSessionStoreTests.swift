@@ -249,6 +249,49 @@ final class WebActionSessionStoreTests: XCTestCase {
         XCTAssertEqual(store.liveSessions.count, 1)
     }
 
+    /// The constant used to bound only the ended tail, so the comment described a
+    /// limit that did not exist and a client could hold a grant on every tab it
+    /// could get the user to approve.
+    func testTheLiveSessionBoundIsEnforcedAndNotJustDocumented() async {
+        let store = makeStore()
+        var tabs: [UUID] = []
+        for index in 0..<(WebActionSessionStore.maximumLiveSessions + 3) {
+            let tab = UUID()
+            tabs.append(tab)
+            await grant(store, tab: tab)
+            // Distinct grant times, so "the oldest goes" is a decidable claim.
+            clock.advance(1)
+        }
+
+        XCTAssertEqual(store.liveSessions.count, WebActionSessionStore.maximumLiveSessions)
+        XCTAssertNil(
+            store.liveSession(forTab: tabs[0], requester: .mcp),
+            "the oldest grant is the one that goes"
+        )
+        XCTAssertNotNil(store.liveSession(forTab: tabs.last!, requester: .mcp))
+    }
+
+    /// The delivery-time gates cannot be defeated by deferring the thing they
+    /// gate past the session's end.
+    func testATabCountsAsRecentlyAgenticForAWhileAfterTheSessionEnds() async {
+        let store = makeStore()
+        let tab = UUID()
+        guard case .granted(let session) = await grant(store, tab: tab) else {
+            return XCTFail("expected a grant")
+        }
+        XCTAssertTrue(store.hasRecentSession(forTab: tab))
+
+        store.revoke(sessionID: session.id)
+        XCTAssertFalse(store.hasLiveSession(forTab: tab), "acting stops immediately")
+        XCTAssertTrue(
+            store.hasRecentSession(forTab: tab),
+            "a setTimeout'd window.open scheduled inside the session lands just after it"
+        )
+
+        clock.advance(WebActionSessionStore.recentGrace + 1)
+        XCTAssertFalse(store.hasRecentSession(forTab: tab))
+    }
+
     // MARK: - Model-authored text in a security prompt
 
     /// `purpose` is the only thing the user has to judge a request by, and the

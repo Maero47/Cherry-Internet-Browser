@@ -36,6 +36,24 @@
 //  scripted `window.open` produces, and under a session that is a window nobody
 //  asked for.
 //
+//  ## What this does NOT cover, said plainly
+//
+//  This is one gate over one surface, not a list of everything a synthesised
+//  click can reach. `evaluateJavaScript`'s live gesture also unlocks
+//  `navigator.clipboard.writeText`, `Element.requestFullscreen`, `<a download>`,
+//  and — unenumerated — whatever else WebKit gates on activation. Cherry gates
+//  popups here and the file panel in `WebViewWrapper.runOpenPanelWith`; the rest
+//  are reachable from a page's own button under an agent click and are NOT
+//  addressed. They are not new capabilities — any page script can already reach
+//  them on a real click — but under a session they happen with nobody watching.
+//
+//  ## The gate is keyed on RECENT, not live
+//
+//  `WebActionSessionStore.hasRecentSession(forTab:)`, because the check fires on
+//  DELIVERY. A `window.open` scheduled by a `setTimeout` during a session arrives
+//  after it, and keying on liveness alone waved through exactly the popup this
+//  exists to stop.
+//
 //  `nonisolated` and pure so the predicate is a unit test rather than a
 //  screenshot.
 //

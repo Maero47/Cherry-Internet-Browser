@@ -71,32 +71,42 @@ final class WebActionAuditLogTests: XCTestCase {
     // MARK: - The property the whole file exists for
 
     /// The typed text is not redacted, not truncated, not hashed — it is never
-    /// given to the log at all. `WebActionAuditEntry` has no field it could go
-    /// in, and this asserts the outside consequence.
-    func testATypingEntryHoldsNoFragmentOfWhatWasTyped() throws {
-        let secret = "correcthorsebatterystaple"
+    /// given to the log at all, because there is no field it could go in.
+    ///
+    /// **This test asserts the KEY SET, not the absence of a string it never
+    /// wrote.** Its predecessor did the latter, and that made it a test that
+    /// could not fail: `secret` was never handed to production code, so asserting
+    /// it was absent asserted nothing, and adding a `text` field to the entry
+    /// would have left it green. The exact key list below fails the moment a
+    /// field appears that could carry content, whether or not anyone remembers
+    /// to write a test for it.
+    ///
+    /// The substring property is asserted where the text actually reaches
+    /// production code: `WebActionActingTests` types real strings through the
+    /// real bridge, including into a `contenteditable` twice, which is the
+    /// sequence that used to leak through the accessible name.
+    func testAnEntryHasNoFieldThatCouldCarryContent() throws {
         let log = WebActionAuditLog(directory: directory)
-        XCTAssertTrue(log.record(entry(action: "type", charsTyped: secret.count, name: "Password")))
+        XCTAssertTrue(log.record(entry(action: "type", charsTyped: 25, name: "Password")))
 
-        let written = try contents(of: log)
-        XCTAssertTrue(written.contains("\"chars_typed\":\(secret.count)"),
+        let line = try contents(of: log).trimmingCharacters(in: .newlines)
+        let object = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any]
+        )
+        XCTAssertEqual(
+            Set(object.keys),
+            [
+                "action", "at", "session_id", "requester", "purpose", "tab_id", "window_id",
+                "document", "url_before", "url_after", "element", "role", "name", "tag", "type",
+                "form_action", "form_method", "chars_typed", "submitted", "decision", "result",
+            ],
+            "the audit entry grew or lost a field — if a new one can carry page or caller text, "
+                + "that is the leak this file exists to prevent"
+        )
+        XCTAssertTrue(line.contains("\"chars_typed\":25"),
                       "the length is recorded, because it is the part that is useful")
-        XCTAssertTrue(written.contains("\"name\":\"Password\""),
+        XCTAssertTrue(line.contains("\"name\":\"Password\""),
                       "the field's own name is recorded, because that is what identifies it")
-
-        // Every substring of the secret four characters or longer. A single
-        // "does not contain the whole string" assertion would pass a log that
-        // wrote half of it.
-        let characters = Array(secret)
-        for length in 4...characters.count {
-            for start in 0...(characters.count - length) {
-                let fragment = String(characters[start..<(start + length)])
-                XCTAssertFalse(
-                    written.lowercased().contains(fragment.lowercased()),
-                    "the audit log contains \"\(fragment)\" — a fragment of what was typed"
-                )
-            }
-        }
     }
 
     // MARK: - Where it lives, and who can read it
@@ -192,6 +202,43 @@ final class WebActionAuditLogTests: XCTestCase {
         )
         XCTAssertEqual(rotatedMode, WebActionAuditLog.fileMode,
                        "the rotated file is no more readable than the live one")
+    }
+
+    /// Filling the sessionless-refusal log must not cost the action log a byte.
+    func testTheTwoLogsRotateIndependently() throws {
+        let log = WebActionAuditLog(directory: directory)
+        XCTAssertTrue(log.record(entry(name: "A real action")))
+        let actions = try contents(of: log)
+
+        let bulky = String(repeating: "refused ", count: 60)
+        var writes = 0
+        let rotated = try XCTUnwrap(log.sessionlessRotatedURL)
+        while writes < 5_000 {
+            log.recordSessionless(entry(purpose: bulky))
+            writes += 1
+            if FileManager.default.fileExists(atPath: rotated.path) { break }
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: rotated.path),
+                      "the refusal log never rotated in \(writes) writes")
+        XCTAssertEqual(try contents(of: log), actions,
+                       "rotating the refusal log touched the action log")
+    }
+
+    func testALongDocumentIsCutBeforeItReachesTheFile() throws {
+        let log = WebActionAuditLog(directory: directory)
+        let entry = WebActionAuditEntry(
+            action: "click", at: Date(), sessionID: nil, requester: "mcp", purpose: "x",
+            tabID: "t", windowID: "w",
+            document: String(repeating: "A", count: 100_000),
+            urlBefore: "", urlAfter: nil,
+            element: 1, role: nil, name: nil, tag: nil, type: nil, href: nil,
+            formAction: nil, formMethod: nil, charsTyped: nil, submitted: nil,
+            decision: "refused", result: "no_session", revokedMidAction: nil, detail: nil
+        )
+        XCTAssertEqual(entry.document?.count, WebActionAuditEntry.documentChars + 1,
+                       "capped, with one character for the visible marker")
+        XCTAssertTrue(log.record(entry))
+        XCTAssertLessThan(try contents(of: log).count, 2_000)
     }
 
     func testTheInMemoryTailIsBounded() {

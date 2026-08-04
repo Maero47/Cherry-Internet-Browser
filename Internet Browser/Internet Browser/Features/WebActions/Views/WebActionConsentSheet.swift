@@ -27,8 +27,16 @@
 //  | "not your other tabs" | one grant, one `tabID`; there is no second lookup |
 //  | "not your private windows" | `MCPBrowserBridge`'s two-level privacy gate |
 //  | "will not type into password fields" | `elementRefusal`'s `passwordField` branch |
-//  | "will not open a file chooser" | `elementRefusal`'s `filePicker` branch |
+//  | "will not open a file chooser" | `elementRefusal`'s `filePicker` branch, plus `runOpenPanelWith` |
 //  | "refuses buttons that look like they commit" | `WebActionHeuristics`, and it is called a GUESS here because that is what it is |
+//  | "refuses to press Return where it cannot tell what Return would do" | `elementRefusal`'s `unclassifiableSubmit` branch |
+//
+//  That last row is the one this sheet used to get wrong, and it got it wrong in
+//  the direction that matters. The copy said commitments were refused; the engine
+//  classified only a form's submit button, so Return in a `contenteditable` — the
+//  Send key on Slack, X, Discord, WhatsApp Web and Gmail's compose body, none of
+//  which is a `<form>` — went through unclassified. A user read the sheet as
+//  covering it. Now the engine refuses that case and the sheet says so.
 //
 //  The one sentence with no counterpart in code is the last: the check is
 //  English-only, blind to icon-only buttons, and deliberately silent about
@@ -130,9 +138,10 @@ struct WebActionConsentSheet: View {
             row(
                 "exclamationmark.triangle",
                 "Cherry refuses clicks on buttons whose names look like they commit something — "
-                    + "paying, sending, deleting. That is a guess from English wording: it will "
-                    + "miss an unlabelled icon, a page in another language, and anything called "
-                    + "“Continue”."
+                    + "paying, sending, deleting — and refuses to press Return in a box where it "
+                    + "cannot tell what Return would do. That is a guess from English wording: it "
+                    + "will miss an unlabelled icon, a page in another language, and anything "
+                    + "called “Continue”."
             )
         }
     }

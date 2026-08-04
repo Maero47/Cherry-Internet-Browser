@@ -21,15 +21,27 @@
 //  nothing in this design distinguishes a model that was persuaded by a page from
 //  a model that was correct, so the answer is that both are visible afterwards.
 //
-//  ## Typed text is never recorded, and there is nowhere to put it
+//  ## Typed text is never recorded — and the shape alone was not enough
 //
 //  `WebActionAuditEntry` has no field for the text a `type_text` call carried.
 //  Not a redacted one, not an optional one — none. `chars_typed` and the field's
 //  accessible name are what it holds, because `type_text` is exactly where a
 //  password lands if anything upstream is wrong, and a log that "usually" omits
 //  secrets is a log that leaks one on the day the redaction has a bug.
-//  `WebActionAuditLogTests` asserts the property from the outside too: an entry
-//  built from a typing action contains no substring of the text.
+//
+//  That was true of the SHAPE and false of the contents, which is worth keeping
+//  written down. The accessible-name ladder's fourth rung is `el.innerText`; on
+//  a `contenteditable` that IS the element's own contents, so typing into a
+//  composer and then acting on the same element again wrote the previous message
+//  into `name`. `WebActionBridge.nameIsOwnContents` is the fix — the rung and the
+//  host, not the tag, so a search box mirroring its input into a button's
+//  `aria-label` is caught by the same test — and
+//  `testTypingIntoAComposerTwiceDoesNotWriteTheFirstMessageToTheLog` is what
+//  would catch its removal.
+//
+//  The unit test here asserts the shape a second way: the exact set of keys one
+//  entry encodes. Adding a field that could carry text fails it, which the
+//  substring assertion on its own could not do.
 //
 //  ## Where it lives
 //
@@ -69,7 +81,17 @@ nonisolated struct WebActionAuditEntry: Encodable, Sendable {
 
     /// The document token the caller acted against. An id is only meaningful
     /// paired with this, so a log without it could not tell two page loads apart.
+    ///
+    /// **Capped on the way in.** It arrives from the caller on the refusal paths
+    /// — a sessionless call carries whatever `document` string it likes — and an
+    /// uncapped one is a megabyte of caller-chosen bytes per log line, which is a
+    /// rotation lever rather than a token. The real one is 32 hex characters.
     let document: String?
+
+    /// The longest `document` an entry will hold. `WebActionScripts` mints 128
+    /// bits as 32 hex characters; the headroom is for a future format, not for a
+    /// caller.
+    static let documentChars = 64
 
     let urlBefore: String
     let urlAfter: String?
@@ -106,6 +128,61 @@ nonisolated struct WebActionAuditEntry: Encodable, Sendable {
 
     /// Free text Cherry wrote, never the page and never the requester.
     let detail: String?
+
+    /// Written out rather than left to the memberwise initialiser so `document`
+    /// is capped at the one place every entry goes through. A cap applied at some
+    /// call sites and not others is not a cap.
+    init(
+        action: String,
+        at: Date,
+        sessionID: String?,
+        requester: String,
+        purpose: String,
+        tabID: String,
+        windowID: String,
+        document: String?,
+        urlBefore: String,
+        urlAfter: String?,
+        element: Int?,
+        role: String?,
+        name: String?,
+        tag: String?,
+        type: String?,
+        href: String?,
+        formAction: String?,
+        formMethod: String?,
+        charsTyped: Int?,
+        submitted: Bool?,
+        decision: String,
+        result: String,
+        revokedMidAction: Bool?,
+        detail: String?
+    ) {
+        self.action = action
+        self.at = at
+        self.sessionID = sessionID
+        self.requester = requester
+        self.purpose = WebActionText.sanitisePurpose(purpose)
+        self.tabID = tabID
+        self.windowID = windowID
+        self.document = document.map { $0.mcpTruncated(to: Self.documentChars) }
+        self.urlBefore = urlBefore.mcpTruncated(to: MCPResultCaps.urlChars)
+        self.urlAfter = urlAfter?.mcpTruncated(to: MCPResultCaps.urlChars)
+        self.element = element
+        self.role = role
+        self.name = name
+        self.tag = tag
+        self.type = type
+        self.href = href
+        self.formAction = formAction
+        self.formMethod = formMethod
+        self.charsTyped = charsTyped
+        self.submitted = submitted
+        self.decision = decision
+        self.result = result
+        self.revokedMidAction = revokedMidAction
+        self.detail = detail
+    }
 
     private enum CodingKeys: String, CodingKey {
         case action, at, purpose, document, element, role, name, tag, type, href
@@ -186,12 +263,41 @@ final class WebActionAuditLog {
     var fileURL: URL? { directory?.appendingPathComponent("actions.jsonl", isDirectory: false) }
     var rotatedURL: URL? { directory?.appendingPathComponent("actions.1.jsonl", isDirectory: false) }
 
+    /// Where refusals that never had a session go.
+    ///
+    /// A separate file, with its own rotation, and that separation is a security
+    /// property rather than tidiness. Gate refusals are the only entries an
+    /// UNAUTHORISED caller can cause to be written, and the log rotates at a size
+    /// cap — so sharing one file let a token holder with no session loop calls
+    /// until rotation dropped the record of the sessions that actually happened.
+    /// The actor the log exists to record was the actor who could erase it.
+    /// Filling this file now costs the other one nothing.
+    var sessionlessURL: URL? {
+        directory?.appendingPathComponent("refused.jsonl", isDirectory: false)
+    }
+
+    var sessionlessRotatedURL: URL? {
+        directory?.appendingPathComponent("refused.1.jsonl", isDirectory: false)
+    }
+
     // MARK: Writing
 
-    /// Append one entry. Never throws: a log that can take a browser down is
-    /// worse than a log with a gap in it.
+    /// Append one entry to the action log.
+    ///
+    /// Never throws: a log that can take a browser down is worse than a log with
+    /// a gap in it.
     @discardableResult
     func record(_ entry: WebActionAuditEntry) -> Bool {
+        write(entry, to: fileURL, rotatingTo: rotatedURL)
+    }
+
+    /// Append one entry to the sessionless-refusal log. See `sessionlessURL`.
+    @discardableResult
+    func recordSessionless(_ entry: WebActionAuditEntry) -> Bool {
+        write(entry, to: sessionlessURL, rotatingTo: sessionlessRotatedURL)
+    }
+
+    private func write(_ entry: WebActionAuditEntry, to fileURL: URL?, rotatingTo rotated: URL?) -> Bool {
         tail.append(entry)
         if tail.count > Self.tailCount { tail.removeFirst(tail.count - Self.tailCount) }
 
@@ -208,7 +314,7 @@ final class WebActionAuditLog {
 
         do {
             try prepareDirectory(directory)
-            try rotateIfNeeded(fileURL)
+            try rotateIfNeeded(fileURL, to: rotated)
             try append(line, to: fileURL)
             lastWriteFailed = false
             return true
@@ -241,7 +347,7 @@ final class WebActionAuditLog {
     /// One generation, not many. Two files bound the disk cost at ~1 MB while
     /// keeping the previous window of history, and a log that grows forever is a
     /// log nobody reads and everybody carries.
-    private func rotateIfNeeded(_ fileURL: URL) throws {
+    private func rotateIfNeeded(_ fileURL: URL, to rotatedURL: URL?) throws {
         let manager = FileManager.default
         guard let size = (try? manager.attributesOfItem(atPath: fileURL.path))?[.size] as? NSNumber,
               size.intValue >= Self.maximumBytes,

@@ -187,9 +187,22 @@ final class MCPToolRegistryTests: XCTestCase {
         XCTAssertTrue(click.lowercased().contains("guess"),
                       "click_element presents the commitment heuristic as more than a guess")
 
+        // The engine ends a session on leaving the ORIGIN, not on any navigation,
+        // and a test asserts the session survives one. The description used to
+        // say the opposite, which is the model's whole interface disagreeing with
+        // the code.
+        XCTAssertFalse(
+            click.contains("`navigated` also ends the action session"),
+            "click_element describes a session lifetime the code does not implement"
+        )
+
         let type = MCPToolRegistry.tool(named: "type_text")?.description ?? ""
         XCTAssertTrue(type.contains("password"), "type_text does not name the password refusal")
         XCTAssertTrue(type.contains("submit"), "type_text does not explain submit: true")
+        XCTAssertTrue(
+            type.contains("refuses `submit: true` outright"),
+            "type_text does not say Enter is refused where Cherry cannot classify it"
+        )
 
         let session = MCPToolRegistry.tool(named: "request_action_session")?.description ?? ""
         XCTAssertTrue(session.contains("decline"), "request_action_session does not say a no is a no")

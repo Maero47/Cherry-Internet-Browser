@@ -73,6 +73,16 @@ final class WebActionBridge {
     /// context — a warning today and an error under the Swift 6 language mode.
     private let sessions: @MainActor () -> WebActionSessionStore
     private let auditLog: @MainActor () -> WebActionAuditLog
+    private let actionLimiter: MCPRateLimiter
+
+    /// How many clicks and typings one Cherry will perform in a rolling minute,
+    /// across every session.
+    ///
+    /// Generous — a person driving an agent through a form does not come close —
+    /// and the point is not the number. Each action is several `evaluateJavaScript`
+    /// round trips plus an observation window on the main actor, and nothing else
+    /// bounded how many a grant holder could ask for in a loop.
+    static let actionsPerMinute = 120
 
     /// - Parameter browser: injected so a test drives a bridge built over a
     ///   known set of windows rather than whatever the running app has open.
@@ -84,11 +94,14 @@ final class WebActionBridge {
     init(
         browser: @escaping () -> MCPBrowserBridge = { MCPBrowserBridge.shared },
         sessions: @escaping @MainActor () -> WebActionSessionStore = { WebActionSessionStore.shared },
-        auditLog: @escaping @MainActor () -> WebActionAuditLog = { WebActionAuditLog.shared }
+        auditLog: @escaping @MainActor () -> WebActionAuditLog = { WebActionAuditLog.shared },
+        actionLimiter: MCPRateLimiter? = nil
     ) {
         self.browser = browser
         self.sessions = sessions
         self.auditLog = auditLog
+        self.actionLimiter = actionLimiter
+            ?? MCPRateLimiter(limit: Self.actionsPerMinute, window: 60)
     }
 
     // MARK: - snapshot
@@ -480,7 +493,16 @@ final class WebActionBridge {
         case .failure(let refusal):
             // Recorded without a tab or window id when there is no session: the
             // refusal never looked at a tab, and the log must not invent one.
-            audit.record(Self.gateRefusalEntry(
+            //
+            // And recorded to a DIFFERENT FILE. Gate refusals are the only audit
+            // entries an unauthorised caller can produce, and the log rotates at
+            // a size cap — so writing them alongside granted-session actions gave
+            // a token holder with no session a way to flush the record of the
+            // sessions that did happen, by looping calls until rotation dropped
+            // them. The actor the log exists to record was the actor who could
+            // erase it. Two files, two rotations: filling one cannot touch the
+            // other.
+            audit.recordSessionless(Self.gateRefusalEntry(
                 action: action, requester: requester, tabID: tabID, refusal: refusal
             ))
             return .refused(refusal)
@@ -488,6 +510,20 @@ final class WebActionBridge {
 
         let session = authorisation.session
         let tab = authorisation.tab
+
+        // The limiter sits AFTER the gate, deliberately. Before it, an
+        // unauthorised caller could spend a budget that is not theirs and
+        // rate-limit the user's own agent out of its session. After it, only a
+        // grant holder can reach it, and what it bounds is main-actor JavaScript
+        // evaluation in a loop.
+        guard actionLimiter.allow() else {
+            return .refused(WebActionRefusal(
+                .rateLimited,
+                "Cherry is limiting actions to \(Self.actionsPerMinute) a minute and this session "
+                    + "has reached it. Wait \(actionLimiter.retryAfterSeconds()) seconds. If you "
+                    + "are looping, stop and tell the user what is not working."
+            ))
+        }
         var context = ActionContext(
             action: action,
             session: session,
@@ -536,17 +572,18 @@ final class WebActionBridge {
         let wantsSubmit: Bool = if case .type(_, _, _, _, _, let submit, _) = action { submit } else { false }
         let armed: WebActionRawArm
         do {
-            armed = try await decode(
-                WebActionRawArm.self,
-                from: WebActionScripts.arm(
-                    id: action.element,
-                    expectName: action.expectName,
-                    document: action.document,
-                    wantsSubmit: wantsSubmit
-                ),
-                in: webView
+            armed = try await describe(
+                action, wantsSubmit: wantsSubmit, in: webView, authorisation
             )
         } catch {
+            // Audited. `arm` touches nothing, so nothing can have happened — but
+            // an action that was attempted and produced no record at all is a gap
+            // in the one thing the log exists to answer.
+            audit.record(context.entry(
+                decision: "failed", result: "unreachable", urlAfter: nil,
+                revokedMidAction: nil,
+                detail: "Cherry could not reach the page to describe the element; nothing was done"
+            ))
             return .failed(
                 "Cherry could not reach the page to check element \(action.element): "
                     + error.localizedDescription
@@ -586,15 +623,22 @@ final class WebActionBridge {
         //    inside the page, atomically with the action itself.
         let fired: WebActionRawFire
         do {
-            fired = try await decode(
-                WebActionRawFire.self,
-                from: Self.fireScript(action, token: token, armed: armed),
-                in: webView
-            )
+            fired = try await self.fire(action, token: token, armed: armed, in: webView, authorisation)
         } catch {
             // A throw here usually means the document went away mid-call, which
             // is a navigation, not a breakage — but Cherry does not know whether
             // the action landed first, and a model must not be told it did.
+            //
+            // THIS is the entry that must exist. By the comment above it is the
+            // single situation in the whole design where an action may have
+            // executed unobserved, and it was the one that left no trace at all.
+            // Recorded with an explicit unknown outcome rather than as an action
+            // or as a refusal, because it is neither.
+            audit.record(context.entry(
+                decision: "failed", result: "unknown", urlAfter: nil,
+                revokedMidAction: nil,
+                detail: "the page went away mid-action; Cherry cannot say whether it landed"
+            ))
             return .failed(
                 "Cherry lost the page while performing this action, so it cannot say whether the "
                     + "action happened. Do not retry: call read_elements to see where the tab is now."
@@ -605,7 +649,7 @@ final class WebActionBridge {
         }
 
         // 8. Watch.
-        let waited = await watchOutcome(in: webView, waitMS: action.waitMS)
+        let waited = await watchOutcome(in: webView, waitMS: action.waitMS, authorisation)
         _ = try? await webView.evaluateJavaScript(
             WebActionScripts.watchStop, in: nil, contentWorld: Self.actionWorld
         )
@@ -680,6 +724,59 @@ final class WebActionBridge {
         ))
     }
 
+    // MARK: - The primitives, which require the proof
+
+    /// Describe the element and pin it. Touches nothing.
+    ///
+    /// Takes an `Authorisation` and does not read it. That is not decoration and
+    /// it is not a comment: the parameter is what makes "you cannot reach this
+    /// without a live session" a fact the compiler checks rather than a claim in
+    /// a header. `Authorisation`'s initialiser is `fileprivate` and `authorise`
+    /// is its only caller, so a future file that wanted a second acting path
+    /// would have to add one here — visibly, in this file, next to this comment
+    /// — instead of quietly assembling `WebActionScripts.arm` and an
+    /// `evaluateJavaScript` of its own.
+    ///
+    /// What that does NOT prove, said plainly because the last report overstated
+    /// it: `WebActionScripts` is `internal` and `evaluateJavaScript` is available
+    /// module-wide, so nothing stops a new file from writing its own copy of this
+    /// method. What is guaranteed is that such a file cannot call THIS one, and
+    /// that the gate is not something a caller can forget to run before it.
+    private func describe(
+        _ action: WebAction,
+        wantsSubmit: Bool,
+        in webView: WKWebView,
+        _ authorisation: Authorisation
+    ) async throws -> WebActionRawArm {
+        try await decode(
+            WebActionRawArm.self,
+            from: WebActionScripts.arm(
+                id: action.element,
+                expectName: action.expectName,
+                document: action.document,
+                wantsSubmit: wantsSubmit
+            ),
+            in: webView
+        )
+    }
+
+    /// Act. The one method in Cherry that changes a page on a tool call's say-so.
+    private func fire(
+        _ action: WebAction,
+        token: String,
+        armed: WebActionRawArm,
+        in webView: WKWebView,
+        _ authorisation: Authorisation
+    ) async throws -> WebActionRawFire {
+        let script: String = switch action {
+        case .click:
+            WebActionScripts.fireClick(token: token)
+        case .type(_, _, _, let text, let append, let submit, _):
+            WebActionScripts.fireType(token: token, text: text, append: append, submit: submit)
+        }
+        return try await decode(WebActionRawFire.self, from: script, in: webView)
+    }
+
     // MARK: - Watching
 
     private struct Watched {
@@ -690,7 +787,11 @@ final class WebActionBridge {
 
     /// Sample the observer until the page goes quiet, navigates, or the window
     /// closes.
-    private func watchOutcome(in webView: WKWebView, waitMS: Int) async -> Watched {
+    private func watchOutcome(
+        in webView: WKWebView,
+        waitMS: Int,
+        _ authorisation: Authorisation
+    ) async -> Watched {
         var watched = Watched()
         let started = Date()
 
@@ -766,6 +867,34 @@ final class WebActionBridge {
                 "Element \(action.element) is now \"\(shownName)\", not \"\(expected)\". The page "
                     + "changed under you, so nothing was done. Call read_elements again and choose "
                     + "from the new listing rather than guessing.",
+                element: action.element,
+                name: shownName,
+                document: armed.doc
+            )
+        }
+
+        // And the RAW name, against the raw name the LISTING was built from.
+        //
+        // The comparison above is on the display form, and the display form is
+        // lossy on purpose: capped at 100 characters, `"`→`”`, `[`→`(`. So a page
+        // could list a 200-character innocuous name, wait for the model to choose
+        // it, rewrite the tail to "…Confirm transfer of $5,000" and rewire the
+        // handler — and both sides would still sanitise to the same
+        // `prefix(99) + "…"`. `Pay [now]` and `Pay (now)` collide the same way.
+        //
+        // `name_listed` is kept in the isolated world, which the page can neither
+        // read nor write, and it is the pre-sanitisation string the row the model
+        // read was rendered from. Requiring byte equality closes the collision
+        // without asking the model to carry anything it was not already given.
+        // (A page CAN of course change a name and get relisted — but then the
+        // model is choosing from the new listing, whose row was built from the
+        // new raw name and classified from it, so there is no deception left.)
+        if armed.nameWasListed, armed.nameListed != armed.nameNow {
+            return WebActionRefusal(
+                .nameMismatch,
+                "Element \(action.element) still shows as \"\(shownName)\", but its underlying name "
+                    + "has changed since the listing you chose from — the visible part is the same "
+                    + "and the rest is not. Nothing was done. Call read_elements again.",
                 element: action.element,
                 name: shownName,
                 document: armed.doc
@@ -851,12 +980,34 @@ final class WebActionBridge {
                     name: shownName
                 )
             }
-            // THE hole the plan names as the largest in the design, closed the
-            // only way it can be: Enter in a form presses that form's default
-            // button, so the default button is classified by the same rule a
-            // direct click on it would be, and a commitment-shaped one refuses
-            // the whole call.
-            if submit, let control = armed.submitControl {
+            // THE hole the plan names as the largest in the design. Enter presses
+            // a form's default submit button, so that button goes through the
+            // same rule a direct click on it would.
+            //
+            // And when there is NO such button, Cherry does not press Enter at
+            // all. That case is not an edge: Enter in a contenteditable is where
+            // the modern web puts *send* — Slack, X, Discord, WhatsApp Web,
+            // Gmail's compose body, none of them a `<form>` — so leaving it
+            // unclassified meant the single most common irreversible action on
+            // the web was the one the gate structurally could not see, while the
+            // consent sheet told the user commitments were refused. A screen that
+            // overstates its own coverage is the failure this refusal exists to
+            // prevent.
+            if submit {
+                guard let control = armed.submitControl else {
+                    return WebActionRefusal(
+                        .unclassifiableSubmit,
+                        "Cherry will not press Enter in \"\(shownName)\" because it cannot see what "
+                            + "Enter would do there: this field is not in a form with a submit "
+                            + "button, so the key goes straight to the page's own handler and "
+                            + "there is nothing for Cherry's commitment check to look at. In a "
+                            + "message composer that handler is usually Send. Type without "
+                            + "submit: true, call read_elements, and click the control you can "
+                            + "see — that one does go through the check.",
+                        element: action.element,
+                        name: shownName
+                    )
+                }
                 let submitName = WebActionScripts.sanitiseName(control.name)
                 if let verb = WebActionHeuristics.classify(WebActionElementDescriptor(
                     role: control.role,
@@ -1004,10 +1155,29 @@ final class WebActionBridge {
                 + "the \(action.kind) still went through, but a user could not have made it, so "
                 + "deal with the overlay before you continue")
         }
-        if case .type(_, _, _, _, _, true, _) = action, fired.submitButtonClicked != true {
-            parts.append("Enter was pressed, but this field is not in a form with a submit button, "
-                + "so whether that submitted anything is up to the page's own code — read the "
-                + "elements again to find out")
+        // `submit: true` only reaches here having found a default button AND
+        // cleared it through the commitment rule, so a button that was not
+        // pressed means the page moved it under Cherry between the check and the
+        // keystroke. Said out loud: "Enter was pressed and the form was not
+        // submitted" is a different fact from "the form was submitted", and a
+        // model told the second stops watching.
+        // Only when the page did NOT then do something itself. A search box that
+        // calls preventDefault and navigates has submitted; telling a model "the
+        // form is probably not submitted" while handing it `outcome: navigated`
+        // would be Cherry contradicting itself in one payload.
+        if case .type(_, _, _, _, _, true, _) = action,
+           fired.submitButtonClicked != true,
+           outcome != .navigated {
+            let because = switch fired.submitNotPressed {
+            case "submit_renamed": "its name changed in the instant before Cherry pressed it"
+            case "submit_detached": "it was removed from the page in that instant"
+            case "submit_displaced": "the page put a different submit button ahead of it in that instant"
+            case "submit_cancelled": "the page's own Enter handler cancelled the keystroke"
+            default: "there was nothing left to press"
+            }
+            parts.append("Enter was pressed but the form's button was NOT — \(because), so Cherry "
+                + "did not press a control it had not checked. Do not assume the form was "
+                + "submitted; read the elements again")
         }
         if auditFailed {
             parts.append("Cherry could not write this action to its action log")
@@ -1087,11 +1257,31 @@ final class WebActionBridge {
         let formMethod: String?
     }
 
+    /// Whether this element's accessible name IS its own editable contents.
+    ///
+    /// The name ladder's fourth rung is `el.innerText`. On a plain control that
+    /// is a label; on a `contenteditable` it is whatever was last typed into it,
+    /// which after one `type_text` is the agent's own text. `WebActionAuditEntry`
+    /// having no field for typed text is true of its SHAPE and was not true of
+    /// its contents: type into a composer, act on the same element again, and the
+    /// name written to the log is the previous message. A search box that mirrors
+    /// its input into a button's `aria-label` is the same leak one step removed,
+    /// which is why this tests the rung and the host rather than the tag.
+    nonisolated static func nameIsOwnContents(_ armed: WebActionRawArm) -> Bool {
+        armed.editable && armed.nameFrom == "text"
+    }
+
+    /// What the audit log records instead. Deliberately a sentence and not an
+    /// empty string: "this was withheld, and why" is a different fact from "this
+    /// element had no name", and a log that cannot tell them apart is a log that
+    /// reads wrong in the one situation it exists for.
+    static let withheldName = "(withheld: this element's name is its own editable contents)"
+
     private static func auditIdentity(_ armed: WebActionRawArm, element: Int, name: String) -> AuditIdentity {
         AuditIdentity(
             element: element,
             role: armed.role ?? "",
-            name: name,
+            name: nameIsOwnContents(armed) ? withheldName : name,
             tag: armed.tag,
             type: armed.type.map { WebActionScripts.sanitiseName($0) },
             href: armed.href.map { WebActionScripts.sanitiseName($0) },
@@ -1159,23 +1349,6 @@ final class WebActionBridge {
         case .pdf: .pdf
         case .notRendered: .notRendered
         case .noContent: .notFound
-        }
-    }
-
-    private static func fireScript(_ action: WebAction, token: String, armed: WebActionRawArm) -> String {
-        switch action {
-        case .click:
-            return WebActionScripts.fireClick(token: token)
-        case .type(_, _, _, let text, let append, let submit, _):
-            return WebActionScripts.fireType(
-                token: token,
-                text: text,
-                append: append,
-                submit: submit,
-                // Only ever true once the default button has been through the
-                // commitment rule above and come back ordinary.
-                clickDefaultButton: submit && armed.submitControl != nil
-            )
         }
     }
 
@@ -1449,6 +1622,17 @@ nonisolated struct WebActionRawArm: Decodable {
     var token: String?
     var role: String?
     var nameNow = ""
+
+    /// Which rung of the accessible-name ladder produced `nameNow`. `"text"` on
+    /// an editable host means the name IS the element's own contents.
+    var nameFrom = ""
+
+    /// The raw name the most recent listing of this id was built from, and
+    /// whether there was one. The identity `expect_name` cannot be — see
+    /// `A.names` in `WebActionScripts`.
+    var nameListed: String?
+    var nameWasListed = false
+
     var tag = ""
     var type: String?
     var hasHref = false
@@ -1468,6 +1652,9 @@ nonisolated struct WebActionRawArm: Decodable {
     private enum CodingKeys: String, CodingKey {
         case ok, reason, doc, token, role, tag, type, href, nav, disabled, editable, onscreen, hit, url
         case nameNow = "name_now"
+        case nameFrom = "name_from"
+        case nameListed = "name_listed"
+        case nameWasListed = "name_was_listed"
         case hasHref = "has_href"
         case inForm = "in_form"
         case formAction = "form_action"
@@ -1486,6 +1673,9 @@ nonisolated struct WebActionRawArm: Decodable {
         token = try box.decodeIfPresent(String.self, forKey: .token)
         role = try box.decodeIfPresent(String.self, forKey: .role)
         nameNow = try box.decodeIfPresent(String.self, forKey: .nameNow) ?? ""
+        nameFrom = try box.decodeIfPresent(String.self, forKey: .nameFrom) ?? ""
+        nameListed = try box.decodeIfPresent(String.self, forKey: .nameListed)
+        nameWasListed = try box.decodeIfPresent(Bool.self, forKey: .nameWasListed) ?? false
         tag = try box.decodeIfPresent(String.self, forKey: .tag) ?? ""
         type = try box.decodeIfPresent(String.self, forKey: .type)
         hasHref = try box.decodeIfPresent(Bool.self, forKey: .hasHref) ?? false
@@ -1541,6 +1731,14 @@ nonisolated struct WebActionRawFire: Decodable {
     var valueAfter: String?
     var submitted: Bool?
     var submitButtonClicked: Bool?
+
+    /// Why the pinned submit button was NOT pressed, when it was not:
+    /// `submit_detached`, `submit_renamed`, `submit_displaced`,
+    /// `no_pinned_button`. Reported rather than swallowed, because "Enter was
+    /// pressed and the button was not" is a different fact from "the form was
+    /// submitted", and a model told the second would stop watching.
+    var submitNotPressed: String?
+
     var nameNow: String?
 
     private enum CodingKeys: String, CodingKey {
@@ -1549,6 +1747,7 @@ nonisolated struct WebActionRawFire: Decodable {
         case obscuredBy = "obscured_by"
         case valueAfter = "value_after"
         case submitButtonClicked = "submit_button_clicked"
+        case submitNotPressed = "submit_not_pressed"
         case nameNow = "name_now"
     }
 
@@ -1565,6 +1764,7 @@ nonisolated struct WebActionRawFire: Decodable {
         valueAfter = try box.decodeIfPresent(String.self, forKey: .valueAfter)
         submitted = try box.decodeIfPresent(Bool.self, forKey: .submitted)
         submitButtonClicked = try box.decodeIfPresent(Bool.self, forKey: .submitButtonClicked)
+        submitNotPressed = try box.decodeIfPresent(String.self, forKey: .submitNotPressed)
         nameNow = try box.decodeIfPresent(String.self, forKey: .nameNow)
     }
 }

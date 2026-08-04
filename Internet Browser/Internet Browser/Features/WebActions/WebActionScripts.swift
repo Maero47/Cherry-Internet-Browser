@@ -164,6 +164,22 @@ nonisolated enum WebActionScripts {
             // never existed. Without both, resolving id 1 straight after an
             // on-screen-only snapshot answered "unknown_element" — measured.
             shown: new Set(),
+            // id -> the RAW accessible name the listing was built from.
+            //
+            // This is the identity `expect_name` cannot be. What the model sends
+            // back is the DISPLAY form: capped at 100 characters, with `"`→`”`
+            // and `[`→`(`. So a page could list a 200-character innocuous name,
+            // wait for the model to choose it, rewrite the tail to
+            // "…Confirm transfer of $5,000" and rewire the handler — and both
+            // sides would still sanitise to the same `prefix(99) + "…"`.
+            // `Pay [now]` and `Pay (now)` collide the same way.
+            //
+            // Keeping the pre-sanitisation name HERE, where the page can neither
+            // read nor write it, lets `arm` answer "is this still byte-for-byte
+            // the name the listing was made from" — which is the question the
+            // display comparison was standing in for. Persistent rather than
+            // per-snapshot, for the same reason `live` is.
+            names: new Map(),
             next: 1,
             gen: 0,
             doc: mintDocumentToken(),
@@ -199,6 +215,8 @@ nonisolated enum WebActionScripts {
                 A.handles = new WeakMap();
                 A.live = new Map();
                 A.shown = new Set();
+                A.names = new Map();
+                A.armed = null;
             }
         };
 
@@ -215,7 +233,10 @@ nonisolated enum WebActionScripts {
             A.live.forEach(function (ref, id) {
                 if (!ref.deref()) { dead.push(id); }
             });
-            for (var i = 0; i < dead.length; i++) { A.live.delete(dead[i]); }
+            for (var i = 0; i < dead.length; i++) {
+                A.live.delete(dead[i]);
+                A.names.delete(dead[i]);
+            }
             return dead.length;
         };
 
@@ -549,6 +570,9 @@ nonisolated enum WebActionScripts {
 
                 var id = A.handleFor(el);
                 A.shown.add(id);
+                // The RAW name this row was built from, kept for `arm` to compare
+                // against. See `A.names`.
+                A.names.set(id, named.name);
                 elements.push({
                     id: id,
                     role: role,
@@ -643,25 +667,41 @@ nonisolated enum WebActionScripts {
         // The button the browser would press if Enter were typed in this form.
         // HTML calls it the default button: the first submit control in tree
         // order. It is described, never pressed, until Swift has classified it.
+        //
+        // Returns the ELEMENT alongside its description, because the description
+        // is not what gets pressed — see `A.armed.submitEl`. Selecting this
+        // button once and pinning the object is the whole fix for a real hole:
+        // `pressEnter` used to re-run this query at fire time, AFTER dispatching
+        // its own synthetic keydown on the field. The page's own Enter handler
+        // therefore ran synchronously inside Cherry's evaluation and could
+        // prepend `<button type="submit">Confirm payment</button>` to the form,
+        // which the re-query then returned and the code then clicked. A gate
+        // that passed on "Search" pressed "Confirm payment", and no race was
+        // needed — Cherry handed the page the window itself.
+        var SUBMIT_SELECTOR =
+            'button:not([type]), button[type="submit"], input[type="submit"], input[type="image"]';
+
         function defaultSubmitControl(form) {
             if (!form || !form.querySelector) { return null; }
             var candidate;
             try {
-                candidate = form.querySelector(
-                    'button:not([type]), button[type="submit"], input[type="submit"], input[type="image"]'
-                );
+                candidate = form.querySelector(SUBMIT_SELECTOR);
             } catch (e) { candidate = null; }
             if (!candidate) { return null; }
             var named = accessibleName(candidate);
             return {
-                id: A.handleFor(candidate),
-                role: roleOf(candidate) || "button",
+                element: candidate,
                 name: named.name,
-                tag: candidate.tagName,
-                type: attr(candidate, "type"),
-                href: attr(candidate, "href") !== null,
-                nav: false,
-                form: true
+                described: {
+                    id: A.handleFor(candidate),
+                    role: roleOf(candidate) || "button",
+                    name: named.name,
+                    tag: candidate.tagName,
+                    type: attr(candidate, "type"),
+                    href: attr(candidate, "href") !== null,
+                    nav: false,
+                    form: true
+                }
             };
         }
 
@@ -765,10 +805,19 @@ nonisolated enum WebActionScripts {
 
             var named = accessibleName(el);
             var token = mintDocumentToken();
+            var form = formOf(el);
+            // Selected ONCE, here, and pinned by object identity. Nothing
+            // downstream may re-select it.
+            var submit = wantsSubmit ? defaultSubmitControl(form) : null;
+
             // A STRONG reference for the few milliseconds between the two calls.
             // A WeakRef here would let the element be collected inside the gap
             // and turn a clean `element_detached` into a confusing one.
-            A.armed = { token: token, id: id, el: el, name: named.name, doc: A.doc };
+            A.armed = {
+                token: token, id: id, el: el, name: named.name, doc: A.doc,
+                submitEl: submit ? submit.element : null,
+                submitName: submit ? submit.name : null
+            };
 
             var box = el.getBoundingClientRect();
             var placement = hitTest(el, box);
@@ -780,7 +829,6 @@ nonisolated enum WebActionScripts {
                 navigational = trimmed.length > 0 && trimmed !== "#" &&
                                trimmed.toLowerCase().indexOf("javascript:") !== 0;
             }
-            var form = formOf(el);
             var disabled = false;
             try {
                 disabled = el.disabled === true || attr(el, "aria-disabled") === "true";
@@ -794,6 +842,15 @@ nonisolated enum WebActionScripts {
                 token: token,
                 role: roleOf(el),
                 name_now: named.name,
+                // Which rung of the accessible-name ladder produced it. The
+                // audit log needs this: on a contenteditable the `text` rung IS
+                // the element's own contents, i.e. whatever the agent last typed
+                // into it.
+                name_from: named.from,
+                // The raw name the last listing of this id was built from, and
+                // whether there was one at all. See `A.names`.
+                name_listed: A.names.has(id) ? A.names.get(id) : null,
+                name_was_listed: A.names.has(id),
                 tag: el.tagName,
                 type: attr(el, "type"),
                 has_href: href !== null,
@@ -808,7 +865,7 @@ nonisolated enum WebActionScripts {
                 hit: placement.hit,
                 obscured_by: placement.obscured_by,
                 url: location.href,
-                submit_control: wantsSubmit ? defaultSubmitControl(form) : null
+                submit_control: submit ? submit.described : null
             };
         };
 
@@ -875,12 +932,32 @@ nonisolated enum WebActionScripts {
 
         // A synthesised Enter does NOT perform implicit form submission — only a
         // trusted keystroke does — so this is two separate things said honestly.
-        // The key events are what a search box's own handler listens for. The
-        // default button click is what actually submits a form, and Cherry only
-        // reaches it because Swift has already classified that button and let it
-        // through; when there is no form, or no default button, only the key
-        // events happen and the answer says so.
-        function pressEnter(el, clickDefaultButton) {
+        // The key events are what a search box's own handler listens for; the
+        // default button click is what actually submits the form.
+        //
+        // ## The button is the one `arm` pinned, and it is re-verified
+        //
+        // `armed.submitEl` is an object reference captured before Swift ran the
+        // commitment rule, and `armed.submitName` is its raw accessible name at
+        // that moment. Both are checked again HERE, immediately before the
+        // click and AFTER the key events have run.
+        //
+        // That ordering is the point. The keydown this function dispatches runs
+        // the page's own Enter handler synchronously, inside Cherry's own
+        // evaluation, before anything else in this function happens. The
+        // previous version then re-ran `form.querySelector(SUBMIT_SELECTOR)` and
+        // clicked whatever came back — so a handler that prepended
+        // `<button type="submit">Confirm payment</button>` got that button
+        // pressed, on a call whose gate had passed on "Search". No race was
+        // needed; the synchronous handler was the window, and Cherry opened it.
+        //
+        // Pinning the element closes it: a page can still add a button, and the
+        // added button is not the one that gets clicked. Rewriting the pinned
+        // button's own label is caught by the name check; detaching it is caught
+        // by `isConnected`. What remains unclosable is the page rewiring the
+        // pinned button's click handler, which is true of any click and is why
+        // the audit log records what was pressed.
+        function pressEnter(el, armed) {
             var options = {
                 bubbles: true, cancelable: true,
                 key: "Enter", code: "Enter", keyCode: 13, which: 13
@@ -891,22 +968,36 @@ nonisolated enum WebActionScripts {
                 el.dispatchEvent(new KeyboardEvent("keypress", options));
                 el.dispatchEvent(new KeyboardEvent("keyup", options));
             } catch (e) {}
-            if (!clickDefaultButton || !notCancelled) { return false; }
-            var form = formOf(el);
-            var button = null;
+
+            var button = armed.submitEl;
+            // The page's own handler called preventDefault, which is what a
+            // search box does when it means to handle Enter itself. Distinct
+            // from "there was no button", because the page acting on the key IS
+            // the submission in that case.
+            if (!notCancelled) { return { clicked: false, reason: "submit_cancelled" }; }
+            if (!button) { return { clicked: false, reason: "no_pinned_button" }; }
+            if (!button.isConnected) { return { clicked: false, reason: "submit_detached" }; }
+            if (accessibleName(button).name !== armed.submitName) {
+                return { clicked: false, reason: "submit_renamed" };
+            }
+            // And it must still be the form's default button — an inserted
+            // submit control EARLIER in tree order is what the browser would
+            // actually press, so pressing the pinned one anyway would be Cherry
+            // doing something different from what it told the model it would.
+            var current = null;
             try {
-                button = form ? form.querySelector(
-                    'button:not([type]), button[type="submit"], input[type="submit"], input[type="image"]'
-                ) : null;
-            } catch (e) { button = null; }
-            if (!button) { return false; }
+                var form = formOf(el);
+                current = form ? form.querySelector(SUBMIT_SELECTOR) : null;
+            } catch (e) { current = null; }
+            if (current !== button) { return { clicked: false, reason: "submit_displaced" }; }
+
             button.click();
-            return true;
+            return { clicked: true, reason: null };
         }
 
         // ---- fire ------------------------------------------------------------
 
-        A.fire = function (token, mode, text, append, submit, clickDefaultButton) {
+        A.fire = function (token, mode, text, append, submit) {
             var armed = A.armed;
             A.armed = null;
             if (!armed || armed.token !== token) {
@@ -958,12 +1049,17 @@ nonisolated enum WebActionScripts {
                 A.watchStop();
                 return { ok: false, reason: "type_threw", doc: A.doc };
             }
-            var submitted = false;
-            if (submit) { submitted = pressEnter(el, clickDefaultButton); }
+            var pressed = { clicked: false, reason: null };
+            // `submit` reaching here at all means Swift found a default button
+            // AND cleared it through the commitment rule — `perform` refuses the
+            // call outright when there is nothing classifiable to clear.
+            if (submit) { pressed = pressEnter(el, armed); }
             return {
                 ok: true, doc: A.doc, url_before: urlBefore,
                 hit: placement.hit, obscured_by: placement.obscured_by,
-                value_after: after, submitted: !!submit, submit_button_clicked: submitted
+                value_after: after, submitted: !!submit,
+                submit_button_clicked: pressed.clicked,
+                submit_not_pressed: pressed.reason
             };
         };
 
@@ -1117,26 +1213,25 @@ nonisolated enum WebActionScripts {
         (function () {
             var A = window.__cherryAct;
             if (!A) { return JSON.stringify({ ok: false, reason: "snapshot_gone" }); }
-            return JSON.stringify(A.fire(\(jsString(token)), "click", null, false, false, false));
+            return JSON.stringify(A.fire(\(jsString(token)), "click", null, false, false));
         })();
         """
     }
 
-    static func fireType(
-        token: String,
-        text: String,
-        append: Bool,
-        submit: Bool,
-        clickDefaultButton: Bool
-    ) -> String {
+    /// - Parameter submit: press Enter afterwards. There is deliberately no
+    ///   longer a separate "and click the default button" flag: the button that
+    ///   gets pressed is the one `arm` pinned, and `perform` refuses the whole
+    ///   call when there was nothing to pin. Two flags meant two states that
+    ///   could disagree, and the disagreeing one pressed a button nobody had
+    ///   classified.
+    static func fireType(token: String, text: String, append: Bool, submit: Bool) -> String {
         installWorld + "\n" + """
         (function () {
             var A = window.__cherryAct;
             if (!A) { return JSON.stringify({ ok: false, reason: "snapshot_gone" }); }
             return JSON.stringify(A.fire(
                 \(jsString(token)), "type", \(jsString(text)),
-                \(append ? "true" : "false"), \(submit ? "true" : "false"),
-                \(clickDefaultButton ? "true" : "false")
+                \(append ? "true" : "false"), \(submit ? "true" : "false")
             ));
         })();
         """

@@ -138,6 +138,21 @@ nonisolated enum WebActionRefusalReason: String, Sendable, Encodable {
     /// control rather than a sentence.
     case passwordField = "password_field"
 
+    /// `submit: true` where Cherry cannot see what Enter would do.
+    ///
+    /// Enter presses a form's default submit button, and that button is what the
+    /// commitment rule classifies. When there is no form, or a form with no
+    /// submit control, there is nothing to classify — and Enter in a
+    /// contenteditable is where the modern web puts *send*: Slack, X, Discord,
+    /// WhatsApp Web, Gmail's compose body. None of them is a `<form>`, so the
+    /// most common irreversible action on the web was the one case the gate
+    /// structurally could not see. Refusing is the only honest answer: Cherry
+    /// does not press a key whose effect it cannot describe.
+    case unclassifiableSubmit = "unclassifiable_submit"
+
+    /// Too many actions in too short a window, inside one session.
+    case rateLimited = "rate_limited"
+
     // --- There is no page here. Shared with `read_page`'s ladder. ------------
 
     case notFound = "not_found"

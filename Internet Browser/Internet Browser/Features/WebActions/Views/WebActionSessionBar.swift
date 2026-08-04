@@ -2,18 +2,31 @@
 //  WebActionSessionBar.swift
 //  Cherry Browser
 //
-//  "Something is clicking in this tab right now", and the one click that stops
-//  it.
+//  "Something is clicking in this window right now", and the one click that
+//  stops it.
+//
+//  ## Why it is per WINDOW and not per displayed pane
+//
+//  It used to be per pane, which meant it only existed while the tab being acted
+//  on was the tab on screen. A grant survives tab switching — that is the whole
+//  point of a time-boxed session — so an agent could click and type in tab A for
+//  up to thirty minutes while the user worked in tab B, with no sign anywhere
+//  and no way to end it without first guessing which tab to switch to. The file
+//  argued at length that this indicator must not be hideable while shipping one
+//  that was invisible, which is worse.
+//
+//  So: one row per live session in this window, always drawn, naming its tab.
+//  The row for the tab you are looking at says "this tab"; the others name
+//  theirs, so ending the right one needs no guessing and no tab switch.
 //
 //  ## Why it is not hideable, and not in the toolbar catalogue
 //
 //  Same argument as `MCPConnectionIndicator`, with more force: that one says a
 //  program is READING the browser, this one says a program is CHANGING a page.
 //  An indicator the user can switch off would let someone believe they were
-//  being told while they were not. So it is not a `ToolbarButtonID`, it is not
-//  reorderable, it is not hideable, and it is re-hosted in video fullscreen —
-//  which hides the whole navigation bar — for exactly the reason the comment at
-//  `BrowserView`'s overlay gives.
+//  being told while they were not. Not a `ToolbarButtonID`, not reorderable, not
+//  hideable, and drawn in video fullscreen too — which hides the whole
+//  navigation bar — for exactly the reason `BrowserView`'s overlay comment gives.
 //
 //  ## The countdown is cosmetic and nothing depends on it
 //
@@ -34,31 +47,38 @@ import SwiftUI
 
 struct WebActionSessionBar: View {
 
-    /// The tab this bar sits above. A grant is for one tab, so the bar is drawn
-    /// per tab and never window-wide: in split view the pane being acted on is
-    /// the pane that shows it.
-    let tabID: UUID
+    /// The window this bar belongs to. Every live session granted in it is drawn,
+    /// whether or not its tab is the one on screen.
+    let windowID: UUID
+
+    /// The window's tabs, so a row can name the tab it is about and say whether
+    /// it is the one being looked at.
+    let tabManager: TabManager
 
     @State private var store = WebActionSessionStore.shared
     @State private var now = Date()
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    private var session: WebActionSession? {
-        store.liveSessions.first { $0.tabID == tabID }
+    private var sessions: [WebActionSession] {
+        store.liveSessions.filter { $0.windowID == windowID }
     }
 
     var body: some View {
         Group {
-            if let session {
-                bar(for: session)
-                    .transition(.opacity)
+            if !sessions.isEmpty {
+                VStack(spacing: 0) {
+                    ForEach(sessions) { session in
+                        row(for: session)
+                    }
+                }
+                .transition(.opacity)
             }
         }
-        .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: session?.id)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: sessions.count)
         // A second, not 100ms: the digits only ever change once a second, and a
         // faster tick is main-actor work bought for nothing.
-        .task(id: session?.id) {
-            guard session != nil else { return }
+        .task(id: sessions.isEmpty) {
+            guard !sessions.isEmpty else { return }
             while !Task.isCancelled {
                 now = Date()
                 try? await Task.sleep(for: .seconds(1))
@@ -66,13 +86,27 @@ struct WebActionSessionBar: View {
         }
     }
 
-    private func bar(for session: WebActionSession) -> some View {
+    /// How the row names the tab it is about.
+    ///
+    /// "this tab" only when that tab is actually on screen — in split view both
+    /// panes count. Otherwise the tab's own title, so the user can tell which of
+    /// their tabs is being driven without switching to find out.
+    private func where_(_ session: WebActionSession) -> String {
+        let displayed = [tabManager.selectedTabID, tabManager.secondarySelectedTabID]
+        if displayed.contains(session.tabID) { return "this tab" }
+        guard let tab = tabManager.tabs.first(where: { $0.id == session.tabID }) else {
+            return "another tab"
+        }
+        return "“\(WebActionText.singleLine(tab.displayTitle, limit: 40))”"
+    }
+
+    private func row(for session: WebActionSession) -> some View {
         HStack(spacing: 8) {
             Image(systemName: "hand.tap.fill")
                 .font(.system(size: 11, weight: .semibold))
                 .accessibilityHidden(true)
 
-            Text("\(session.requester.displayName) is clicking and typing in this tab")
+            Text("\(session.requester.displayName) is clicking and typing in \(where_(session))")
                 .font(.system(size: 11, weight: .medium))
                 .lineLimit(1)
 
@@ -112,7 +146,10 @@ struct WebActionSessionBar: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(SettingsManager.shared.accentColor)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("\(session.requester.displayName) is clicking and typing in this tab: \(session.purpose)")
+        .accessibilityLabel(
+            "\(session.requester.displayName) is clicking and typing in \(where_(session)): "
+                + session.purpose
+        )
     }
 
     /// `m:ss`, floored. Never negative — an expired session has already stopped

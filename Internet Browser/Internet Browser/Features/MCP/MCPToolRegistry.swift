@@ -341,7 +341,8 @@ nonisolated enum MCPToolRegistry {
             After the click you are told what actually happened: `navigated`, `changed` (the page \
             mutated in place), or `no_effect` (nothing observably happened within the wait). \
             `no_effect` usually means you clicked the wrong thing, not that you should click it \
-            again. `navigated` also ends the action session, because a grant is for one site.
+            again. A navigation does not end your session — logging in navigates — but leaving the \
+            site the user granted permission for does, and that is decided on your next call.
 
             This does not scroll, does not type, and does not run JavaScript. It cannot click \
             inside a cross-origin iframe. If `obscured_by` comes back set, the element was \
@@ -401,12 +402,14 @@ nonisolated enum MCPToolRegistry {
             "the field contains the text" and "the app knows". By default it replaces whatever is \
             in the field; pass `append: true` to add to the end.
 
-            `submit: true` presses Enter afterwards. Cherry does not take that on trust: if the \
-            field is in a form, it finds the button that form would submit through, puts that \
-            button through the same commitment check `click_element` uses, and refuses the whole \
-            call if it looks irreversible. If the field is not in a form, Enter is only a \
-            keystroke and what happens is up to the page — you are told which case you got. Prefer \
-            typing, then reading the elements, then clicking the button you can see.
+            `submit: true` presses Enter afterwards, and Cherry does not take that on trust. It \
+            finds the button the field's form would submit through, puts that button through the \
+            same commitment check `click_element` uses, and refuses the whole call if it looks \
+            irreversible. **If the field is not in a form with a submit button, Cherry refuses \
+            `submit: true` outright** — Enter would go straight to the page's own handler and \
+            there would be nothing for the check to look at, and in a message composer that \
+            handler is usually Send. So prefer typing, then reading the elements, then clicking \
+            the control you can see: that one does go through the check.
 
             Never type a password, a card number, a one-time code, or anything else the user has \
             not put in this conversation themselves. Cherry refuses password fields outright, \

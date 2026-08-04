@@ -112,10 +112,23 @@ final class WebActionSessionStore {
     /// press Allow.
     static let declineCooldown: TimeInterval = 120
 
-    /// The most simultaneous grants Cherry will hold. A bound, not a policy —
-    /// one grant per tab already limits this in practice, and this is here so a
-    /// client cannot accumulate state without limit by asking about many tabs.
+    /// The most simultaneous grants Cherry will hold, and it is enforced in
+    /// `allow(_:)` rather than merely written down.
+    ///
+    /// It used to be neither: the constant only bounded the ended tail, so the
+    /// comment described a limit that did not exist. Granting the ninth now ends
+    /// the oldest live one, because eight session bars is already more than a
+    /// person can hold in their head, and a permission the user has lost track of
+    /// is a permission they did not really give.
     static let maximumLiveSessions = 8
+
+    /// How long after a session ends its tab still counts as "recently agentic".
+    ///
+    /// For the gates that must not be defeated by deferral — a `setTimeout`ed
+    /// `window.open` scheduled during a session and delivered a second after it
+    /// expires is the same popup, and keying the block on liveness alone let it
+    /// through. Enforcement of ACTIONS uses `liveSession` and never this.
+    static let recentGrace: TimeInterval = 10
 
     // MARK: State
 
@@ -196,6 +209,22 @@ final class WebActionSessionStore {
     func hasLiveSession(forTab tabID: UUID) -> Bool {
         let moment = now()
         return sessions.contains { $0.tabID == tabID && $0.isLive(at: moment) }
+    }
+
+    /// Live, or ended within `recentGrace`.
+    ///
+    /// The gates that fire on DELIVERY rather than on the action use this. A
+    /// `window.open` or a file panel scheduled by a `setTimeout` during a session
+    /// arrives after it, and a gate keyed on liveness alone waves through exactly
+    /// the thing it exists to stop. Never used to permit an action.
+    func hasRecentSession(forTab tabID: UUID) -> Bool {
+        let moment = now()
+        return sessions.contains { session in
+            guard session.tabID == tabID else { return false }
+            if session.isLive(at: moment) { return true }
+            guard let endedAt = session.endedAt else { return false }
+            return moment.timeIntervalSince(endedAt) < Self.recentGrace
+        }
     }
 
     /// Every live grant, front to back. Drives the session bar.
@@ -315,6 +344,18 @@ final class WebActionSessionStore {
         // One grant per tab and requester, always: the extend-in-place path above
         // handles the same-origin case, so anything still here is superseded.
         endSessions(forTab: request.tabID, reason: .tabUnavailable)
+
+        // And no more than `maximumLiveSessions` at once. The oldest goes,
+        // because a permission the user has lost track of is one they did not
+        // really give — and because eight bars is already more than a window can
+        // show without becoming wallpaper.
+        var live = sessions.filter { $0.isLive(at: moment) }
+        while live.count >= Self.maximumLiveSessions {
+            guard let oldest = live.min(by: { $0.grantedAt < $1.grantedAt }) else { break }
+            end(sessionID: oldest.id, reason: .revokedByUser)
+            live.removeAll { $0.id == oldest.id }
+        }
+
         sessions.append(session)
         pruneEndedSessions()
         answer(requestID, with: .granted(session))

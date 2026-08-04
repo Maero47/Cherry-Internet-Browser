@@ -1199,8 +1199,12 @@ struct WebViewWrapper: NSViewRepresentable {
             // click could open a real window over the user's browser. The gate
             // is narrow on purpose: an agent clicking a genuine
             // `<a target="_blank">` arrives as `.linkActivated` and still works.
+            // `hasRecentSession`, not `hasLiveSession`: a `window.open` scheduled
+            // by a `setTimeout` during a session is delivered after it, and a
+            // gate keyed on liveness alone waved through exactly the popup it
+            // exists to stop.
             if let tab = self.tab,
-               WebActionSessionStore.shared.hasLiveSession(forTab: tab.id),
+               WebActionSessionStore.shared.hasRecentSession(forTab: tab.id),
                !WebActionPopupPolicy.allowsPopup(navigationType: navigationAction.navigationType) {
                 return nil
             }
@@ -1343,7 +1347,10 @@ struct WebViewWrapper: NSViewRepresentable {
             initiatedByFrame frame: WKFrameInfo,
             completionHandler: @escaping ([URL]?) -> Void
         ) {
-            if let tab, WebActionSessionStore.shared.hasLiveSession(forTab: tab.id) {
+            // `hasRecentSession` for the same reason the popup gate uses it: a
+            // deferred `fileInput.click()` lands after the session it was
+            // scheduled in.
+            if let tab, WebActionSessionStore.shared.hasRecentSession(forTab: tab.id) {
                 completionHandler(nil)
                 return
             }

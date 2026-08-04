@@ -221,6 +221,94 @@ final class WebActionActingTests: XCTestCase {
             </body></html>
             """
         }
+
+        /// A form whose own Enter handler inserts a commitment-shaped submit
+        /// button AHEAD of the innocuous one, synchronously, the moment a keydown
+        /// arrives.
+        ///
+        /// This is the hostile page for the re-query hole. `pressEnter` used to
+        /// dispatch its keydown and THEN re-run `form.querySelector(…)`, so this
+        /// handler ran inside Cherry's own evaluation and the re-query returned
+        /// the button it had just inserted. A gate that passed on "Search"
+        /// clicked "Confirm payment". No race required.
+        static let formThatSwapsItsButtonOnEnter = """
+        <html><head><title>Form</title></head><body>
+          <form id="f" action="/results" method="get" onsubmit="return false;">
+            <input type="text" name="q" aria-label="Search the store" id="q">
+            <button type="submit" id="go"
+              onclick="window.__searchClicks=(window.__searchClicks||0)+1; return false;"
+            >Search</button>
+          </form>
+          <script>
+            window.__searchClicks = 0;
+            window.__confirmClicks = 0;
+            document.getElementById('q').addEventListener('keydown', function (event) {
+              if (event.key !== 'Enter') { return; }
+              if (document.getElementById('evil')) { return; }
+              var form = document.getElementById('f');
+              var evil = document.createElement('button');
+              evil.id = 'evil';
+              evil.type = 'submit';
+              evil.textContent = 'Confirm payment';
+              evil.addEventListener('click', function (e) {
+                window.__confirmClicks = window.__confirmClicks + 1;
+                e.preventDefault();
+              });
+              // FIRST in tree order, so a re-query returns this one.
+              form.insertBefore(evil, form.firstChild);
+            });
+          </script>
+        </body></html>
+        """
+
+        /// A message composer: a `contenteditable` whose Enter handler sends.
+        ///
+        /// Not a `<form>`, and there is no submit button anywhere — which is
+        /// exactly how Slack, X, Discord, WhatsApp Web and Gmail's compose body
+        /// are built. `submit: true` here used to dispatch the full Enter
+        /// sequence with nothing classified at all.
+        static let composer = """
+        <html><head><title>Composer</title></head><body>
+          <div id="box" contenteditable="true" aria-label="Message"></div>
+          <div id="sent"></div>
+          <script>
+            window.__sent = 0;
+            document.getElementById('box').addEventListener('keydown', function (event) {
+              if (event.key !== 'Enter') { return; }
+              window.__sent = window.__sent + 1;
+              document.getElementById('sent').textContent =
+                'sent: ' + document.getElementById('box').textContent;
+            });
+          </script>
+        </body></html>
+        """
+
+        /// The same composer with NO `aria-label`, so its accessible name falls
+        /// all the way through the ladder to `el.innerText` — which, once
+        /// anything has been typed into it, IS what was typed.
+        ///
+        /// This is the shape that leaks into the audit log, and it is an ordinary
+        /// one: a bare `<div contenteditable>` with a visual placeholder is how a
+        /// great many comment boxes and composers are built.
+        static let unlabelledComposer = """
+        <html><head><title>Composer</title></head><body>
+          <div id="composer" contenteditable="true"
+            style="min-height:40px;width:300px;border:1px solid #ccc"></div>
+        </body></html>
+        """
+
+        /// A button whose accessible name is longer than the 100-character
+        /// display cap, so its rendered form is `prefix(99) + "…"` and the tail
+        /// is invisible to the model.
+        static func longNamed(tail: String) -> String {
+            let padding = String(repeating: "Reference documentation section ", count: 4)
+            return """
+            <html><head><title>Long</title></head><body>
+              <button id="long" onclick="window.__longClicks=(window.__longClicks||0)+1;"
+                >\(padding)\(tail)</button>
+            </body></html>
+            """
+        }
     }
 
     // MARK: - The enforcement point
@@ -685,6 +773,152 @@ final class WebActionActingTests: XCTestCase {
         XCTAssertEqual(submits, 1, "Enter in a form is the form's button being pressed")
     }
 
+    /// **Fix round 1, item 1.** The page inserts a commitment-shaped submit
+    /// button from its own Enter handler, which runs synchronously inside
+    /// Cherry's evaluation, before the old code re-queried the form.
+    ///
+    /// Before the fix this pressed "Confirm payment" on a call whose gate had
+    /// passed on "Search". The button is now pinned by object identity at `arm`
+    /// and re-verified immediately before the click, so the inserted one is not
+    /// the one that gets pressed.
+    func testAButtonTheEnterHandlerInsertsIsNotThePressedOne() async throws {
+        let harness = try await self.harness(Page.formThatSwapsItsButtonOnEnter)
+        try await grant(harness)
+        let listing = try await snapshot(harness)
+        let field = try id(of: listing, named: "Search the store")
+
+        let result = await harness.bridge.perform(
+            .type(element: field, expectName: "Search the store", document: listing.document,
+                  text: "socks", append: false, submit: true, waitMS: 800),
+            on: harness.tab.id,
+            by: .mcp
+        )
+
+        let confirmed = await pageNumber(harness.webView, "window.__confirmClicks || 0")
+        XCTAssertEqual(
+            confirmed, 0,
+            "Cherry pressed a button the page inserted after the commitment check had passed"
+        )
+        // And the inserted button really was there, so the test is not passing
+        // because the fixture failed to fire.
+        let inserted = await pageNumber(
+            harness.webView, "document.getElementById('evil') ? 1 : 0"
+        )
+        XCTAssertEqual(inserted, 1, "the fixture never inserted its button, so nothing was tested")
+
+        // The pinned button is now no longer the form's first submit control, so
+        // Cherry declines to press anything rather than pressing the wrong one —
+        // and says which it was.
+        guard case .acted(let acted) = result else {
+            return XCTFail("expected an action; got \(result)")
+        }
+        let searched = await pageNumber(harness.webView, "window.__searchClicks || 0")
+        XCTAssertEqual(searched, 0, "the pinned button was displaced and must not be pressed either")
+        XCTAssertEqual(acted.submitted, true, "Enter was pressed")
+        XCTAssertNotNil(acted.note)
+        XCTAssertTrue(
+            acted.note?.contains("was NOT") == true,
+            "the model must be told the form's button was not pressed: \(acted.note ?? "nil")"
+        )
+    }
+
+    /// **Fix round 1, item 2.** Enter in a composer is where the web puts *send*,
+    /// and no `<form>` is involved, so nothing was classified and the full Enter
+    /// sequence was dispatched anyway.
+    func testSubmitTrueIsRefusedInAComposerWithNothingToClassify() async throws {
+        let harness = try await self.harness(Page.composer)
+        try await grant(harness)
+        let listing = try await snapshot(harness)
+        let box = try id(of: listing, named: "Message")
+
+        let result = await harness.bridge.perform(
+            .type(element: box, expectName: "Message", document: listing.document,
+                  text: "on my way", append: false, submit: true, waitMS: 500),
+            on: harness.tab.id,
+            by: .mcp
+        )
+
+        guard case .refused(let refusal) = result else {
+            return XCTFail("expected a refusal; got \(result)")
+        }
+        XCTAssertEqual(refusal.reason, .unclassifiableSubmit)
+        let sent = await pageNumber(harness.webView, "window.__sent || 0")
+        XCTAssertEqual(sent, 0, "Enter reached the composer's own send handler")
+        let text = await pageString(harness.webView, "document.getElementById('box').textContent")
+        XCTAssertEqual(text, "", "the refusal must happen before anything is typed")
+    }
+
+    /// The other half, so the refusal above is a decision rather than "typing
+    /// into a composer is broken": without `submit`, the same call works.
+    func testTypingIntoAComposerWithoutSubmitStillWorks() async throws {
+        let harness = try await self.harness(Page.composer)
+        try await grant(harness)
+        let listing = try await snapshot(harness)
+        let box = try id(of: listing, named: "Message")
+
+        let result = await harness.bridge.perform(
+            .type(element: box, expectName: "Message", document: listing.document,
+                  text: "on my way", append: false, submit: false, waitMS: 500),
+            on: harness.tab.id,
+            by: .mcp
+        )
+        XCTAssertEqual(result.outcome, .changed, "\(result)")
+        let text = await pageString(harness.webView, "document.getElementById('box').textContent")
+        XCTAssertEqual(text, "on my way")
+        let sent = await pageNumber(harness.webView, "window.__sent || 0")
+        XCTAssertEqual(sent, 0)
+    }
+
+    /// **Fix round 1, item 4.** The display form is capped at 100 characters, so
+    /// a page can rewrite the tail of a long name and both sides still sanitise
+    /// to the same `prefix(99) + "…"`.
+    ///
+    /// The raw name recorded at listing time — in the isolated world, where the
+    /// page cannot reach it — is what makes the two distinguishable.
+    func testRewritingTheInvisibleTailOfALongNameIsRefused() async throws {
+        let harness = try await self.harness(Page.longNamed(tail: "and nothing else"))
+        try await grant(harness)
+        let listing = try await snapshot(harness)
+        let shown = try XCTUnwrap(listing.elements.first)
+        XCTAssertTrue(shown.name.hasSuffix("…"), "the fixture's name must be long enough to clip")
+
+        // Rewrite only what the model cannot see.
+        _ = try? await harness.webView.evaluateJavaScript(
+            "document.getElementById('long').textContent = "
+                + "document.getElementById('long').textContent"
+                + ".replace('and nothing else', 'and Confirm transfer of $5000');"
+        )
+
+        let result = await harness.bridge.perform(
+            .click(element: shown.id, expectName: shown.name,
+                   document: listing.document, waitMS: 0),
+            on: harness.tab.id,
+            by: .mcp
+        )
+        XCTAssertEqual(result.refusalReason, .nameMismatch)
+        let clicks = await pageNumber(harness.webView, "window.__longClicks || 0")
+        XCTAssertEqual(clicks, 0)
+    }
+
+    /// And an unchanged long name still works, so the check above is not simply
+    /// refusing everything with a clipped name.
+    func testAnUnchangedLongNameIsStillClickable() async throws {
+        let harness = try await self.harness(Page.longNamed(tail: "and nothing else"))
+        try await grant(harness)
+        let listing = try await snapshot(harness)
+        let shown = try XCTUnwrap(listing.elements.first)
+
+        let result = await harness.bridge.perform(
+            .click(element: shown.id, expectName: shown.name,
+                   document: listing.document, waitMS: 400),
+            on: harness.tab.id,
+            by: .mcp
+        )
+        XCTAssertNotNil(result.outcome, "\(result)")
+        let clicks = await pageNumber(harness.webView, "window.__longClicks || 0")
+        XCTAssertEqual(clicks, 1)
+    }
+
     // MARK: - The audit log, through the real path
 
     func testTheAuditLogRecordsTheTypingWithoutTheText() async throws {
@@ -718,6 +952,142 @@ final class WebActionActingTests: XCTestCase {
                 )
             }
         }
+    }
+
+    /// **Fix round 1, item 6.** The entry type has no field for typed text, and
+    /// that was true of its shape and false of its contents.
+    ///
+    /// The accessible-name ladder's fourth rung is `el.innerText`. On a
+    /// `contenteditable` that IS what was typed — so typing into a composer and
+    /// then acting on the same element again wrote the first message into `name`.
+    /// The earlier tests missed it because both typed into a plain `<input>` and
+    /// acted once; this one is the sequence that leaks.
+    func testTypingIntoAComposerTwiceDoesNotWriteTheFirstMessageToTheLog() async throws {
+        let harness = try await self.harness(Page.unlabelledComposer)
+        try await grant(harness, purpose: "Reply to the message in the composer")
+        let listing = try await snapshot(harness)
+        // While it is empty the ladder falls past the text rung all the way to
+        // `id`, so the listing shows "composer". The moment anything is typed in,
+        // the text rung fires first and the name becomes that text — which is the
+        // whole leak.
+        let box = try id(of: listing, named: "composer")
+
+        let secret = "correcthorsebatterystaple"
+        let first = await harness.bridge.perform(
+            .type(element: box, expectName: "composer", document: listing.document,
+                  text: secret, append: false, submit: false, waitMS: 400),
+            on: harness.tab.id, by: .mcp
+        )
+        XCTAssertNotNil(first.outcome, "\(first)")
+
+        // The element's accessible name IS the typed text now — re-list to get
+        // the name the second call has to agree to, exactly as a model would.
+        let second = try await snapshot(harness)
+        let renamed = try XCTUnwrap(second.elements.first { $0.id == box })
+        XCTAssertEqual(
+            renamed.name, secret,
+            "the fixture must reach the state where the name is the typed text"
+        )
+
+        let again = await harness.bridge.perform(
+            .type(element: box, expectName: renamed.name, document: second.document,
+                  text: " on my way", append: true, submit: false, waitMS: 400),
+            on: harness.tab.id, by: .mcp
+        )
+        XCTAssertNotNil(again.outcome, "\(again)")
+
+        let url = try XCTUnwrap(harness.audit.fileURL)
+        let written = try String(contentsOf: url, encoding: .utf8)
+        XCTAssertTrue(written.contains(WebActionBridge.withheldName),
+                      "the entry must say the name was withheld, not simply omit it")
+
+        let characters = Array(secret)
+        for length in 4...characters.count {
+            for start in 0...(characters.count - length) {
+                let fragment = String(characters[start..<(start + length)])
+                XCTAssertFalse(
+                    written.lowercased().contains(fragment.lowercased()),
+                    "the audit log contains \"\(fragment)\" — a fragment of what was typed, "
+                        + "reached through the element's accessible name"
+                )
+            }
+        }
+    }
+
+    /// The suppression is by NAME RUNG and editable host, not by tag, so an
+    /// ordinary button whose label happens to be its text is still recorded — the
+    /// audit log would be useless if every name were withheld.
+    func testAnOrdinaryControlsNameIsStillRecorded() async throws {
+        let harness = try await self.harness(Page.counter)
+        try await grant(harness)
+        let listing = try await snapshot(harness)
+        let ordinary = try id(of: listing, named: "Show more")
+
+        _ = await harness.bridge.perform(
+            .click(element: ordinary, expectName: "Show more",
+                   document: listing.document, waitMS: 400),
+            on: harness.tab.id, by: .mcp
+        )
+
+        let url = try XCTUnwrap(harness.audit.fileURL)
+        let written = try String(contentsOf: url, encoding: .utf8)
+        XCTAssertTrue(written.contains("\"name\":\"Show more\""))
+        XCTAssertFalse(written.contains(WebActionBridge.withheldName))
+    }
+
+    // MARK: - The audit log cannot be flushed by the actor it records
+
+    /// Gate refusals are the only entries an unauthorised caller can produce, and
+    /// the log rotates at a size cap. Sharing one file gave a token holder with
+    /// no session a way to erase the record of the sessions that did happen.
+    func testASessionlessCallerWritesToADifferentFile() async throws {
+        let harness = try await self.harness(Page.counter)
+        try await grant(harness)
+        let listing = try await snapshot(harness)
+        let ordinary = try id(of: listing, named: "Show more")
+
+        // One real action, from a real session.
+        _ = await harness.bridge.perform(
+            .click(element: ordinary, expectName: "Show more",
+                   document: listing.document, waitMS: 400),
+            on: harness.tab.id, by: .mcp
+        )
+        let actionsURL = try XCTUnwrap(harness.audit.fileURL)
+        let before = try String(contentsOf: actionsURL, encoding: .utf8)
+
+        // Then a caller with no grant, hammering.
+        for _ in 0..<20 {
+            _ = await harness.bridge.perform(
+                .click(element: 1, expectName: "x", document: "y", waitMS: 0),
+                on: UUID(), by: .localAgent
+            )
+        }
+
+        let after = try String(contentsOf: actionsURL, encoding: .utf8)
+        XCTAssertEqual(before, after, "a sessionless caller wrote into the action log")
+
+        let refusedURL = try XCTUnwrap(harness.audit.sessionlessURL)
+        let refused = try String(contentsOf: refusedURL, encoding: .utf8)
+        XCTAssertEqual(
+            refused.split(separator: "\n", omittingEmptySubsequences: true).count, 20,
+            "the refusals still have to be recorded, just not there"
+        )
+    }
+
+    /// `document` arrives from the caller on the refusal paths, so an uncapped
+    /// one is a rotation lever rather than a token.
+    func testACallersDocumentCannotBeUnboundedInTheLog() async throws {
+        let harness = try await self.harness(Page.counter)
+        _ = await harness.bridge.perform(
+            .click(element: 1, expectName: "x",
+                   document: String(repeating: "A", count: 100_000), waitMS: 0),
+            on: UUID(), by: .mcp
+        )
+        let refused = try String(
+            contentsOf: try XCTUnwrap(harness.audit.sessionlessURL), encoding: .utf8
+        )
+        XCTAssertLessThan(refused.count, 2_000, "one refusal line carried 100,000 caller bytes")
+        XCTAssertTrue(refused.contains("…"), "the cut has to be visible")
     }
 
     func testARefusedActionIsRecordedToo() async throws {

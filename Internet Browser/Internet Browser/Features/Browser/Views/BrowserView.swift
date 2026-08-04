@@ -360,6 +360,20 @@ struct BrowserView: View {
                     }
                 }
 
+                // "Something outside Cherry is clicking in this window right
+                // now", and the one click that stops it.
+                //
+                // Window level, above the panes, and OUTSIDE the
+                // `!isVideoFullscreen` guards the rest of the chrome sits behind.
+                // A grant survives tab switching, so a bar that only existed
+                // while the acted-on tab was displayed left an agent working in
+                // one tab with no sign anywhere while the user read another —
+                // and no way to end it without guessing which tab to switch to.
+                WebActionSessionBar(
+                    windowID: viewModel.windowID,
+                    tabManager: viewModel.tabManager
+                )
+
                 if viewModel.tabManager.isSplitActive,
                    let primaryTab = viewModel.tabManager.selectedTab,
                    let secondaryTab = viewModel.tabManager.secondarySelectedTab,
@@ -943,13 +957,6 @@ struct BrowserContentView: View {
                     .fill(Color.primary.opacity(0.08))
                     .frame(height: 0.5)
             }
-
-            // "Something outside Cherry is clicking in this tab right now", and
-            // the one click that stops it. Per TAB, not per window: a grant
-            // covers one tab, so in split view the pane being acted on is the
-            // pane that carries the bar. Not suppressed in video fullscreen the
-            // way the chrome above it is — see the overlay below.
-            WebActionSessionBar(tabID: tab.id)
 
             // Content - show internal cherry:// page, settings, homepage, or web view.
             // While an internal page is active the WKWebView is not rendered,
