@@ -971,6 +971,18 @@ struct BrowserContentView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
+        // Video fullscreen hides the whole navigation bar, and with it the MCP
+        // connection indicator — so an external client could read the user's
+        // tabs and history while they watched a video with no way to be told.
+        // A security indicator that a display mode can switch off is not an
+        // indicator, so it is re-hosted here for exactly that mode. It still
+        // draws nothing unless a client is actually connected.
+        .overlay(alignment: .topTrailing) {
+            if viewModel.isVideoFullscreen {
+                MCPConnectionIndicator { onSettings() }
+                    .padding(12)
+            }
+        }
         .onChange(of: tab.url) { _, _ in
             urlVersion += 1
         }

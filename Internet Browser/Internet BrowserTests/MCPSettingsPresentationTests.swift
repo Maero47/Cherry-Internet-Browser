@@ -36,6 +36,52 @@ final class MCPSettingsPresentationTests: XCTestCase {
         XCTAssertEqual(MCPCannotRunReason.classify(reason), .insecureTokenPermissions)
     }
 
+    /// `MCPTokenStore` raises `insecurePermissions` for three situations and
+    /// only two are about permissions. The third — a path whose mode could not
+    /// even be read, i.e. a folder that was never created — must NOT be
+    /// reported as "another account could replace the token", because that is
+    /// an accusation with no evidence and its remedy tells the user to chmod a
+    /// path that may not exist.
+    func testAMissingTokenFolderIsNotReportedAsATamperedOne() {
+        let missing = MCPTokenStore.Failure
+            .insecurePermissions(
+                URL(fileURLWithPath: "/Volumes/ReadOnly/MCP"),
+                detail: "its mode could not be read"
+            )
+            .localizedDescription
+        XCTAssertEqual(MCPCannotRunReason.classify(missing), .tokenLocationUnusable)
+
+        let state = presentation(status: .failed(reason: missing))
+        XCTAssertFalse(
+            state.detail.contains("another account"),
+            "a folder that could not be created was described as a local compromise: \(state.detail)"
+        )
+        XCTAssertFalse(
+            state.remedy?.contains("chmod") == true,
+            "the remedy tells the user to chmod a path that may not exist: \(state.remedy ?? "")"
+        )
+    }
+
+    /// Both genuinely-permission details carry the word chmod; that is the
+    /// positive evidence the security verdict requires.
+    func testOnlyAnActualChmodFailureEarnsTheSecurityMessage() {
+        let securityDetails = ["chmod to 700 failed — Operation not permitted", "still 777 after chmod"]
+        for detail in securityDetails {
+            let reason = MCPTokenStore.Failure
+                .insecurePermissions(URL(fileURLWithPath: "/tmp/mcp"), detail: detail)
+                .localizedDescription
+            XCTAssertEqual(MCPCannotRunReason.classify(reason), .insecureTokenPermissions, detail)
+        }
+
+        // An unfamiliar detail defaults to the milder reading. The server
+        // refuses to run either way, so the only thing at stake is whether the
+        // explanation is true, and a wrong accusation is the worse error.
+        let unknown = MCPTokenStore.Failure
+            .insecurePermissions(URL(fileURLWithPath: "/tmp/mcp"), detail: "something new")
+            .localizedDescription
+        XCTAssertEqual(MCPCannotRunReason.classify(unknown), .tokenLocationUnusable)
+    }
+
     /// `NWError` has stringified EADDRINUSE both ways across releases, and it
     /// arrives as `.waiting` on some and `.failed` on others.
     func testAddressInUseIsRecognisedInEveryShapeItArrivesIn() {
@@ -61,14 +107,25 @@ final class MCPSettingsPresentationTests: XCTestCase {
     /// The markers are derived from `MCPTokenStore.Failure` rather than retyped,
     /// so a copy edit there cannot silently demote a known failure to `.other`.
     /// If this fails, the derivation broke, not the wording.
-    func testTokenStoreMarkersDoNotCollide() {
+    ///
+    /// Asserts the property the classifier actually depends on — that neither
+    /// error's text contains the other's marker — rather than re-stating a
+    /// verdict the equality assertions above already pin down.
+    func testTokenStoreMarkersAreMutuallyExclusive() {
         let appSupport = MCPTokenStore.Failure.applicationSupportUnavailable.localizedDescription
         let insecure = MCPTokenStore.Failure
-            .insecurePermissions(URL(fileURLWithPath: "/tmp/x"), detail: "y")
+            .insecurePermissions(URL(fileURLWithPath: "/tmp/x"), detail: "chmod failed")
             .localizedDescription
-        XCTAssertEqual(MCPCannotRunReason.classify(appSupport), .noTokenLocation)
-        XCTAssertEqual(MCPCannotRunReason.classify(insecure), .insecureTokenPermissions)
-        XCTAssertNotEqual(MCPCannotRunReason.classify(appSupport), .insecureTokenPermissions)
+
+        XCTAssertFalse(appSupport.isEmpty)
+        XCTAssertFalse(insecure.isEmpty)
+        XCTAssertFalse(
+            insecure.contains(appSupport),
+            "the permissions text swallows the Application Support sentence, so one shadows the other"
+        )
+        // Neither is a prefix or suffix of the other, so substring matching on
+        // either cannot be satisfied by the wrong error.
+        XCTAssertFalse(appSupport.contains(insecure))
     }
 
     // MARK: - Each cannot-run state reads differently, and actionably
@@ -82,6 +139,12 @@ final class MCPSettingsPresentationTests: XCTestCase {
                     .insecurePermissions(URL(fileURLWithPath: "/tmp/mcp"), detail: "still 777 after chmod")
                     .localizedDescription,
                 .insecureTokenPermissions
+            ),
+            (
+                MCPTokenStore.Failure
+                    .insecurePermissions(URL(fileURLWithPath: "/tmp/mcp"), detail: "its mode could not be read")
+                    .localizedDescription,
+                .tokenLocationUnusable
             ),
             ("something nobody anticipated", .other),
         ]
@@ -206,7 +269,11 @@ final class MCPSettingsPresentationTests: XCTestCase {
             .failed(reason: MCPTokenStore.Failure.applicationSupportUnavailable.localizedDescription),
             .failed(reason: "POSIXErrorCode(rawValue: 48): Address already in use"),
             .failed(reason: MCPTokenStore.Failure
-                .insecurePermissions(URL(fileURLWithPath: "/tmp/x"), detail: "y").localizedDescription),
+                .insecurePermissions(URL(fileURLWithPath: "/tmp/x"), detail: "still 777 after chmod")
+                .localizedDescription),
+            .failed(reason: MCPTokenStore.Failure
+                .insecurePermissions(URL(fileURLWithPath: "/tmp/x"), detail: "its mode could not be read")
+                .localizedDescription),
             .failed(reason: "unknown"),
         ]
         for enabled in [true, false] {
@@ -227,7 +294,11 @@ final class MCPSettingsPresentationTests: XCTestCase {
             .failed(reason: "POSIXErrorCode(rawValue: 48): Address already in use"),
             .failed(reason: MCPTokenStore.Failure.applicationSupportUnavailable.localizedDescription),
             .failed(reason: MCPTokenStore.Failure
-                .insecurePermissions(URL(fileURLWithPath: "/tmp/x"), detail: "y").localizedDescription),
+                .insecurePermissions(URL(fileURLWithPath: "/tmp/x"), detail: "still 777 after chmod")
+                .localizedDescription),
+            .failed(reason: MCPTokenStore.Failure
+                .insecurePermissions(URL(fileURLWithPath: "/tmp/x"), detail: "its mode could not be read")
+                .localizedDescription),
         ]
         for enabled in [true, false] {
             for status in statuses {
@@ -334,25 +405,154 @@ final class MCPSettingsPresentationTests: XCTestCase {
 
     /// The whole reason the `$(cat …)` form exists: the pane can be copied from
     /// without the secret ever being on screen.
+    ///
+    /// Asserts against a token that is guaranteed to exist. The first version
+    /// wrapped its only real assertion in `if let token = …`, so on any machine
+    /// where the token was absent or unreadable — exactly the state the
+    /// fail-closed design produces — it passed without checking anything.
     @MainActor
     func testTheDefaultCommandFormDoesNotContainTheToken() throws {
-        let store = try XCTUnwrap(
-            MCPTokenStore.shared,
-            "no Application Support means no token file to read the command from"
-        )
-        let command = MCPServerManager.shared.registrationCommand(includingToken: false)
-        XCTAssertTrue(command.contains("$(cat "), command)
-        XCTAssertTrue(command.contains(store.tokenFileURL.path), command)
-
-        if let token = store.tokenForAuthentication() {
+        try withTokenPresent { store, token in
+            let command = MCPServerManager.shared.registrationCommand(includingToken: false)
+            XCTAssertTrue(command.contains("$(cat "), command)
+            XCTAssertTrue(command.contains(store.tokenFileURL.path), command)
             XCTAssertFalse(command.contains(token), "the token leaked into the safe command form")
         }
     }
 
+    /// The reveal has to actually reveal. Asserting only that `$(cat ` is absent
+    /// was satisfied by the `"<token>"` placeholder the builder falls back to
+    /// when it cannot read a token, so the test passed hardest in precisely the
+    /// case it was meant to catch.
     @MainActor
-    func testTheRevealedCommandFormSubstitutesTheTokenRatherThanReadingTheFile() {
-        let command = MCPServerManager.shared.registrationCommand(includingToken: true)
-        XCTAssertFalse(command.contains("$(cat "), command)
+    func testTheRevealedCommandFormSubstitutesTheRealToken() throws {
+        try withTokenPresent { _, token in
+            let command = MCPServerManager.shared.registrationCommand(includingToken: true)
+            XCTAssertFalse(command.contains("$(cat "), command)
+            XCTAssertTrue(command.contains(token), "the revealed form does not carry the real token")
+            XCTAssertFalse(command.contains("<token>"), command)
+        }
+    }
+
+    /// Runs `body` with a real token on disk, restoring whatever was there
+    /// before. The command builder reads `MCPTokenStore.shared`, which is not
+    /// injectable, so the only way to assert on a real token is to guarantee
+    /// one — and then put the machine back.
+    @MainActor
+    private func withTokenPresent(
+        _ body: (MCPTokenStore, String) throws -> Void
+    ) throws {
+        let store = try XCTUnwrap(
+            MCPTokenStore.shared,
+            "no Application Support means no token file to read the command from"
+        )
+        let preexisting = try? store.existingToken()
+        defer {
+            if preexisting == nil { try? store.deleteToken() }
+        }
+
+        let token = try store.currentToken()
+        XCTAssertFalse(token.isEmpty)
+        try body(store, token)
+    }
+
+    // MARK: - The activity hold shared by the pane and the indicator
+
+    /// The bug this covers: the indicator gated only on `lastActivity != nil`,
+    /// so every navigation-bar remount — a second window, entering or leaving
+    /// split view, coming out of video fullscreen — lit "a client is reading
+    /// Cherry right now" for ten seconds over a timestamp of any age, while the
+    /// pane beside it correctly said the last request was hours ago.
+    func testAStaleTimestampEarnsNoHold() {
+        for age in [MCPServerPresentation.activityWindow, 60, 3600, 86_400] {
+            XCTAssertNil(
+                MCPServerPresentation.remainingActivityHold(
+                    since: now.addingTimeInterval(-age),
+                    now: now
+                ),
+                "a request \(age)s old still held the indicator open"
+            )
+        }
+    }
+
+    func testNoActivityAtAllEarnsNoHold() {
+        XCTAssertNil(MCPServerPresentation.remainingActivityHold(since: nil, now: now))
+    }
+
+    /// A remount mid-window must not restart the clock: the hold ends at the
+    /// right absolute moment, so the remaining interval shrinks with age.
+    func testTheHoldIsWhatIsLeftOfTheWindowNotTheWholeWindow() {
+        let remaining = try? XCTUnwrap(
+            MCPServerPresentation.remainingActivityHold(since: now.addingTimeInterval(-4), now: now)
+        )
+        XCTAssertEqual(remaining ?? 0, MCPServerPresentation.activityWindow - 4, accuracy: 0.001)
+
+        let fresh = MCPServerPresentation.remainingActivityHold(since: now, now: now)
+        XCTAssertEqual(fresh ?? 0, MCPServerPresentation.activityWindow, accuracy: 0.001)
+    }
+
+    /// A clock that stepped backwards must not buy a longer hold than the window.
+    func testAFutureTimestampIsClampedToTheWindow() {
+        let remaining = MCPServerPresentation.remainingActivityHold(
+            since: now.addingTimeInterval(3600),
+            now: now
+        )
+        XCTAssertEqual(remaining ?? 0, MCPServerPresentation.activityWindow, accuracy: 0.001)
+    }
+
+    /// The indicator and the pane must never disagree about whether a client is
+    /// connected, so they read the same answer from the same helper.
+    func testTheHoldAndThePaneAgreeAtEveryAge() {
+        for age in stride(from: 0.0, through: 20.0, by: 0.5) {
+            let lastActivity = now.addingTimeInterval(-age)
+            let held = MCPServerPresentation.remainingActivityHold(since: lastActivity, now: now) != nil
+            let state = presentation(status: .ready(port: 8787), lastActivity: lastActivity)
+            XCTAssertEqual(held, state.tone == .inUse, "disagreed at age \(age)")
+        }
+    }
+
+    // MARK: - VoiceOver
+
+    /// The status block combined its children and then replaced the label with
+    /// title + detail, dropping `remedy` and `technical` in every cannot-run
+    /// state — the only actionable content, and the only place the path the
+    /// user has to repair appears.
+    @MainActor
+    func testTheSpokenStatusKeepsTheRemedyAndThePath() {
+        let reason = MCPTokenStore.Failure
+            .insecurePermissions(
+                URL(fileURLWithPath: "/Users/someone/Library/Application Support/x/MCP/token"),
+                detail: "still 777 after chmod"
+            )
+            .localizedDescription
+        let state = presentation(status: .failed(reason: reason))
+        let spoken = MCPSettingsView.spokenStatus(state)
+
+        XCTAssertTrue(spoken.contains(state.title), spoken)
+        XCTAssertTrue(spoken.contains(state.detail), spoken)
+        XCTAssertTrue(spoken.contains(try! XCTUnwrap(state.remedy)), spoken)
+        XCTAssertTrue(spoken.contains("/MCP/token"), "the path a user must chmod is not spoken")
+    }
+
+    @MainActor
+    func testEveryCannotRunStateSpeaksItsRemedy() {
+        let reasons = [
+            MCPTokenStore.Failure.applicationSupportUnavailable.localizedDescription,
+            "POSIXErrorCode(rawValue: 48): Address already in use",
+            MCPTokenStore.Failure
+                .insecurePermissions(URL(fileURLWithPath: "/tmp/x"), detail: "still 777 after chmod")
+                .localizedDescription,
+            MCPTokenStore.Failure
+                .insecurePermissions(URL(fileURLWithPath: "/tmp/x"), detail: "its mode could not be read")
+                .localizedDescription,
+            "unknown",
+        ]
+        for reason in reasons {
+            let state = presentation(status: .failed(reason: reason))
+            let spoken = MCPSettingsView.spokenStatus(state)
+            XCTAssertTrue(spoken.contains(try! XCTUnwrap(state.remedy)), reason)
+            XCTAssertTrue(spoken.contains(reason), "the raw text is not spoken for: \(reason)")
+        }
     }
 
     // MARK: - Helper
