@@ -279,6 +279,20 @@ struct NavigationBarView: View {
                     .customizeToolbarContextMenu { onSettings?() }
             }
 
+            // Something outside Cherry is reading this browser right now.
+            //
+            // NOT a `ToolbarButtonID`, and not by omission: it is a security
+            // indicator, so it is not in the catalogue, not reorderable, not
+            // hideable, and it carries no customise context menu. An indicator
+            // the user can switch off would let them believe they were being
+            // told when they were not. Do not "complete" the toolbar
+            // customisation work by adding it — see MCPConnectionIndicator.
+            //
+            // Shown in private windows too. The MCP tools cannot see a private
+            // window, but the server can still be reading the user's other
+            // windows, and that is exactly when they need to know.
+            MCPConnectionIndicator { onSettings?() }
+
             // Action buttons
             actionButtons
                 .customizeToolbarContextMenu { onSettings?() }
