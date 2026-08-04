@@ -173,7 +173,7 @@ final class MCPBrowserBridge {
     /// Goes through both gates: only non-private windows, and within them only
     /// non-private tabs. A private tab's id is therefore not a key here, and the
     /// answer is byte-identical to an id that never existed.
-    private func locate(tabID: UUID) -> (window: BrowserViewModel, tab: Tab)? {
+    func locate(tabID: UUID) -> (window: BrowserViewModel, tab: Tab)? {
         for viewModel in visibleViewModels {
             if let tab = visibleTabs(in: viewModel).first(where: { $0.id == tabID }) {
                 return (viewModel, tab)
@@ -207,6 +207,139 @@ final class MCPBrowserBridge {
     private func isSelected(_ tab: Tab, in viewModel: BrowserViewModel) -> Bool {
         let manager = viewModel.tabManager
         return tab.id == manager.selectedTabID || tab.id == manager.secondarySelectedTabID
+    }
+
+    // MARK: - The shared refusal ladder
+
+    /// The tab a page-facing tool call names, or the refusal that says there is
+    /// none. `nil` means "whatever the user is looking at".
+    ///
+    /// Shared by `read_page` and `read_elements` so the `not_found` wording is
+    /// written once — which is not cosmetic. `MCPBrowserBridgeTests` asserts that
+    /// a private tab's id and an id that never existed produce byte-identical
+    /// refusals, and that property only holds while there is one sentence.
+    func resolveTab(tabID: UUID?) -> Result<(window: BrowserViewModel, tab: Tab), MCPUnreadableRefusal> {
+        let located = tabID.map { locate(tabID: $0) } ?? defaultTarget()
+        guard let located else {
+            return .failure(MCPUnreadableRefusal(
+                .notFound,
+                tabID == nil
+                    ? "Cherry has no open window with a tab to read."
+                    : "No open tab has that tab_id. Call list_tabs for the current ids."
+            ))
+        }
+        return .success(located)
+    }
+
+    /// THE refusal ladder: sleeping → internal page → home page → never-rendered
+    /// → PDF, and a live `WKWebView` if every rung passes.
+    ///
+    /// There is one of these and there must stay one of these. `read_page` and
+    /// `read_elements` ask different questions of a page, but "is there a page
+    /// here at all" is the same question, and a second copy of these five rungs
+    /// would drift — the `cherry://` rung in particular, which this codebase has
+    /// been bitten by twice and which is the difference between refusing and
+    /// silently answering about a page the user is not looking at.
+    ///
+    /// `async` because the PDF rung asks the DOCUMENT rather than guessing from
+    /// the URL, and the main actor is released across that call.
+    func readableWebView(
+        for tab: Tab,
+        _ purpose: MCPWebViewPurpose
+    ) async -> Result<WKWebView, MCPUnreadableRefusal> {
+        let url = tab.displayURL.mcpTruncated(to: MCPResultCaps.urlChars)
+
+        // 1. Asleep. `Tab.sleep()` sets `webView = nil`, and `wake()` deliberately
+        //    performs no load — the web view is only recreated when the tab is
+        //    displayed — so waking from here would leave a tab that is awake,
+        //    blank, and no longer eligible for the sleep timer. Refusing is both
+        //    correct and free.
+        if tab.isSleeping {
+            return .failure(MCPUnreadableRefusal(
+                .sleeping,
+                "This tab is asleep and has no live web view. Its URL is \(url) — "
+                    + "open_tab it to load a fresh copy, or ask the user to switch to it."
+            ))
+        }
+
+        // 2. A cherry:// internal page, or the vestigial settings-page flag. THE
+        //    trap in this whole file.
+        //
+        //    `Tab.openInternalPage` deliberately KEEPS `webView` and `url`
+        //    pointing at the site the internal page is covering, so Back restores
+        //    it with history intact. A naive `tab.webView` read here therefore
+        //    hands back a page the user is NOT looking at, labelled with the
+        //    settings page's identity. Cherry's own AI had exactly this bug in
+        //    `toggleAskThisPage`; the guard there —
+        //    `tab.internalPage == nil, !tab.showHomePage, let webView = tab.webView`
+        //    — is reproduced by rungs 2, 3 and 4, in that order.
+        //
+        //    `showSettingsPage` is included because it is a cover-the-web-view flag
+        //    of exactly the same shape, `BrowserView` still has a live render branch
+        //    for it, and `BrowserViewModel.canZoom` checks all three together. It is
+        //    vestigial today; if it is ever set again this rung already holds.
+        if tab.internalPage != nil || tab.showSettingsPage {
+            // The internal page's OWN address, never `displayURL`.
+            //
+            // For `internalPage` those are the same thing. For `showSettingsPage`
+            // they are not: `Tab.displayURL` only returns a `cherry://` address when
+            // `internalPage != nil`, so on a settings-flag tab it returns the
+            // COVERED SITE's URL — which this rung exists to withhold. A test caught
+            // exactly that. Deriving the address from the page rather than the tab
+            // makes the leak unreachable rather than merely absent.
+            let page = tab.internalPage ?? .settings
+            return .failure(MCPUnreadableRefusal(
+                .internalPage,
+                "This tab is showing Cherry's own \(page.displayTitle) page "
+                    + "(\(page.url.absoluteString)), \(purpose.internalPageClause)",
+                urlOverride: page.url.absoluteString
+            ))
+        }
+
+        // 3. The home / new-tab page.
+        if tab.showHomePage {
+            return .failure(MCPUnreadableRefusal(
+                .homePage,
+                "This tab is on Cherry's new-tab page, \(purpose.homePageClause)"
+            ))
+        }
+
+        // 4. Never displayed, so no web view was ever built and nothing loaded.
+        //    A background tab from `open_tab(activate: false)` is in this state
+        //    until the user selects it. The action layer inherits this as a hard
+        //    limit: nothing can act on a tab the user has never had on screen.
+        guard let webView = tab.webView else {
+            return .failure(MCPUnreadableRefusal(
+                .notRendered,
+                "This tab has never been displayed, so Cherry has not created a web view for it and "
+                    + "nothing has loaded. Its URL is \(url) — ask the user to switch to it, "
+                    + "or call open_tab with activate: true."
+            ))
+        }
+
+        // 5. A PDF, asked of the DOCUMENT rather than guessed from the URL.
+        //
+        //    This used to read `BrowserViewModel.isViewingPDF` plus
+        //    `url.pathExtension == "pdf"`, and both were wrong in a way that
+        //    mattered. `isViewingPDF` is per-WINDOW and last-writer-wins across
+        //    split panes, so a PDF in one pane falsely refused the article in the
+        //    other — the same "one tab's state answering for another's" bug as the
+        //    cherry:// trap. And the extension test misses every extensionless PDF
+        //    (`arxiv.org/pdf/2401.00001`), which then degraded to a misleading
+        //    `no_content`.
+        //
+        //    `document.contentType` is the real answer: verified to return
+        //    `application/pdf` for a PDF in WebKit's viewer and `text/html` for a
+        //    page, per tab, regardless of URL. It costs one `evaluateJavaScript`,
+        //    and the main actor is released across it.
+        if await Self.isPDFDocument(webView) {
+            return .failure(MCPUnreadableRefusal(
+                .pdf,
+                "This tab is a PDF (\(url)). \(purpose.pdfClause)"
+            ))
+        }
+
+        return .success(webView)
     }
 
     // MARK: - list_tabs
@@ -489,19 +622,15 @@ final class MCPBrowserBridge {
     /// suspend, and blocking the main thread on a page's JavaScript would hitch
     /// the UI on every call.
     func readPage(tabID: UUID?, offset: Int) async -> MCPReadPageOutcome {
-        let located: (window: BrowserViewModel, tab: Tab)?
-        if let tabID {
-            located = locate(tabID: tabID)
-        } else {
-            located = defaultTarget()
-        }
-
-        guard let (viewModel, tab) = located else {
+        let viewModel: BrowserViewModel
+        let tab: Tab
+        switch resolveTab(tabID: tabID) {
+        case .success(let located):
+            (viewModel, tab) = located
+        case .failure(let refusal):
             return .unreadable(MCPUnreadablePayload(
-                reason: .notFound,
-                detail: tabID == nil
-                    ? "Cherry has no open window with a tab to read."
-                    : "No open tab has that tab_id. Call list_tabs for the current ids.",
+                reason: refusal.reason,
+                detail: refusal.detail,
                 tabID: tabID?.uuidString,
                 windowID: nil,
                 url: nil
@@ -524,111 +653,32 @@ final class MCPBrowserBridge {
             ))
         }
 
-        // 1. Asleep. `Tab.sleep()` sets `webView = nil`, and `wake()` deliberately
-        //    performs no load — the web view is only recreated when the tab is
-        //    displayed — so waking from here would leave a tab that is awake,
-        //    blank, and no longer eligible for the sleep timer. Refusing is both
-        //    correct and free.
-        if tab.isSleeping {
-            return refuse(
-                .sleeping,
-                "This tab is asleep and has no live web view. Its URL is \(identity.url) — "
-                    + "open_tab it to load a fresh copy, or ask the user to switch to it."
-            )
-        }
-
-        // 2. A cherry:// internal page, or the vestigial settings-page flag. THE
-        //    trap in this whole file.
+        // The ladder — sleeping, cherry://, home page, never-rendered, PDF —
+        // lives in `readableWebView(for:_:)` and is shared with `read_elements`.
         //
-        //    `Tab.openInternalPage` deliberately KEEPS `webView` and `url`
-        //    pointing at the site the internal page is covering, so Back restores
-        //    it with history intact. A naive `tab.webView` read here therefore
-        //    returns the text of a page the user is NOT looking at, labelled with
-        //    the settings page's identity. Cherry's own AI had exactly this bug in
-        //    `toggleAskThisPage`; the guard there —
-        //    `tab.internalPage == nil, !tab.showHomePage, let webView = tab.webView`
-        //    — is reproduced by steps 2, 3 and 5 of this ladder, in that order.
-        //
-        //    `showSettingsPage` is included because it is a cover-the-web-view flag
-        //    of exactly the same shape, `BrowserView` still has a live render branch
-        //    for it, and `BrowserViewModel.canZoom` checks all three together. It is
-        //    vestigial today; if it is ever set again this rung already holds.
-        if tab.internalPage != nil || tab.showSettingsPage {
-            // The internal page's OWN address, never `displayURL`.
-            //
-            // For `internalPage` those are the same thing. For `showSettingsPage`
-            // they are not: `Tab.displayURL` only returns a `cherry://` address when
-            // `internalPage != nil`, so on a settings-flag tab it returns the
-            // COVERED SITE's URL — which this rung exists to withhold. A test caught
-            // exactly that. Deriving the address from the page rather than the tab
-            // makes the leak unreachable rather than merely absent.
-            let page = tab.internalPage ?? .settings
+        // Worth knowing why the PDF rung must refuse at all: WebKit's PDF viewer
+        // DOES expose a DOM — the probe measured 839 characters of viewer chrome
+        // in `document.body.textContent`. Extraction happens to return nil for it
+        // on this WebKit build, but that is luck, not a guarantee, and the failure
+        // mode is viewer chrome returned as though it were the paper.
+        let webView: WKWebView
+        switch await readableWebView(for: tab, .readingText) {
+        case .success(let live):
+            webView = live
+        case .failure(let refusal):
             return .unreadable(MCPUnreadablePayload(
-                reason: .internalPage,
-                detail: "This tab is showing Cherry's own \(page.displayTitle) page "
-                    + "(\(page.url.absoluteString)), which has no readable page text. Nothing was read.",
+                reason: refusal.reason,
+                detail: refusal.detail,
                 tabID: identity.tabID,
                 windowID: identity.windowID,
-                url: page.url.absoluteString
+                url: refusal.urlOverride ?? identity.url
             ))
         }
 
-        // 3. The home / new-tab page.
-        if tab.showHomePage {
-            return refuse(
-                .homePage,
-                "This tab is on Cherry's new-tab page, which has no article text. "
-                    + "Use open_tab to load a page, then read it."
-            )
-        }
-
-        // 4. Never displayed, so no web view was ever built and nothing loaded.
-        //    A background tab from `open_tab(activate: false)` is in this state
-        //    until the user selects it.
-        guard let webView = tab.webView else {
-            return refuse(
-                .notRendered,
-                "This tab has never been displayed, so Cherry has not created a web view for it and "
-                    + "nothing has loaded. Its URL is \(identity.url) — ask the user to switch to it, "
-                    + "or call open_tab with activate: true."
-            )
-        }
-
-        // 5. A PDF, asked of the DOCUMENT rather than guessed from the URL.
-        //
-        //    This used to read `BrowserViewModel.isViewingPDF` plus
-        //    `url.pathExtension == "pdf"`, and both were wrong in a way that
-        //    mattered. `isViewingPDF` is per-WINDOW and last-writer-wins across
-        //    split panes, so a PDF in one pane falsely refused the article in the
-        //    other — the same "one tab's state answering for another's" bug as the
-        //    cherry:// trap. And the extension test misses every extensionless PDF
-        //    (`arxiv.org/pdf/2401.00001`), which then degraded to a misleading
-        //    `no_content`. It is also exactly what `isViewingPDF` already computes
-        //    (`WebViewWrapper`'s `didFinish` sets it from `pathExtension`), so the
-        //    window flag never added anything the URL check did not.
-        //
-        //    `document.contentType` is the real answer: verified to return
-        //    `application/pdf` for a PDF in WebKit's viewer and `text/html` for a
-        //    page, per tab, regardless of URL. It costs one `evaluateJavaScript`,
-        //    and the main actor is released across it.
-        //
-        //    Worth knowing why this must refuse at all: WebKit's PDF viewer DOES
-        //    expose a DOM — the probe measured 839 characters of viewer chrome in
-        //    `document.body.textContent`. Extraction happens to return nil for it on
-        //    this WebKit build, but that is luck, not a guarantee, and the failure
-        //    mode is viewer chrome returned as though it were the paper.
-        if await Self.isPDFDocument(webView) {
-            return refuse(
-                .pdf,
-                "This tab is a PDF (\(identity.url)). Cherry's text extraction does not apply to "
-                    + "WebKit's PDF viewer, so nothing was read."
-            )
-        }
-
-        // 6. There is a live page. Read it — including while it is still loading:
-        //    `PageAIExtractor` has a layout-independent last resort, so a mid-load
-        //    page usually yields something, and blocking until load would risk the
-        //    client's 60-second first-byte timer.
+        // There is a live page. Read it — including while it is still loading:
+        // `PageAIExtractor` has a layout-independent last resort, so a mid-load
+        // page usually yields something, and blocking until load would risk the
+        // client's 60-second first-byte timer.
         let loading = tab.isLoading
         guard let content = await PageAIExtractor.extract(from: webView) else {
             return refuse(

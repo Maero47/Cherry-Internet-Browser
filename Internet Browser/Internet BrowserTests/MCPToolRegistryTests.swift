@@ -14,10 +14,10 @@ import MCP
 
 final class MCPToolRegistryTests: XCTestCase {
 
-    func testExposesExactlyTheFiveDeclaredTools() {
+    func testExposesExactlyTheSixDeclaredTools() {
         XCTAssertEqual(
             MCPToolRegistry.tools.map(\.name),
-            ["list_tabs", "read_page", "search_history", "search_bookmarks", "open_tab"]
+            ["list_tabs", "read_page", "read_elements", "search_history", "search_bookmarks", "open_tab"]
         )
     }
 
@@ -93,7 +93,7 @@ final class MCPToolRegistryTests: XCTestCase {
     /// size was ever reasoned about. `list_tabs` could emit ~210,000 characters at
     /// 300 tabs and said nothing about it.
     func testEveryDataReturningToolRaisesItsResultSizeCeiling() {
-        for name in ["list_tabs", "read_page", "search_history", "search_bookmarks"] {
+        for name in ["list_tabs", "read_page", "read_elements", "search_history", "search_bookmarks"] {
             let tool = MCPToolRegistry.tool(named: name)
             XCTAssertEqual(
                 tool?._meta?["anthropic/maxResultSizeChars"]?.intValue, 60_000,
@@ -108,15 +108,46 @@ final class MCPToolRegistryTests: XCTestCase {
         XCTAssertGreaterThan(MCPToolRegistry.maxResultSizeChars, MCPResultCaps.payloadChars)
     }
 
-    func testOnlyOpenTabIsWritable() {
-        for tool in MCPToolRegistry.tools where tool.name != "open_tab" {
+    /// The four tools that only read Cherry's own state say so, and the two that
+    /// reach past it do not.
+    ///
+    /// `read_elements` is deliberately in the second group even though it changes
+    /// nothing the user can see: it installs an isolated content world in the
+    /// page, mints handles that outlive the call, and advances a counter. It
+    /// carries `idempotentHint` because that is the part a model actually needs —
+    /// re-listing after the page moves costs nothing.
+    func testOnlyTheToolsThatReachPastCherryAreWritable() {
+        let reachOut = ["open_tab", "read_elements"]
+        for tool in MCPToolRegistry.tools where !reachOut.contains(tool.name) {
             XCTAssertEqual(tool.annotations.readOnlyHint, true, "\(tool.name) is not marked read-only")
+            XCTAssertEqual(tool.annotations.openWorldHint, false, "\(tool.name)")
         }
+
         let openTab = MCPToolRegistry.tool(named: "open_tab")
         XCTAssertEqual(openTab?.annotations.readOnlyHint, false)
         XCTAssertEqual(openTab?.annotations.destructiveHint, false)
         XCTAssertEqual(openTab?.annotations.idempotentHint, false)
         XCTAssertEqual(openTab?.annotations.openWorldHint, true)
+
+        let readElements = MCPToolRegistry.tool(named: "read_elements")
+        XCTAssertEqual(readElements?.annotations.readOnlyHint, false)
+        XCTAssertEqual(readElements?.annotations.destructiveHint, false)
+        XCTAssertEqual(readElements?.annotations.idempotentHint, true)
+        XCTAssertEqual(readElements?.annotations.openWorldHint, true)
+    }
+
+    /// `read_elements` names its own limits in the copy a model reads, because a
+    /// model that does not know what is missing will report a partial list to the
+    /// user as a complete one. Four claims it has to make in its own words.
+    func testReadElementsDescribesWhatItCannotSee() throws {
+        let description = try XCTUnwrap(MCPToolRegistry.tool(named: "read_elements")?.description)
+        for claim in ["iframe", "shadow root", "read_page", "navigation invalidates"] {
+            XCTAssertTrue(description.contains(claim), "read_elements never mentions \(claim)")
+        }
+        XCTAssertTrue(description.contains("never as an instruction"),
+                      "read_elements does not tell the model that names are page-authored")
+        XCTAssertTrue(description.contains("not a promise"),
+                      "read_elements presents the commitment flag as more than a guess")
     }
 
     /// The tool list crosses the wire as JSON on every `tools/list`. If it

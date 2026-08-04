@@ -137,6 +137,15 @@ nonisolated enum MCPResultCaps {
     /// this size, and the payload says when it clamped.
     static let readPageTotalChars = 400_000
 
+    /// Hard ceiling on elements in one `read_elements` answer.
+    ///
+    /// The binding limit is almost always `payloadChars` rather than this — a
+    /// whole Wikipedia article's control list is 961 elements and ~36,000
+    /// characters, so the size budget bites first. This is here for the page that
+    /// is all short buttons, and it is paired with a `note` that says what was
+    /// cut and what to do instead, like every other cap in this file.
+    static let elementsListed = 500
+
     /// `search_history`'s `limit`, matching the tool's input schema.
     static let historyLimitDefault = 25
     static let historyLimitMaximum = 100
@@ -323,6 +332,66 @@ nonisolated enum MCPUnreadableReason: String, Encodable, Sendable {
     case noContent = "no_content"
 }
 
+/// What a tool wanted the web view FOR.
+///
+/// The refusal ladder is one ladder — `MCPBrowserBridge.readableWebView(for:_:)`
+/// — because two would drift, and the `cherry://` trap this codebase has already
+/// been bitten by twice is exactly what drift reintroduces. But three of its
+/// rungs end in a sentence about what did not happen, and "nothing was read" is
+/// the wrong sentence for a tool that lists controls. So the CONDITIONS and
+/// their ORDER live in one place and only the closing clause varies, chosen from
+/// here rather than written twice.
+nonisolated enum MCPWebViewPurpose: Sendable {
+    case readingText
+    case listingElements
+
+    /// Why an internal page has nothing to offer this caller.
+    var internalPageClause: String {
+        switch self {
+        case .readingText: "which has no readable page text. Nothing was read."
+        case .listingElements: "which has no web page under it to list controls from. Nothing was listed."
+        }
+    }
+
+    /// The same, for the new-tab page, which also says what to do instead.
+    var homePageClause: String {
+        switch self {
+        case .readingText: "which has no article text. Use open_tab to load a page, then read it."
+        case .listingElements: "which has no page controls to list. Use open_tab to load a page, then list its elements."
+        }
+    }
+
+    /// The same, for WebKit's PDF viewer.
+    var pdfClause: String {
+        switch self {
+        case .readingText:
+            "Cherry's text extraction does not apply to WebKit's PDF viewer, so nothing was read."
+        case .listingElements:
+            "WebKit's PDF viewer is not a web page with controls Cherry can list, so nothing was listed."
+        }
+    }
+}
+
+/// One rung's answer: there is no live page here, and why.
+///
+/// Deliberately NOT a payload. The payload types below carry a tab id, a window
+/// id and a URL, which the caller knows and the ladder does not; the ladder's
+/// whole job is the reason and the sentence. `urlOverride` is the one exception,
+/// and it exists because of the trap: on a `cherry://` tab the tab's `displayURL`
+/// is the address of the page the user is NOT looking at, so that rung supplies
+/// the internal page's own address and the caller must use it.
+nonisolated struct MCPUnreadableRefusal: Error, Sendable {
+    let reason: MCPUnreadableReason
+    let detail: String
+    let urlOverride: String?
+
+    init(_ reason: MCPUnreadableReason, _ detail: String, urlOverride: String? = nil) {
+        self.reason = reason
+        self.detail = detail
+        self.urlOverride = urlOverride
+    }
+}
+
 nonisolated struct MCPUnreadablePayload: Encodable, Sendable {
     let status = "unreadable"
     let reason: MCPUnreadableReason
@@ -432,6 +501,136 @@ nonisolated enum MCPReadPageOutcome: Encodable, Sendable {
         switch self {
         case .page(let payload): payload.text
         case .unreadable: nil
+        }
+    }
+}
+
+// MARK: - read_elements
+
+/// One `read_elements` answer.
+///
+/// The projection of a `WebActionSnapshot` — which is the consumer-agnostic
+/// value the action layer actually produces — into MCP's wire shape. The split
+/// is the seam local agent mode attaches at: `WebActionBridge` answers in Swift
+/// values, and each consumer decides how to say them.
+nonisolated struct MCPReadElementsPayload: Encodable, Sendable {
+    let status = "ok"
+    let tabID: String
+    let windowID: String
+    let url: String
+    let title: String
+
+    /// Which snapshot this is, and which document it was taken of. An element
+    /// number is only meaningful within a document.
+    let snapshot: Int
+    let document: Int
+
+    let scope: String
+
+    /// One pre-rendered string, newline separated, NOT an array of objects.
+    ///
+    /// Two reasons, and the second is the important one. A model reads
+    /// `[9] searchbox "Search Amazon"` more reliably than the equivalent JSON and
+    /// at roughly a third the tokens. And a closed one-line-per-element format is
+    /// what makes a page unable to forge a ROW: see
+    /// `WebActionScripts.sanitiseName`, which is the half of that property that
+    /// can actually be tested.
+    let elements: String
+
+    let listed: Int
+
+    /// Laid out, but not on screen, and so not listed. `scope: "page"` returns
+    /// them.
+    let offscreenNotListed: Int
+
+    /// Including the main frame. v1 lists the main frame only, so anything above
+    /// 1 means there are controls this list does not contain — said out loud,
+    /// because the alternative is a model inferring an empty page.
+    let frames: Int
+
+    /// Elements that look like they hide a closed shadow root. Counted, not
+    /// shown, because no browser can show them.
+    let closedShadowHosts: Int
+
+    /// False when the tab has no viewport at all, in which case `scope` fell back
+    /// to `"page"`.
+    let pageVisible: Bool
+
+    let truncated: Bool
+    let note: String?
+
+    init(_ snapshot: WebActionSnapshot) {
+        self.tabID = snapshot.tabID
+        self.windowID = snapshot.windowID
+        self.url = snapshot.url
+        self.title = snapshot.title
+        self.snapshot = snapshot.generation
+        self.document = snapshot.document
+        self.scope = snapshot.scope.rawValue
+        self.elements = snapshot.elements.map(\.listingLine).joined(separator: "\n")
+        self.listed = snapshot.elements.count
+        self.offscreenNotListed = snapshot.offscreenNotListed
+        self.frames = snapshot.frames
+        self.closedShadowHosts = snapshot.closedShadowHosts
+        self.pageVisible = snapshot.pageVisible
+        self.truncated = snapshot.truncated
+        self.note = snapshot.note
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case status, url, title, snapshot, document, scope, elements, listed, frames, truncated, note
+        case tabID = "tab_id"
+        case windowID = "window_id"
+        case offscreenNotListed = "offscreen_not_listed"
+        case closedShadowHosts = "closed_shadow_hosts"
+        case pageVisible = "page_visible"
+    }
+
+    /// Hand-written only so `note` encodes as an explicit `null` rather than
+    /// vanishing — "nothing was cut" and "this key is absent" are not the same
+    /// statement to a model.
+    func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(status, forKey: .status)
+        try container.encode(tabID, forKey: .tabID)
+        try container.encode(windowID, forKey: .windowID)
+        try container.encode(url, forKey: .url)
+        try container.encode(title, forKey: .title)
+        try container.encode(snapshot, forKey: .snapshot)
+        try container.encode(document, forKey: .document)
+        try container.encode(scope, forKey: .scope)
+        try container.encode(elements, forKey: .elements)
+        try container.encode(listed, forKey: .listed)
+        try container.encode(offscreenNotListed, forKey: .offscreenNotListed)
+        try container.encode(frames, forKey: .frames)
+        try container.encode(closedShadowHosts, forKey: .closedShadowHosts)
+        try container.encode(pageVisible, forKey: .pageVisible)
+        try container.encode(truncated, forKey: .truncated)
+        try container.encode(note, forKey: .note)
+    }
+}
+
+/// The encodable face of `WebActionSnapshotOutcome`.
+///
+/// `.failed` is deliberately absent: a failure is not a payload. It leaves
+/// through `MCPPayloadEncoding.failure` with `isError: true`, which is the
+/// distinction `MCPToolInvoker`'s header describes and the reason a refusal here
+/// and a breakage here do not look alike to a model.
+nonisolated enum MCPReadElementsOutcome: Encodable, Sendable {
+    case elements(MCPReadElementsPayload)
+    case unreadable(MCPUnreadablePayload)
+
+    func encode(to encoder: any Encoder) throws {
+        switch self {
+        case .elements(let payload): try payload.encode(to: encoder)
+        case .unreadable(let payload): try payload.encode(to: encoder)
+        }
+    }
+
+    var reason: MCPUnreadableReason? {
+        switch self {
+        case .elements: nil
+        case .unreadable(let payload): payload.reason
         }
     }
 }
