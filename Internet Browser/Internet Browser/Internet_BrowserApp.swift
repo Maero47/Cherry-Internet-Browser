@@ -361,6 +361,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             await ExtensionManager.shared.reloadPersistedExtensions()
         }
 
+        // The MCP server, if the user has switched it on. `startIfEnabled`
+        // checks the persisted flag, which defaults to false — a fresh install
+        // opens no socket.
+        //
+        // `observeWindowLifecycle` is installed either way and for the app's
+        // whole life: it is what closes the listener when Cherry loses its last
+        // window (which does NOT quit the app) and opens it again when a window
+        // comes back. A suspended listener has to be able to hear that, so the
+        // observation cannot be owned by the running listener.
+        MCPServerManager.shared.observeWindowLifecycle()
+        MCPServerManager.shared.startIfEnabled()
+
         for window in NSApplication.shared.windows {
             configureWindow(window)
         }
@@ -403,6 +415,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        // Belt and braces — process exit closes the socket anyway. Doing it
+        // here means the listener's shutdown path is exercised in normal use
+        // rather than only when something has gone wrong.
+        MCPServerManager.shared.stop()
+
         // Save session for all non-private windows
         for (_, vm) in BrowserViewModel.windowViewModels {
             guard !vm.isPrivateMode else { continue }

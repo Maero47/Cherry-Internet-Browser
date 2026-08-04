@@ -11,7 +11,7 @@ import Observation
 final class BookmarkRepository {
     static let shared = BookmarkRepository()
 
-    private let persistence = PersistenceController.shared
+    private let persistence: PersistenceController
     private(set) var bookmarks: [Bookmark] = []
     private(set) var bookmarkBarItems: [Bookmark] = []
     private(set) var folders: [String] = []
@@ -25,7 +25,12 @@ final class BookmarkRepository {
     /// kicks one more so the newly added bookmarks aren't missed.
     private var needsAnotherFaviconSweep = false
 
-    init() {
+    /// - Parameter persistence: the store to read and write. The app always uses
+    ///   the shared one; the parameter exists so a test can point a repository at
+    ///   `PersistenceController(inMemory: true)` and populate it, rather than
+    ///   asserting against whatever bookmarks the developer happens to have saved.
+    init(persistence: PersistenceController = .shared) {
+        self.persistence = persistence
         fetchBookmarks()
         fetchMissingFavicons()
     }

@@ -180,12 +180,17 @@ final class TabManager {
         }
     }
 
-    /// `TabManager` isn't formally `@MainActor`-isolated but is only ever used
-    /// from the main thread (SwiftUI/AppKit UI code) — this asserts that fact
-    /// so it can call into the `@MainActor`-isolated `ExtensionManager`. Skips
-    /// the notification entirely for private tabs: extensions have no access
-    /// to private browsing in v1a, so they must never learn a private tab
-    /// even exists via open/close/activate events.
+    /// `TabManager` IS `@MainActor`-isolated — this target builds with
+    /// `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor`, so an unannotated type here is
+    /// main-actor-isolated and can call `ExtensionManager` directly. The
+    /// `assumeIsolated` below is redundant rather than load-bearing, and is left
+    /// alone. (The comment that used to sit here claimed the reverse; the language
+    /// mode is Swift 5, so an isolation violation would only WARN, which is why a
+    /// wrong comment here was worth correcting.)
+    ///
+    /// What this method is actually for: skipping the notification entirely for
+    /// private tabs. Extensions have no access to private browsing in v1a, so they
+    /// must never learn a private tab even exists via open/close/activate events.
     private func notifyExtensionManager(for tab: Tab, _ body: @MainActor () -> Void) {
         guard !tab.isPrivate else { return }
         MainActor.assumeIsolated(body)

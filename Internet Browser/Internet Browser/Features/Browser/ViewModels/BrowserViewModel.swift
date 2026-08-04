@@ -157,7 +157,15 @@ final class BrowserViewModel {
         weak var value: BrowserViewModel?
         init(_ value: BrowserViewModel) { self.value = value }
     }
-    private let instanceID = UUID()
+    /// This window's identity, stable for as long as the window exists, unique
+    /// across windows, and already the key of `viewModelRefs` — so id → view
+    /// model is a dictionary lookup with no extra bookkeeping.
+    ///
+    /// Readable (it was `private let instanceID`) because the MCP bridge hands it
+    /// to an external client as `window_id` and has to resolve one back.
+    /// Deliberately not `NSWindow.windowNumber`, which AppKit recycles, nor an
+    /// index into anything, which reorders.
+    let windowID = UUID()
     private static var viewModelRefs: [UUID: WeakViewModelRef] = [:]
     static var windowViewModels: [UUID: BrowserViewModel] {
         viewModelRefs.compactMapValues { $0.value }
@@ -170,11 +178,11 @@ final class BrowserViewModel {
         if !withDefaultTab {
             tabManager = TabManager(createDefaultTab: false)
         }
-        BrowserViewModel.viewModelRefs[instanceID] = WeakViewModelRef(self)
+        BrowserViewModel.viewModelRefs[windowID] = WeakViewModelRef(self)
     }
 
     deinit {
-        BrowserViewModel.viewModelRefs.removeValue(forKey: instanceID)
+        BrowserViewModel.viewModelRefs.removeValue(forKey: windowID)
     }
 
     var currentTab: Tab? {

@@ -1,0 +1,285 @@
+//
+//  MCPToolInvoker.swift
+//  Cherry Browser
+//
+//  `tools/call` → the browser → JSON. The whole attachment surface between the
+//  MCP transport and Cherry.
+//
+//  `MCPRequestServer` takes one closure —
+//  `@Sendable (CallTool.Parameters) async -> CallTool.Result` — and this file is
+//  what fills it. Nothing in the transport, the listener, the bearer validator or
+//  the token store knows these tools exist.
+//
+//  ## Isolation
+//
+//  `nonisolated`, because that is where it runs: the SDK registers handlers as
+//  `@Sendable` closures on its own executor, off the main actor. Argument parsing
+//  and JSON encoding happen here, off-main. There is exactly ONE hop per call,
+//  `hop(_:)`, and only a `Sendable` payload comes back through it — no `Tab`, no
+//  `BrowserViewModel`, no `WKWebView`, no `HistoryItem`.
+//
+//  ## Refusal vs. failure
+//
+//  Two different answers, deliberately shaped differently:
+//
+//  * A **refusal** is a successful call whose answer is "there is nothing here":
+//    a sleeping tab, a `cherry://` page, a scheme Cherry will not open, the rate
+//    limit. `isError: false`, with a machine-readable `status`/`reason` so the
+//    model can pick a different move instead of retrying the same one.
+//  * A **failure** is a call that was wrong: an unknown tool, a missing required
+//    argument, a `tab_id` that is not a UUID. `isError: true`, so the model is
+//    told plainly rather than handed an empty success it will paper over.
+//
+
+import Foundation
+import MCP
+
+// MARK: - Argument errors
+
+/// A `tools/call` Cherry cannot act on. Its message goes to the model verbatim,
+/// so it says what was wrong AND what to send instead.
+nonisolated struct MCPArgumentError: Error {
+    let message: String
+}
+
+// MARK: - Invoker
+
+nonisolated struct MCPToolInvoker: Sendable {
+
+    /// How to reach the bridge, on the main actor.
+    ///
+    /// Injected so tests can drive a bridge built over a known set of windows and
+    /// repositories rather than whatever the running app has open.
+    private let resolveBridge: @MainActor @Sendable () -> MCPBrowserBridge
+
+    init(bridge: @escaping @MainActor @Sendable () -> MCPBrowserBridge = { MCPBrowserBridge.shared }) {
+        self.resolveBridge = bridge
+    }
+
+    /// The closure `MCPServerManager` installs as `MCPRequestServer.ToolInvoker`.
+    var invoker: MCPRequestServer.ToolInvoker {
+        { [self] params in await call(params) }
+    }
+
+    // MARK: The one hop
+
+    /// Runs `body` on the main actor and returns its `Sendable` result.
+    ///
+    /// This is the only place in the MCP feature that crosses onto the main
+    /// actor. `body` is `async` so `read_page` can await `evaluateJavaScript`
+    /// inside it and release the main actor while a page's JavaScript runs;
+    /// synchronous tool bodies are accepted unchanged.
+    @MainActor
+    private func hop<Payload: Sendable>(
+        _ body: @MainActor (MCPBrowserBridge) async -> Payload
+    ) async -> Payload {
+        await body(resolveBridge())
+    }
+
+    // MARK: Dispatch
+
+    func call(_ params: CallTool.Parameters) async -> CallTool.Result {
+        guard MCPToolRegistry.tool(named: params.name) != nil else {
+            return MCPPayloadEncoding.failure(
+                "Unknown tool \"\(params.name)\". Cherry exposes: "
+                    + MCPToolRegistry.tools.map(\.name).joined(separator: ", ")
+                    + "."
+            )
+        }
+
+        do {
+            let arguments = MCPArguments(params.arguments)
+            switch params.name {
+            case MCPToolRegistry.listTabs.name:
+                return MCPPayloadEncoding.result(try await listTabs(arguments))
+            case MCPToolRegistry.readPage.name:
+                return MCPPayloadEncoding.result(try await readPage(arguments))
+            case MCPToolRegistry.searchHistory.name:
+                return MCPPayloadEncoding.result(try await searchHistory(arguments))
+            case MCPToolRegistry.searchBookmarks.name:
+                return MCPPayloadEncoding.result(try await searchBookmarks(arguments))
+            case MCPToolRegistry.openTab.name:
+                return MCPPayloadEncoding.result(try await openTab(arguments))
+            default:
+                // Unreachable: the registry lookup above already accepted the
+                // name, so this only fires if a tool is declared and never wired,
+                // which is a Cherry bug and must not read as an empty answer.
+                return MCPPayloadEncoding.failure(
+                    "\"\(params.name)\" is declared but not wired up in this build of Cherry. "
+                        + "Do not retry, and do not guess what it would have returned."
+                )
+            }
+        } catch let error as MCPArgumentError {
+            return MCPPayloadEncoding.failure(error.message)
+        } catch {
+            return MCPPayloadEncoding.failure(
+                "Cherry could not complete \(params.name): \(error.localizedDescription)"
+            )
+        }
+    }
+
+    // MARK: - Per-tool argument handling
+
+    private func listTabs(_ arguments: MCPArguments) async throws -> MCPListTabsPayload {
+        let windowID = try arguments.optionalUUID("window_id")
+        return await hop { $0.listTabs(windowID: windowID) }
+    }
+
+    private func readPage(_ arguments: MCPArguments) async throws -> MCPReadPageOutcome {
+        // A malformed `tab_id` is an error, never a silent fall-through to the
+        // focused tab: a model that mistyped an id must not be handed a
+        // different page than the one it asked for and told nothing.
+        let tabID = try arguments.optionalUUID("tab_id")
+        let offset = try arguments.optionalInt("offset") ?? 0
+        guard offset >= 0 else {
+            throw MCPArgumentError(message: "offset must be 0 or greater; got \(offset).")
+        }
+        return await hop { await $0.readPage(tabID: tabID, offset: offset) }
+    }
+
+    private func searchHistory(_ arguments: MCPArguments) async throws -> MCPSearchHistoryPayload {
+        let query = try arguments.requiredString("query")
+        guard !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw MCPArgumentError(
+                message: "query must not be empty. search_history is a substring match, "
+                    + "so pass something to match; it will not list the user's whole history."
+            )
+        }
+        let limit = try arguments.optionalInt("limit") ?? MCPResultCaps.historyLimitDefault
+        let sinceDays = try arguments.optionalInt("since_days")
+        if let sinceDays, sinceDays < 1 {
+            throw MCPArgumentError(message: "since_days must be 1 or greater; got \(sinceDays).")
+        }
+        return await hop { $0.searchHistory(query: query, limit: limit, sinceDays: sinceDays) }
+    }
+
+    private func searchBookmarks(_ arguments: MCPArguments) async throws -> MCPSearchBookmarksPayload {
+        // Empty IS meaningful here, and the schema says so: it lists everything,
+        // still subject to `limit`. Bookmarks are a set the user curated, so a
+        // full listing is a reasonable ask in a way a full history dump is not.
+        let query = try arguments.requiredString("query")
+        let folder = try arguments.optionalString("folder")
+        let limit = try arguments.optionalInt("limit") ?? MCPResultCaps.bookmarkLimitDefault
+        return await hop { $0.searchBookmarks(query: query, folder: folder, limit: limit) }
+    }
+
+    private func openTab(_ arguments: MCPArguments) async throws -> MCPOpenTabOutcome {
+        let raw = try arguments.requiredString("url")
+        guard let url = URL(string: raw.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+            throw MCPArgumentError(message: "\"\(raw)\" is not a URL Cherry can parse.")
+        }
+        let windowID = try arguments.optionalUUID("window_id")
+        let activate = try arguments.optionalBool("activate") ?? false
+        return await hop { $0.openTab(url: url, windowID: windowID, activate: activate) }
+    }
+}
+
+// MARK: - Arguments
+
+/// Reads `tools/call` arguments out of the SDK's `Value` tree.
+///
+/// Lenient about how a client encodes a scalar — a number may arrive as
+/// `.int`, `.double` or `.string` depending on the client, and refusing a
+/// perfectly clear `"limit": "50"` would be pedantry — but strict about a value
+/// it genuinely cannot use, which throws rather than defaulting silently.
+nonisolated struct MCPArguments {
+
+    private let values: [String: Value]
+
+    init(_ values: [String: Value]?) {
+        self.values = values ?? [:]
+    }
+
+    /// Present, non-null values only. A client sending `"folder": null` means
+    /// "no folder", which is the same as omitting it.
+    private func present(_ key: String) -> Value? {
+        guard let value = values[key], !value.isNull else { return nil }
+        return value
+    }
+
+    func optionalString(_ key: String) throws -> String? {
+        guard let value = present(key) else { return nil }
+        guard let string = value.stringValue else {
+            throw MCPArgumentError(message: "\(key) must be a string.")
+        }
+        return string
+    }
+
+    func requiredString(_ key: String) throws -> String {
+        guard let string = try optionalString(key) else {
+            throw MCPArgumentError(message: "\(key) is required.")
+        }
+        return string
+    }
+
+    /// A whole number, or a thrown error. Never a crash.
+    ///
+    /// `Int(someDouble)` TRAPS for anything outside `Int`'s range, and every
+    /// out-of-range JSON number reaches this: `1e300`, `1e999` (which decodes to
+    /// infinity, and `infinity.rounded() == infinity`, so a
+    /// `double == double.rounded()` guard waves it through), `-1e300`, `nan`, and
+    /// a bare integer literal past `Int64.max` — the SDK's `Value` decoder tries
+    /// `Int` first and falls back to `Double`, so an over-large integer arrives
+    /// here as `.double` too. The SDK performs no `inputSchema` validation, so the
+    /// tools' declared `"maximum"` never runs and cannot be relied on.
+    ///
+    /// One request with `{"limit": 1e300}` therefore took down the whole browser —
+    /// every window and every unsaved tab — from any client holding the token.
+    /// `Int(exactly:)` is the fix: it returns nil instead of trapping, and this
+    /// parser's whole contract is that it throws rather than defaulting silently.
+    func optionalInt(_ key: String) throws -> Int? {
+        guard let value = present(key) else { return nil }
+        switch value {
+        case .int(let int):
+            return int
+        case .double(let double):
+            // `Int(exactly:)` rejects infinity, NaN, everything out of range, AND
+            // a fractional value — all four throw below. A `limit` of 2.5 is not a
+            // number of results, so rounding it would be guessing.
+            guard let int = Int(exactly: double) else { break }
+            return int
+        case .string(let string):
+            // `Int(_: String)` already returns nil on overflow rather than trapping.
+            guard let int = Int(string) else { break }
+            return int
+        default:
+            break
+        }
+        throw MCPArgumentError(
+            message: "\(key) must be a whole number Cherry can use. "
+                + "Values outside the range of a 64-bit integer, and infinity, are refused."
+        )
+    }
+
+    func optionalBool(_ key: String) throws -> Bool? {
+        guard let value = present(key) else { return nil }
+        switch value {
+        case .bool(let bool):
+            return bool
+        case .string("true"):
+            return true
+        case .string("false"):
+            return false
+        default:
+            throw MCPArgumentError(message: "\(key) must be true or false.")
+        }
+    }
+
+    /// A UUID a previous call handed out.
+    ///
+    /// Throws for a present-but-unparseable id rather than treating it as absent.
+    /// That distinction is the whole reason this is not `UUID(uuidString:)` at the
+    /// call site: `read_page` with no `tab_id` reads the tab the user is looking
+    /// at, so silently swallowing a typo'd id would return a DIFFERENT page than
+    /// the one asked for, with no indication it had substituted.
+    func optionalUUID(_ key: String) throws -> UUID? {
+        guard let string = try optionalString(key) else { return nil }
+        guard let uuid = UUID(uuidString: string.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+            throw MCPArgumentError(
+                message: "\(key) \"\(string)\" is not an id Cherry issued. "
+                    + "Use an id from a previous list_tabs call."
+            )
+        }
+        return uuid
+    }
+}

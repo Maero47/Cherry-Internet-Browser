@@ -12,6 +12,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     case focus = "Focus"
     case extensions = "Extensions"
     case importData = "Import"
+    case connections = "Connections"
     case about = "About"
 
     var id: String { rawValue }
@@ -24,6 +25,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         case .focus: "brain.head.profile"
         case .extensions: "puzzlepiece.extension"
         case .importData: "square.and.arrow.down"
+        case .connections: "point.3.connected.trianglepath.dotted"
         case .about: "info.circle"
         }
     }
@@ -36,13 +38,59 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         case .focus: "Block distracting sites while you work"
         case .extensions: "Manage installed WebExtensions"
         case .importData: "Bring bookmarks and history from another browser"
+        case .connections: "Let Claude Code use this browser over MCP"
         case .about: "About Cherry"
         }
+    }
+
+}
+
+/// Asks Settings to open on a particular section.
+///
+/// Set by the MCP connection indicator: when the toolbar says an outside
+/// program is reading this browser, the switch that stops it has to be one
+/// click away, not four.
+///
+/// ## Why a serial and not just a stored section
+///
+/// The first version stored a `pendingSelection` consumed in `.onAppear`, which
+/// broke in the case that matters most. `Tab.openInternalPage` only re-sets
+/// `internalPage = .settings`, so when the tab is ALREADY showing Settings the
+/// page is not recreated and `onAppear` never fires. The click did nothing —
+/// and worse, the request stayed set and hijacked the next Settings open onto
+/// Connections when the user had asked for General.
+///
+/// `@Observable` plus a monotonic serial fixes both halves: an already-open
+/// pane reacts to the serial changing, a not-yet-created one picks the request
+/// up on appear, and whichever gets there first clears it so nothing lingers.
+@Observable
+final class SettingsNavigator {
+
+    static let shared = SettingsNavigator()
+
+    private(set) var requestedSection: SettingsSection?
+
+    /// Bumped on every request, so asking twice for the same section is still
+    /// two events. Without it, clicking the indicator while Settings already
+    /// shows Connections would publish no change at all.
+    private(set) var requestSerial = 0
+
+    func request(_ section: SettingsSection) {
+        requestedSection = section
+        requestSerial += 1
+    }
+
+    /// Takes the outstanding request, if there is one. Clearing on take is what
+    /// stops a stale request from redirecting an unrelated Settings open later.
+    func takeRequestedSection() -> SettingsSection? {
+        defer { requestedSection = nil }
+        return requestedSection
     }
 }
 
 struct SettingsPageView: View {
     @State private var selectedSection: SettingsSection = .general
+    @State private var navigator = SettingsNavigator.shared
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
@@ -70,6 +118,17 @@ struct SettingsPageView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(nsColor: .windowBackgroundColor))
+        // Both hooks are needed and neither is redundant: `onAppear` catches a
+        // request made before this page existed (the usual case — clicking the
+        // indicator is what opens Settings), `onChange` catches one made while
+        // it is already on screen, where nothing is recreated.
+        .onAppear { applyRequestedSection() }
+        .onChange(of: navigator.requestSerial) { _, _ in applyRequestedSection() }
+    }
+
+    private func applyRequestedSection() {
+        guard let section = navigator.takeRequestedSection() else { return }
+        selectedSection = section
     }
 
     @ViewBuilder
@@ -151,6 +210,8 @@ struct SettingsPageView: View {
                         ExtensionsSettingsView()
                     case .importData:
                         ImportSettingsView()
+                    case .connections:
+                        MCPSettingsView()
                     case .passwords, .about:
                         EmptyView() // handled above
                     }

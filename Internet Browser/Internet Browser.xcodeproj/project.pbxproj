@@ -127,6 +127,7 @@
 			packageProductDependencies = (
 				CE771E5DF0A12D59802CA69D /* MLXLLM */,
 				31480F65863402CBE97363D8 /* MLXLMCommon */,
+				A7C1F20D4E3B58619D0AA101 /* MCP */,
 			);
 			productName = "Internet Browser";
 			productReference = CCA019F92F37D86900CFA7B6 /* Internet Browser.app */;
@@ -208,6 +209,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				6DD48B5D3A66AD502FEF986A /* XCRemoteSwiftPackageReference "mlx-swift-examples" */,
+				A7C1F20D4E3B58619D0AA100 /* XCRemoteSwiftPackageReference "swift-sdk" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = CCA019FA2F37D86900CFA7B6 /* Products */;
@@ -595,6 +597,14 @@
 				minimumVersion = 2.29.1;
 			};
 		};
+		A7C1F20D4E3B58619D0AA100 /* XCRemoteSwiftPackageReference "swift-sdk" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/modelcontextprotocol/swift-sdk";
+			requirement = {
+				kind = exactVersion;
+				version = 0.12.1;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -602,6 +612,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 6DD48B5D3A66AD502FEF986A /* XCRemoteSwiftPackageReference "mlx-swift-examples" */;
 			productName = MLXLMCommon;
+		};
+		A7C1F20D4E3B58619D0AA101 /* MCP */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A7C1F20D4E3B58619D0AA100 /* XCRemoteSwiftPackageReference "swift-sdk" */;
+			productName = MCP;
 		};
 		CE771E5DF0A12D59802CA69D /* MLXLLM */ = {
 			isa = XCSwiftPackageProductDependency;
