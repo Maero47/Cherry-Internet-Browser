@@ -119,7 +119,16 @@ final class WebActionBridge {
         // snapshot rather than sent first, so there is no window in which a
         // navigation between the two leaves the second talking to a world that
         // no longer exists.
-        let script = WebActionScripts.snapshot(scope: scope.rawValue, filter: filter)
+        // The row cap goes INTO the world. The budget below still applies — two
+        // bounds, and the outer one is the authority — but without this one the
+        // whole listing was assembled, stringified, sent over IPC and decoded on
+        // the main actor before anything was allowed to cut it.
+        let bounded = WebActionScripts.boundedFilter(filter)
+        let script = WebActionScripts.snapshot(
+            scope: scope.rawValue,
+            filter: bounded.text,
+            limit: MCPResultCaps.elementsListed
+        )
         let raw: Any?
         do {
             raw = try await webView.evaluateJavaScript(script, in: nil, contentWorld: Self.actionWorld)
@@ -157,7 +166,9 @@ final class WebActionBridge {
             ))
         }
 
-        return .snapshot(assemble(result, identity: identity, requested: scope))
+        return .snapshot(assemble(
+            result, identity: identity, requested: scope, filterWasCut: bounded.wasCut
+        ))
     }
 
     // MARK: - Assembly
@@ -171,7 +182,8 @@ final class WebActionBridge {
     private func assemble(
         _ raw: RawSnapshot,
         identity: (tabID: String, windowID: String, url: String),
-        requested: WebActionScope
+        requested: WebActionScope,
+        filterWasCut: Bool
     ) -> WebActionSnapshot {
         var budget = MCPBudget(chars: MCPResultCaps.payloadChars, items: MCPResultCaps.elementsListed)
         var elements: [WebActionElement] = []
@@ -208,7 +220,12 @@ final class WebActionBridge {
         }
 
         let effective = WebActionScope(rawValue: raw.scope) ?? requested
-        let truncated = elements.count < raw.elements.count
+
+        // Against `listable`, not against `elements.count` — the isolated world
+        // now caps rows too, and measuring the cut against a number the cap
+        // already shrank would report "500 of 500" on a page with 20,000
+        // controls, which is the silent-cap failure in its purest form.
+        let truncated = elements.count < raw.listable
 
         /// "1 element" / "3 elements", because a note that reads as machine
         /// output is a note a model skims.
@@ -216,8 +233,11 @@ final class WebActionBridge {
 
         var notes: [String] = []
         if truncated {
-            notes.append("\(elements.count) of \(count(raw.elements.count, "element")) shown "
-                + "(\(budget.limitHitDescription)); pass filter to narrow to the control you want")
+            let reason = raw.rowCapped && elements.count == raw.elements.count
+                ? "cap of \(MCPResultCaps.elementsListed) reached"
+                : budget.limitHitDescription
+            notes.append("\(elements.count) of \(count(raw.listable, "element")) shown "
+                + "(\(reason)); pass filter to narrow to the control you want")
         }
         if effective == .viewport, raw.offscreenNotListed > 0 {
             notes.append("\(count(raw.offscreenNotListed, "more element")) "
@@ -229,14 +249,24 @@ final class WebActionBridge {
                 + "filter could not apply — every laid-out element is listed instead")
         }
         if raw.frames > 1 {
-            notes.append("this page has \(raw.frames) frames and Cherry lists the main one only, so "
-                + "controls inside the other \(raw.frames - 1) are missing from this list")
+            notes.append("this page has \(raw.framesCapped ? "at least " : "")\(raw.frames) frames and "
+                + "Cherry lists the main one only, so controls inside the other "
+                + "\(raw.frames - 1) are missing from this list")
+        } else if raw.framesCapped {
+            notes.append("this page nests frames deeper than Cherry counts, so there are frames it "
+                + "did not reach and cannot list")
         }
         if raw.closedShadowHosts > 0 {
             notes.append("\(count(raw.closedShadowHosts, "element")) "
                 + "\(raw.closedShadowHosts == 1 ? "looks" : "look") like "
                 + "\(raw.closedShadowHosts == 1 ? "it hides" : "they hide") a closed shadow root, "
                 + "whose contents no browser can list")
+        }
+        if raw.unwalkedShadowHosts > 0 {
+            notes.append("\(count(raw.unwalkedShadowHosts, "shadow root")) "
+                + "\(raw.unwalkedShadowHosts == 1 ? "was" : "were") nested deeper than Cherry walks, "
+                + "so \(raw.unwalkedShadowHosts == 1 ? "its" : "their") controls are not in this list "
+                + "even though they could have been read")
         }
         if raw.walkCapped {
             notes.append("this page has more elements than Cherry will walk in one pass, so the list "
@@ -246,6 +276,11 @@ final class WebActionBridge {
             notes.append("\(count(raw.filteredOut, "element")) "
                 + "\(raw.filteredOut == 1 ? "was" : "were") left out because "
                 + "\(raw.filteredOut == 1 ? "its name does" : "their names do") not contain the filter")
+        }
+        if filterWasCut {
+            notes.append("the filter you passed was longer than \(WebActionScripts.filterChars) "
+                + "characters and only its first \(WebActionScripts.filterChars) were applied, so "
+                + "this list may be wider than you asked for")
         }
 
         return WebActionSnapshot(
@@ -258,15 +293,19 @@ final class WebActionBridge {
             scope: effective,
             elements: elements,
             matched: raw.matched,
+            listable: raw.listable,
             droppedNoLayout: raw.droppedNoLayout,
             offscreenNotListed: raw.offscreenNotListed,
             filteredOut: raw.filteredOut,
             frames: raw.frames,
+            framesCapped: raw.framesCapped,
+            unwalkedShadowHosts: raw.unwalkedShadowHosts,
             closedShadowHosts: raw.closedShadowHosts,
             shadowRootsEntered: raw.shadowRootsEntered,
             pageVisible: raw.pageVisible,
             visibility: raw.visibility,
             walkCapped: raw.walkCapped,
+            filterWasCut: filterWasCut,
             truncated: truncated,
             note: notes.isEmpty ? nil : notes.joined(separator: ". ") + "."
         )
@@ -282,30 +321,37 @@ final class WebActionBridge {
     private struct RawSnapshot: Decodable {
         let ok: Bool
         let gen: Int
-        let doc: Int
+        let doc: String
         let url: String
         let title: String
         let scope: String
         let pageVisible: Bool
         let visibility: String
         let frames: Int
+        let framesCapped: Bool
         let matched: Int
+        let listable: Int
+        let rowCapped: Bool
         let droppedNoLayout: Int
         let offscreenNotListed: Int
         let filteredOut: Int
         let shadowRootsEntered: Int
         let closedShadowHosts: Int
+        let unwalkedShadowHosts: Int
         let walkCapped: Bool
         let elements: [RawElement]
 
         private enum CodingKeys: String, CodingKey {
-            case ok, gen, doc, url, title, scope, frames, matched, visibility, elements
+            case ok, gen, doc, url, title, scope, frames, matched, listable, visibility, elements
+            case framesCapped = "frames_capped"
+            case rowCapped = "row_capped"
             case pageVisible = "page_visible"
             case droppedNoLayout = "dropped_no_layout"
             case offscreenNotListed = "offscreen_not_listed"
             case filteredOut = "filtered_out"
             case shadowRootsEntered = "shadow_roots_entered"
             case closedShadowHosts = "closed_shadow_hosts"
+            case unwalkedShadowHosts = "unwalked_shadow_hosts"
             case walkCapped = "walk_capped"
         }
 
@@ -320,19 +366,23 @@ final class WebActionBridge {
             let box = try decoder.container(keyedBy: CodingKeys.self)
             ok = try box.decodeIfPresent(Bool.self, forKey: .ok) ?? false
             gen = try box.decodeIfPresent(Int.self, forKey: .gen) ?? 0
-            doc = try box.decodeIfPresent(Int.self, forKey: .doc) ?? 0
+            doc = try box.decodeIfPresent(String.self, forKey: .doc) ?? ""
             url = try box.decodeIfPresent(String.self, forKey: .url) ?? ""
             title = try box.decodeIfPresent(String.self, forKey: .title) ?? ""
             scope = try box.decodeIfPresent(String.self, forKey: .scope) ?? ""
             pageVisible = try box.decodeIfPresent(Bool.self, forKey: .pageVisible) ?? true
             visibility = try box.decodeIfPresent(String.self, forKey: .visibility) ?? ""
             frames = try box.decodeIfPresent(Int.self, forKey: .frames) ?? 1
+            framesCapped = try box.decodeIfPresent(Bool.self, forKey: .framesCapped) ?? false
             matched = try box.decodeIfPresent(Int.self, forKey: .matched) ?? 0
+            listable = try box.decodeIfPresent(Int.self, forKey: .listable) ?? 0
+            rowCapped = try box.decodeIfPresent(Bool.self, forKey: .rowCapped) ?? false
             droppedNoLayout = try box.decodeIfPresent(Int.self, forKey: .droppedNoLayout) ?? 0
             offscreenNotListed = try box.decodeIfPresent(Int.self, forKey: .offscreenNotListed) ?? 0
             filteredOut = try box.decodeIfPresent(Int.self, forKey: .filteredOut) ?? 0
             shadowRootsEntered = try box.decodeIfPresent(Int.self, forKey: .shadowRootsEntered) ?? 0
             closedShadowHosts = try box.decodeIfPresent(Int.self, forKey: .closedShadowHosts) ?? 0
+            unwalkedShadowHosts = try box.decodeIfPresent(Int.self, forKey: .unwalkedShadowHosts) ?? 0
             walkCapped = try box.decodeIfPresent(Bool.self, forKey: .walkCapped) ?? false
             elements = try box.decodeIfPresent([RawElement].self, forKey: .elements) ?? []
         }

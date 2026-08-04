@@ -92,12 +92,20 @@ nonisolated struct WebActionSnapshot: Sendable {
     let url: String
     let title: String
 
-    /// Incremented per snapshot, and per document. An action taken later carries
-    /// the `generation` it was chosen from; nothing in this read-only slice reads
-    /// them yet, and they are reported because a client that cannot see them
-    /// cannot notice a page moving under it.
+    /// Which snapshot of `document` this is. Counted, and only meaningful
+    /// alongside the document it counts within.
     let generation: Int
-    let document: Int
+
+    /// An unguessable 128-bit name for the document these ids were minted in,
+    /// NOT a counter.
+    ///
+    /// A counter cannot do this job. `generation` and the id counter both live in
+    /// the isolated world, and a navigation — or a reload, which Cherry triggers
+    /// on every tab when ad blocking is toggled — destroys the world and restarts
+    /// them at 1. Two consecutive snapshots of the same URL were then
+    /// indistinguishable while their ids named different DOM nodes. An element
+    /// number is only ever meaningful paired with this.
+    let document: String
 
     /// What the snapshot actually covered — which is not always what was asked
     /// for. See `pageVisible`.
@@ -108,6 +116,12 @@ nonisolated struct WebActionSnapshot: Sendable {
     /// Interactive elements found in the main frame, before the layout, viewport,
     /// filter and size cuts.
     let matched: Int
+
+    /// How many passed every filter and could have been listed — which exceeds
+    /// `elements.count` when a cap bit. Without it a cap applied in the isolated
+    /// world would be invisible, because the listing would report itself as
+    /// complete.
+    let listable: Int
 
     /// Elements that exist and have a role but are laid out nowhere.
     let droppedNoLayout: Int
@@ -122,6 +136,16 @@ nonisolated struct WebActionSnapshot: Sendable {
     /// so anything above 1 is content this version cannot see — reported so a
     /// model is told rather than left to infer an empty page.
     let frames: Int
+
+    /// True when the frame walk hit its own bounds (64 children per frame, 8
+    /// levels deep), so `frames` is a floor rather than a count.
+    let framesCapped: Bool
+
+    /// Open shadow roots the walk declined to enter because they were nested past
+    /// its depth bound. Distinct from `closedShadowHosts`: "we did not go in" and
+    /// "nobody can go in" are different facts and a snapshot must not present the
+    /// first as the second, nor as coverage.
+    let unwalkedShadowHosts: Int
 
     /// Custom elements that look like they hide a CLOSED shadow root. A
     /// heuristic — a closed root is unreachable and indistinguishable from no
@@ -143,6 +167,10 @@ nonisolated struct WebActionSnapshot: Sendable {
 
     /// The walk hit its node ceiling and stopped early.
     let walkCapped: Bool
+
+    /// The `filter` the caller passed was longer than Cherry will apply and was
+    /// cut, so `filteredOut` describes a shorter filter than the one sent.
+    let filterWasCut: Bool
 
     /// Elements were dropped to fit the result budget.
     let truncated: Bool

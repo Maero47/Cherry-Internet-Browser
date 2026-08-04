@@ -520,10 +520,18 @@ nonisolated struct MCPReadElementsPayload: Encodable, Sendable {
     let url: String
     let title: String
 
-    /// Which snapshot this is, and which document it was taken of. An element
-    /// number is only meaningful within a document.
+    /// Which snapshot this is, counted within `document`.
     let snapshot: Int
-    let document: Int
+
+    /// An opaque name for the document these element numbers were minted in.
+    ///
+    /// Not a counter, and deliberately not one. The counters live in the page's
+    /// isolated world and a navigation destroys it, so a reload — which Cherry
+    /// performs on every tab when ad blocking is toggled — restarted them and
+    /// made two listings of the same URL indistinguishable while their numbers
+    /// meant different elements. A model should treat a change here as every
+    /// number becoming invalid at once.
+    let document: String
 
     let scope: String
 

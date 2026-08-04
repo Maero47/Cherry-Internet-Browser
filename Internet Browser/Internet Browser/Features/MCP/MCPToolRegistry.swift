@@ -191,8 +191,11 @@ nonisolated enum MCPToolRegistry {
 
             Numbers stay valid for as long as the element does, but the page keeps moving underneath \
             you: a navigation invalidates every number at once, and an element can be removed at any \
-            time. Read it again after anything that changed the page. Do not reuse a number from \
-            before a navigation, and do not guess a number you have not been given.
+            time. `document` names the page load these numbers belong to — when it changes, every \
+            number you were holding is meaningless, even if the URL and the page look identical, \
+            because a reload mints new ones. Read it again after anything that changed the page. Do \
+            not reuse a number across a change of `document`, and do not guess a number you have not \
+            been given.
             """,
         inputSchema: [
             "type": "object",
