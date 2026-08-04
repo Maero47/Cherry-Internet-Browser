@@ -36,16 +36,47 @@ nonisolated enum MCPCannotRunReason: Equatable {
     /// the port is written into the command the user copied.
     case portUnavailable
 
-    /// The token's directory or file could not be forced to `0700`/`0600`, so
-    /// any local account could replace the token. The server fails closed.
+    /// A `chmod` genuinely failed, so the token's directory or file is sitting
+    /// at a mode another local account could write. The server fails closed.
+    ///
+    /// **This is the only case that may accuse anyone of anything**, and it is
+    /// deliberately the narrow one: see `classify`.
     case insecureTokenPermissions
 
-    /// Anything the three above do not cover. The raw text is shown verbatim.
+    /// The token's folder could not be created or even inspected — a read-only
+    /// volume, a denied write, a path that is not there. The server still fails
+    /// closed, but nothing has been tampered with.
+    case tokenLocationUnusable
+
+    /// Anything the cases above do not cover. The raw text is shown verbatim.
     case other
 
     static func classify(_ reason: String) -> MCPCannotRunReason {
         if reason.contains(Self.noTokenLocationMarker) { return .noTokenLocation }
-        if reason.contains(Self.insecurePermissionsMarker) { return .insecureTokenPermissions }
+        if reason.contains(Self.insecurePermissionsMarker) {
+            // `MCPTokenStore.Failure.insecurePermissions` is raised for three
+            // different situations, and only two of them are about permissions:
+            //
+            //   "chmod to 700 failed — …"   an actual chmod refusal
+            //   "still 777 after chmod"     the mode did not take
+            //   "its mode could not be read"  the path could not even be stat'd
+            //
+            // The third is what you get from a directory `createDirectory`
+            // never made: a read-only volume, a denied write. Reporting that as
+            // "another account could replace the token" is an accusation with
+            // no evidence, and the remedy it comes with tells the user to chmod
+            // a path that may not exist.
+            //
+            // So the security verdict requires POSITIVE evidence — the word
+            // chmod, which both permission details carry and the missing-path
+            // one does not. Anything else falls to the milder reading. That is
+            // the safe default in both directions: the server refuses to run
+            // either way, so the only thing at stake is whether the explanation
+            // is true, and a wrong accusation is the worse error.
+            return reason.range(of: "chmod", options: .caseInsensitive) != nil
+                ? .insecureTokenPermissions
+                : .tokenLocationUnusable
+        }
         if Self.addressInUseMarkers.contains(where: { reason.contains($0) }) { return .portUnavailable }
         return .other
     }
@@ -169,6 +200,29 @@ nonisolated struct MCPServerPresentation: Equatable {
     /// is never lying about the present.
     static let activityWindow: TimeInterval = 10
 
+    /// How much longer a timestamp of `lastActivity` counts as "a client is
+    /// connected", or `nil` if it is already stale.
+    ///
+    /// The one place that question is answered. It exists because the indicator
+    /// got it wrong: it checked only that `lastActivity` was non-nil and then
+    /// slept the whole window, so **any** remount of the navigation bar — a
+    /// second window, entering or leaving split view, coming out of video
+    /// fullscreen — lit "an MCP client is reading Cherry right now" for ten
+    /// seconds over a timestamp from three hours ago, while the pane beside it
+    /// correctly said the last request was three hours ago.
+    ///
+    /// A security indicator that fires on window management is one the user
+    /// learns to ignore, and that costs the true positives too. Returning the
+    /// *remaining* interval rather than a Bool also makes the hold end at the
+    /// right absolute moment after a remount, instead of restarting the clock.
+    static func remainingActivityHold(since lastActivity: Date?, now: Date) -> TimeInterval? {
+        guard let lastActivity else { return nil }
+        let remaining = activityWindow - now.timeIntervalSince(lastActivity)
+        // A timestamp from the future (a clock that stepped backwards) is
+        // clamped to the full window rather than trusted into a longer one.
+        return remaining > 0 ? min(remaining, activityWindow) : nil
+    }
+
     // MARK: The mapping
 
     static func make(
@@ -240,7 +294,9 @@ nonisolated struct MCPServerPresentation: Equatable {
             )
         }
 
-        if let lastActivity, now.timeIntervalSince(lastActivity) < activityWindow {
+        // Same helper the indicator holds itself visible with, so the pane and
+        // the toolbar can never disagree about whether a client is connected.
+        if let lastActivity, remainingActivityHold(since: lastActivity, now: now) != nil {
             return MCPServerPresentation(
                 tone: .inUse,
                 title: "In use right now",
@@ -286,6 +342,18 @@ nonisolated struct MCPServerPresentation: Equatable {
                     + "client you registered with it.",
                 remedy: "Quit whatever is holding port \(port), or set a different port above and register your "
                     + "clients again with the new command.",
+                technical: reason
+            )
+
+        case .tokenLocationUnusable:
+            return MCPServerPresentation(
+                tone: .failure,
+                title: "Cannot run: the token folder could not be prepared",
+                detail: "Cherry could not create or inspect the folder it keeps the token in, so there is no "
+                    + "token to serve. That usually means the location is read-only or Cherry was refused "
+                    + "permission to write there. Nothing suggests the token has been tampered with.",
+                remedy: "Check that the folder named below can be created and written to, then switch this off "
+                    + "and on again.",
                 technical: reason
             )
 

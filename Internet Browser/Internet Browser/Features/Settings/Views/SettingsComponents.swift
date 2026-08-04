@@ -89,10 +89,18 @@ struct SettingsToggleRow: View {
                 }
             }
             Spacer(minLength: 12)
-            Toggle("", isOn: $isOn)
+            // The row's title IS the switch's label. `labelsHidden()` drops it
+            // from the layout, not from accessibility, so this costs no pixels
+            // and stops every toggle in Settings announcing as a bare
+            // "switch" — which for the MCP server's master switch meant the one
+            // control that grants an external program access to tabs, page
+            // text, history and bookmarks had no name at all in VoiceOver.
+            Toggle(title, isOn: $isOn)
                 .labelsHidden()
                 .toggleStyle(.switch)
                 .controlSize(.small)
+                .accessibilityLabel(title)
+                .accessibilityValue(subtitle ?? "")
         }
     }
 }

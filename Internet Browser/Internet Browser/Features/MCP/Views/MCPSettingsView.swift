@@ -166,7 +166,25 @@ struct MCPSettingsView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("MCP server status: \(state.title). \(state.detail)")
+        .accessibilityLabel(Self.spokenStatus(state))
+    }
+
+    /// Everything in the status block, spoken.
+    ///
+    /// The first version combined the children and then replaced the label with
+    /// title + detail, which silently dropped `remedy` and `technical` — in all
+    /// five cannot-run states, where they are the only actionable content and
+    /// the only place the path the user has to repair appears. A sighted user
+    /// could read it and a VoiceOver user could not.
+    static func spokenStatus(_ state: MCPServerPresentation) -> String {
+        var spoken = "MCP server status: \(state.title). \(state.detail)"
+        if let remedy = state.remedy {
+            spoken += " \(remedy)"
+        }
+        if let technical = state.technical {
+            spoken += " Reported by the system: \(technical)"
+        }
+        return spoken
     }
 
     // MARK: - Port
@@ -346,18 +364,57 @@ struct MCPSettingsView: View {
 
     // MARK: - What this costs you
 
+    /// The pane's exhaustive answer to "what does this give away". Every line
+    /// below was checked against `MCPBrowserBridge` and `MCPToolPayloads`, not
+    /// against the tool descriptions, because the descriptions are written for
+    /// the model and the payloads are what actually leaves the machine.
     private var exposureCard: some View {
         SettingsCard(icon: "eye", title: "What a connected client can see") {
-            MCPFact("rectangle.stack", "Every tab open in Cherry, with its title and address.")
-            MCPFact("doc.text", "The readable text of a page you have on screen.")
-            MCPFact("clock.arrow.circlepath", "Your browsing history, by title and address.")
-            MCPFact("bookmark", "Your bookmarks, and the folders you filed them in.")
-            MCPFact("plus.rectangle.on.rectangle", "It can also open a URL in a new tab, which changes what is on your screen.")
+            MCPFact(
+                "rectangle.stack",
+                "Every tab open in every window: title, address, which window it is in, which window is "
+                    + "in front, and whether each tab is selected, pinned, asleep, or still loading."
+            )
+            // This sentence used to read "a page you have on screen", which was
+            // false by one to two orders of magnitude. `read_page` takes a
+            // tab_id from list_tabs and reaches ANY tab in ANY non-private
+            // window; the gates below it are only sleeping / cherry:// page /
+            // new-tab page / PDF / never-displayed.
+            MCPFact(
+                "doc.text",
+                "The readable text of any loaded page, not only the one in front of you. Background tabs, "
+                    + "tabs in windows behind this one, and tabs on other Spaces can all be read. Tabs that "
+                    + "are asleep or that you have never opened cannot."
+            )
+            MCPFact(
+                "clock.arrow.circlepath",
+                "Your browsing history: title, address, the exact date and time of each visit, and how many "
+                    + "times you have been there."
+            )
+            MCPFact(
+                "bookmark",
+                "Your bookmarks: title, address, the folder you filed each one in, whether it is on the "
+                    + "bookmarks bar, and when you saved it."
+            )
+            MCPFact(
+                "plus.rectangle.on.rectangle",
+                "It can also open a URL in a new tab, which changes what is on your screen. Only http and "
+                    + "https, at most five a minute, and in the background unless it asks otherwise."
+            )
 
             Divider()
 
-            MCPFact("eye.slash", "Private windows are never visible, and Cherry never recorded history from them.")
-            MCPFact("lock", "Saved passwords are not reachable through these tools.")
+            MCPFact(
+                "eye.slash",
+                "Private windows are never visible. Their tabs cannot be listed or read, and Cherry never "
+                    + "recorded history from them."
+            )
+            MCPFact("lock", "Your saved passwords are not reachable through any of these tools.")
+            MCPFact(
+                "hand.raised",
+                "Nothing can click, type, scroll, fill in a form, or run scripts on a page. Opening a tab is "
+                    + "the only thing that changes anything."
+            )
         }
     }
 
@@ -381,9 +438,25 @@ struct MCPSettingsView: View {
 
             Divider()
 
+            // This used to say closing the last window quits Cherry and the
+            // server goes with it. It does not. `terminateIfNoWindowsRemain`
+            // runs only on the last-TAB path, and nothing implements
+            // `applicationShouldTerminateAfterLastWindowClosed` — so clicking a
+            // window's close button leaves Cherry running with no windows, the
+            // listener still bound, and history and bookmarks still being
+            // served. Saying otherwise was the most dangerous sentence on the
+            // pane, because it described a limit the user does not have.
             MCPBodyText(
-                "Cherry has to be running. Closing the last window quits Cherry, and the server goes with it, so "
-                    + "a client will report that it could not connect until you open Cherry again."
+                "Cherry has to be running, but it does not have to have a window. Closing the last window "
+                    + "does not always quit Cherry, and while it keeps running the server keeps answering: "
+                    + "your history and bookmarks stay readable even with nothing on screen."
+            )
+
+            MCPNoticeText(
+                "With no window open there is nowhere to show the toolbar indicator, so reading can happen "
+                    + "with no sign of it. Quit Cherry from the menu, or with Command Q, when you want this "
+                    + "to stop.",
+                tone: .failure
             )
         }
     }

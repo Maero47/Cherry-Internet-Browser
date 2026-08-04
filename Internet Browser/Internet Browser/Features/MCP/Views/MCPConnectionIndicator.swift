@@ -39,6 +39,22 @@
 //  a thing the eye cannot rest away from. The single cross-fade is skipped
 //  entirely under `accessibilityReduceMotion`.
 //
+//  ## Why it is a badge and not a tinted glyph
+//
+//  It draws over a toolbar that may be `.bar`, an imported theme's
+//  `toolbarColor`, or a header backdrop **image** — and its `foregroundStyle`
+//  overrides the bar's `themedToolbarText`, so it cannot inherit a tone that
+//  was chosen against that backdrop either. A bare accent-tinted glyph is
+//  therefore a signal with no contrast floor at all, and a pale accent on a
+//  pale themed header is an indicator nobody can see. Everywhere else the
+//  accent tints a glyph sitting beside high-contrast text; here it IS the whole
+//  signal.
+//
+//  So the glyph sits on an opaque accent-filled badge and takes its tone from
+//  `MCPStatusPalette.readableForeground(on:)`. The badge decouples the signal
+//  from the backdrop: whatever is behind it, the glyph is only ever read
+//  against the badge, at a measured ≥4.60:1 for every shipped accent.
+//
 
 import SwiftUI
 
@@ -64,9 +80,7 @@ struct MCPConnectionIndicator: View {
         Group {
             if isConnected {
                 Button(action: openConnectionsSettings) {
-                    Image(systemName: "antenna.radiowaves.left.and.right")
-                        .font(.system(size: AppConstants.UI.toolbarIconSize, weight: .medium))
-                        .foregroundStyle(SettingsManager.shared.accentColor)
+                    badge
                 }
                 .buttonStyle(ToolbarButtonStyle())
                 .help("An MCP client is reading Cherry right now. Click to open Connections settings.")
@@ -79,22 +93,55 @@ struct MCPConnectionIndicator: View {
         .task(id: manager.lastActivity) { await holdVisible() }
     }
 
+    private var badge: some View {
+        let accent = SettingsManager.shared.accentColor
+        return Image(systemName: "antenna.radiowaves.left.and.right")
+            .font(.system(size: AppConstants.UI.toolbarIconSize - 2, weight: .semibold))
+            .foregroundStyle(MCPStatusPalette.readableForeground(on: accent))
+            .frame(width: 22, height: 18)
+            .background {
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(accent)
+            }
+            .overlay {
+                // A hairline in the glyph's own tone. It does nothing when the
+                // badge already stands off the bar, and gives it an edge when
+                // the accent happens to land near the backdrop's colour.
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .strokeBorder(
+                        MCPStatusPalette.readableForeground(on: accent).opacity(0.35),
+                        lineWidth: 0.5
+                    )
+            }
+    }
+
     private func openConnectionsSettings() {
-        SettingsSection.pendingSelection = .connections
+        SettingsNavigator.shared.request(.connections)
         onOpenSettings()
     }
 
-    /// Keep the indicator up for the activity window after the last request,
-    /// then take it down. Restarted by `.task(id:)` whenever another request
-    /// lands, which is what makes a run of tool calls read as one connection
-    /// rather than a stutter.
+    /// Keep the indicator up for whatever is left of the activity window, then
+    /// take it down. Restarted by `.task(id:)` whenever another request lands,
+    /// which is what makes a run of tool calls read as one connection rather
+    /// than a stutter.
+    ///
+    /// The age check is the whole point, and its absence was a bug: `.task(id:)`
+    /// also runs on every REMOUNT, so gating on `lastActivity != nil` and then
+    /// sleeping the full window lit the indicator for ten seconds whenever the
+    /// navigation bar was rebuilt — a second window, split view, leaving video
+    /// fullscreen — over a timestamp that could be hours old. Sleeping only the
+    /// REMAINING interval also means a remount mid-window does not restart the
+    /// clock.
     private func holdVisible() async {
-        guard manager.lastActivity != nil else {
+        guard let remaining = MCPServerPresentation.remainingActivityHold(
+            since: manager.lastActivity,
+            now: Date()
+        ) else {
             withinActivityWindow = false
             return
         }
         withinActivityWindow = true
-        try? await Task.sleep(for: .seconds(MCPServerPresentation.activityWindow))
+        try? await Task.sleep(for: .seconds(remaining))
         // On cancellation another request has already arrived and the next run
         // of this task owns the flag. Clearing it here would blink the glyph
         // off and straight back on.
