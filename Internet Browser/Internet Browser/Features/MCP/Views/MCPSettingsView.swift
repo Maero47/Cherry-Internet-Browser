@@ -19,8 +19,9 @@
 //    Such a program can read the token file, and could read Cherry's stored
 //    history directly whether this switch is on or off. Said plainly, not
 //    buried.
-//  - That Cherry has to be running, and that closing the last window quits
-//    Cherry. Without this a client just reports "failed to connect".
+//  - That Cherry has to be running with a window open, and that closing the
+//    last window takes the server down with it. Without this a client just
+//    reports "failed to connect".
 //  - That regenerating the token breaks every registered client instantly.
 //    Said on the button, before it is pressed.
 //
@@ -438,25 +439,21 @@ struct MCPSettingsView: View {
 
             Divider()
 
-            // This used to say closing the last window quits Cherry and the
-            // server goes with it. It does not. `terminateIfNoWindowsRemain`
-            // runs only on the last-TAB path, and nothing implements
-            // `applicationShouldTerminateAfterLastWindowClosed` — so clicking a
-            // window's close button leaves Cherry running with no windows, the
-            // listener still bound, and history and bookmarks still being
-            // served. Saying otherwise was the most dangerous sentence on the
-            // pane, because it described a limit the user does not have.
+            // This used to say Cherry keeps answering with no window open, and
+            // that reading could therefore happen with no sign of it. Both were
+            // true when they were written: closing the last window leaves the
+            // process alive, and the listener stayed bound to a browser that
+            // had no view left to show an indicator in.
+            // `MCPServerManager.observeWindowLifecycle` now closes the socket
+            // with the last window and reopens it with the next one, using
+            // `TabManager`'s own liveness rule — so the limit below is real
+            // again, and the warning it replaces no longer describes anything.
             MCPBodyText(
-                "Cherry has to be running, but it does not have to have a window. Closing the last window "
-                    + "does not always quit Cherry, and while it keeps running the server keeps answering: "
-                    + "your history and bookmarks stay readable even with nothing on screen."
-            )
-
-            MCPNoticeText(
-                "With no window open there is nowhere to show the toolbar indicator, so reading can happen "
-                    + "with no sign of it. Quit Cherry from the menu, or with Command Q, when you want this "
-                    + "to stop.",
-                tone: .failure
+                "Cherry has to be running with a window open. Close your last window and the server stops "
+                    + "answering a moment later, whether or not Cherry itself quits; open a window and it "
+                    + "starts again. A window minimised in the Dock still counts, and so does hiding "
+                    + "Cherry with Command H — in both, your tabs are still there and so is the indicator "
+                    + "in the toolbar."
             )
         }
     }

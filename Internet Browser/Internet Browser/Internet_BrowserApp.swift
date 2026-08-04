@@ -364,6 +364,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // The MCP server, if the user has switched it on. `startIfEnabled`
         // checks the persisted flag, which defaults to false — a fresh install
         // opens no socket.
+        //
+        // `observeWindowLifecycle` is installed either way and for the app's
+        // whole life: it is what closes the listener when Cherry loses its last
+        // window (which does NOT quit the app) and opens it again when a window
+        // comes back. A suspended listener has to be able to hear that, so the
+        // observation cannot be owned by the running listener.
+        MCPServerManager.shared.observeWindowLifecycle()
         MCPServerManager.shared.startIfEnabled()
 
         for window in NSApplication.shared.windows {

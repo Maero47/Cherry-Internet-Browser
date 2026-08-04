@@ -34,6 +34,18 @@
 //  loopback socket serving a handful of calls. It also means no server state
 //  survives a request, which is the right security posture anyway.
 //
+//  ## And read this before deleting the window observers
+//
+//  Closing Cherry's last window does not quit Cherry. `TabManager` only checks
+//  the termination policy on the last-TAB path, and nothing implements
+//  `applicationShouldTerminateAfterLastWindowClosed` — so the close button
+//  leaves the process alive with zero windows. With the listener still bound
+//  that turns a browser into a headless daemon serving the user's history and
+//  bookmarks, with no view left anywhere in which the toolbar indicator could
+//  warn them. See `observeWindowLifecycle` / `shouldServe`: the socket goes
+//  down with the last window and comes back with the next one, using
+//  `TabManager`'s own liveness predicate rather than a second opinion.
+//
 
 import AppKit
 import Foundation
@@ -175,6 +187,17 @@ final class MCPServerManager {
 
     private var listener: MCPHTTPListener?
     private var wakeObserver: (any NSObjectProtocol)?
+    private var windowObservers: [any NSObjectProtocol] = []
+
+    /// The feature is on, but the listener is deliberately down because no
+    /// window is keeping Cherry alive.
+    ///
+    /// This is what separates "stopped because the user switched it off" from
+    /// "stopped until a window comes back". Without it, the resume path would
+    /// have to re-derive intent from the settings flag alone, and would retry
+    /// `start()` on every window event even when the last attempt failed for a
+    /// permanent reason (no Application Support, an unsecurable token file).
+    private var suspendedUntilAWindowReturns = false
 
     var isRunning: Bool { listener != nil }
 
@@ -283,11 +306,128 @@ final class MCPServerManager {
     }
 
     /// Apply a port or enablement change made in Settings.
+    ///
+    /// The pane lives in a tab, so reaching this code at all means a window is
+    /// on screen — which is why it can start unconditionally, and why any
+    /// window-policy suspension is stale by definition once the user has
+    /// clicked something.
     func applySettingsChange() {
+        suspendedUntilAWindowReturns = false
         if SettingsManager.shared.mcpServerEnabled {
             start()
         } else {
             stop()
+        }
+    }
+
+    // MARK: Windows
+
+    /// Whether the listener should be bound, given the feature flag and what
+    /// windows exist.
+    ///
+    /// **The predicate is `TabManager`'s, not a second one.** "Cherry still has
+    /// a window" is exactly the question the termination policy answers, and it
+    /// is a question with four traps in it — a minimised window is not
+    /// `isVisible`, *no* window is `isVisible` while the app is hidden, panels
+    /// and borderless helper windows must not count, and a closed window is
+    /// still in `NSApp.windows`. `TabManager.shouldTerminateApp` has those
+    /// answers and a test file locking them; a hand-rolled copy here would
+    /// start identical and drift.
+    ///
+    /// So: serve exactly when the user has switched the feature on and at least
+    /// one window would keep the app alive. The two definitions cannot disagree
+    /// because there is only one.
+    nonisolated static func shouldServe(
+        enabled: Bool,
+        windows: [TabManager.WindowLiveness],
+        appIsHidden: Bool
+    ) -> Bool {
+        enabled && !TabManager.shouldTerminateApp(windows: windows, appIsHidden: appIsHidden)
+    }
+
+    /// Bring the listener into line with the windows that exist right now.
+    ///
+    /// `closingWindow` is the window whose `willClose` triggered this. Closing a
+    /// window does not take it out of `NSApp.windows` — every browser window
+    /// sets `isReleasedWhenClosed = false` — so without excluding it, the last
+    /// window closing would find its own corpse and keep serving.
+    func reconcileWithWindowState(closing closingWindow: NSWindow? = nil) {
+        let enabled = SettingsManager.shared.mcpServerEnabled
+        let serve = Self.shouldServe(
+            enabled: enabled,
+            windows: TabManager.livenessSnapshot(of: NSApp.windows, excluding: closingWindow),
+            appIsHidden: NSApp.isHidden
+        )
+
+        if serve {
+            // Only resume what this policy suspended. Every other reason the
+            // listener is down — switched off, failed to bind, no token — is
+            // not a window's business to undo, and a window becoming key is far
+            // too common an event to retry a permanent failure on.
+            guard suspendedUntilAWindowReturns else { return }
+            suspendedUntilAWindowReturns = false
+            start()
+        } else if isRunning {
+            suspendedUntilAWindowReturns = enabled
+            stop()
+        }
+    }
+
+    /// Watch for the app losing its last window, and for getting one back.
+    ///
+    /// Called once at launch, and deliberately independent of whether the
+    /// server is running: a suspended listener has to be able to hear a window
+    /// arrive, and it cannot do that through an observer it only installs while
+    /// it is up.
+    ///
+    /// **Why these two notifications are the complete set.**
+    ///
+    /// *Losing the last window.* A window that counts (`keepsAppAlive`) stops
+    /// counting only by being closed. Minimising does not do it — `isMiniaturized`
+    /// is explicitly allowed. Hiding the app does not do it — `appIsHidden` is
+    /// explicitly allowed, and it is the same rule that stops ⌘H from throwing
+    /// away every window's tabs. Being ordered off screen would do it, but the
+    /// only `orderOut(nil)` calls in the app are on the tab-drag ghost and the
+    /// tab hover preview, and both are borderless, so neither ever counted in
+    /// the first place. That leaves closing, and closing posts
+    /// `willCloseNotification` — for a window closed by its button, by ⌘W, by
+    /// the last tab going away, or programmatically.
+    ///
+    /// *Getting one back.* A window that is going to keep Cherry alive has to be
+    /// ordered in, and a window ordered in while Cherry is the active app
+    /// becomes key. `didBecomeKeyNotification` therefore covers ⌘N, ⌘T from an
+    /// empty state, reopening from the Dock, and a window restored from the
+    /// Dock. The two application-level notifications close the case where a
+    /// window appears while Cherry is *not* frontmost, so nothing arrives
+    /// unseen. Over-triggering the resume side is free: `reconcileWithWindowState`
+    /// acts only on a transition, and the asymmetry is deliberate — a missed
+    /// suspend leaves history on a socket, a missed resume leaves a feature
+    /// looking broken.
+    func observeWindowLifecycle() {
+        guard windowObservers.isEmpty else { return }
+        let center = NotificationCenter.default
+
+        windowObservers.append(
+            center.addObserver(
+                forName: NSWindow.willCloseNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] notification in
+                let closing = notification.object as? NSWindow
+                MainActor.assumeIsolated { self?.reconcileWithWindowState(closing: closing) }
+            }
+        )
+
+        for name in [
+            NSWindow.didBecomeKeyNotification,
+            NSApplication.didBecomeActiveNotification,
+            NSApplication.didUnhideNotification,
+        ] {
+            windowObservers.append(
+                center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                    MainActor.assumeIsolated { self?.reconcileWithWindowState() }
+                }
+            )
         }
     }
 
