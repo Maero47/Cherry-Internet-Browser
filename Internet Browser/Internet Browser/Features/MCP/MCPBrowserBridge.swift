@@ -136,6 +136,30 @@ final class MCPBrowserBridge {
             }
     }
 
+    /// THE tab enumeration, and the second half of the privacy gate.
+    ///
+    /// A window's `isPrivateMode` and a tab's `isPrivate` DIVERGE, by design, in
+    /// code that already ships. `BrowserViewModel.transferTab(tabID:to:)` — and
+    /// `detachTab`'s re-attach branch — move a `Tab` between windows with no
+    /// privacy check at all, while the tear-off-to-a-NEW-window path does preserve
+    /// it (`BrowserView` sets `vm.isPrivateMode = existingTab.isPrivate`). Both are
+    /// wired to the tab bar. So dragging one incognito tab onto a normal window's
+    /// tab bar leaves a tab carrying `isPrivate == true`, still holding its live
+    /// private-store `WKWebView`, inside a `TabManager` whose view model is not
+    /// private.
+    ///
+    /// Filtering only on the window would publish that tab's URL and title in
+    /// `list_tabs` and let `read_page` extract the private page in full: it is not
+    /// asleep, not internal, not the home page, and it has a web view, so every
+    /// rung of the ladder passes.
+    ///
+    /// `TabManager.notifyExtensionManager` gates twice for exactly this reason —
+    /// `guard !tab.isPrivate else { return }` on top of the window-level exclusion.
+    /// This is the other half.
+    private func visibleTabs(in viewModel: BrowserViewModel) -> [Tab] {
+        viewModel.tabManager.tabs.filter { !$0.isPrivate }
+    }
+
     /// A window by the `window_id` a client passed back.
     ///
     /// Resolved against `visibleViewModels`, so a private window's id is simply
@@ -145,9 +169,13 @@ final class MCPBrowserBridge {
     }
 
     /// The window and tab a `tab_id` names, or nil.
+    ///
+    /// Goes through both gates: only non-private windows, and within them only
+    /// non-private tabs. A private tab's id is therefore not a key here, and the
+    /// answer is byte-identical to an id that never existed.
     private func locate(tabID: UUID) -> (window: BrowserViewModel, tab: Tab)? {
         for viewModel in visibleViewModels {
-            if let tab = viewModel.tabManager.tabs.first(where: { $0.id == tabID }) {
+            if let tab = visibleTabs(in: viewModel).first(where: { $0.id == tabID }) {
                 return (viewModel, tab)
             }
         }
@@ -158,7 +186,9 @@ final class MCPBrowserBridge {
     /// key window, else of the frontmost non-private window.
     ///
     /// `TabManager.focusedTab` is split-view aware, so a split window resolves to
-    /// the pane the user is actually in.
+    /// the pane the user is actually in — but it can also BE a private tab that was
+    /// moved into this window, so it is checked against `visibleTabs` rather than
+    /// trusted. A focused private tab reads as "no tab to read", not as itself.
     private func defaultTarget() -> (window: BrowserViewModel, tab: Tab)? {
         let candidates = visibleViewModels
         let keyed = candidates.first {
@@ -166,11 +196,12 @@ final class MCPBrowserBridge {
             return window === NSApp?.keyWindow
         }
         guard let viewModel = keyed ?? candidates.first,
-              let tab = viewModel.tabManager.focusedTab
+              let focused = viewModel.tabManager.focusedTab,
+              visibleTabs(in: viewModel).contains(where: { $0 === focused })
         else {
             return nil
         }
-        return (viewModel, tab)
+        return (viewModel, focused)
     }
 
     private func isSelected(_ tab: Tab, in viewModel: BrowserViewModel) -> Bool {
@@ -199,15 +230,20 @@ final class MCPBrowserBridge {
             windows = visibleViewModels
         }
 
-        let totalTabs = windows.reduce(0) { $0 + $1.tabManager.tabs.count }
-        var remaining = MCPResultCaps.tabs
+        // Every count below is over `visibleTabs`, never `tabManager.tabs`. A raw
+        // `tabs.count` in `tab_count` or `total_tabs` would report the presence of
+        // a private tab even while withholding it, which is the same leak one step
+        // quieter.
+        let totalTabs = windows.reduce(0) { $0 + visibleTabs(in: $1).count }
+        var budget = MCPBudget(chars: MCPResultCaps.payloadChars, items: MCPResultCaps.tabs)
         var payloads: [MCPWindowPayload] = []
 
         for viewModel in windows {
-            guard remaining > 0 else { break }
-            let manager = viewModel.tabManager
-            let tabs = manager.tabs.prefix(remaining).map { tab in
-                MCPTabPayload(
+            guard budget.hasRoom else { break }
+            let visible = visibleTabs(in: viewModel)
+            var tabs: [MCPTabPayload] = []
+            for tab in visible {
+                let payload = MCPTabPayload(
                     tabID: tab.id.uuidString,
                     title: tab.displayTitle.mcpTruncated(to: MCPResultCaps.tabTitleChars),
                     url: tab.displayURL.mcpTruncated(to: MCPResultCaps.urlChars),
@@ -217,13 +253,18 @@ final class MCPBrowserBridge {
                     loading: tab.isLoading,
                     internalPage: tab.internalPage?.rawValue
                 )
+                guard budget.admit(chars: payload.approximateChars) else { break }
+                tabs.append(payload)
             }
-            remaining -= tabs.count
+            // A window that contributed nothing is left out entirely rather than
+            // reported as an empty one — an empty `tabs` array reads as "this
+            // window has no tabs", which is a different and false statement.
+            guard !tabs.isEmpty else { break }
             payloads.append(MCPWindowPayload(
                 windowID: viewModel.windowID.uuidString,
                 isActive: isKeyWindow(viewModel),
-                tabCount: manager.tabs.count,
-                tabs: Array(tabs)
+                tabCount: visible.count,
+                tabs: tabs
             ))
         }
 
@@ -234,7 +275,8 @@ final class MCPBrowserBridge {
             totalTabs: totalTabs,
             truncated: truncated,
             note: truncated
-                ? "\(shown) of \(totalTabs) tabs shown; pass window_id to narrow."
+                ? "\(shown) of \(totalTabs) tabs shown (\(budget.limitHitDescription)); "
+                    + "pass window_id to narrow."
                 : nil
         )
     }
@@ -327,19 +369,23 @@ final class MCPBrowserBridge {
         }
         matches.sort { $0.visitDate > $1.visitDate }
 
-        let results = matches.prefix(capped).map { item in
-            MCPHistoryEntryPayload(
+        var budget = MCPBudget(chars: MCPResultCaps.payloadChars, items: capped)
+        var results: [MCPHistoryEntryPayload] = []
+        for item in matches {
+            let payload = MCPHistoryEntryPayload(
                 title: item.title.mcpTruncated(to: MCPResultCaps.entryTitleChars),
                 url: item.url.absoluteString.mcpTruncated(to: MCPResultCaps.urlChars),
                 visitedAt: item.visitDate,
                 visitCount: item.visitCount
             )
+            guard budget.admit(chars: payload.approximateChars) else { break }
+            results.append(payload)
         }
 
         let truncated = results.count < matches.count
         return MCPSearchHistoryPayload(
             query: query,
-            results: Array(results),
+            results: results,
             returned: results.count,
             totalMatches: matches.count,
             truncated: truncated,
@@ -349,7 +395,8 @@ final class MCPBrowserBridge {
                 order: "most recent first",
                 clamped: clamped,
                 maximum: MCPResultCaps.historyLimitMaximum,
-                narrowing: "narrow the query"
+                narrowing: "narrow the query",
+                budget: budget
             )
         )
     }
@@ -358,19 +405,27 @@ final class MCPBrowserBridge {
     ///
     /// Never nothing. A bare 25-of-318 with no explanation reads to a model as
     /// "these are all the matches", and it will answer the user as if they were.
+    ///
+    /// The three reasons an answer stops are different advice, so they are named
+    /// separately: its own `limit`, a `limit` above the tool's maximum, and the
+    /// whole-result character budget — where raising `limit` would not help at all.
     private static func searchNote(
         returned: Int,
         total: Int,
         order: String,
         clamped: Bool,
         maximum: Int,
-        narrowing: String
+        narrowing: String,
+        budget: MCPBudget
     ) -> String? {
         var parts: [String] = []
         if returned < total {
             parts.append("\(returned) of \(total) matches shown, \(order)")
         }
-        if clamped {
+        if budget.exhaustedBy == .chars {
+            parts.append("stopped at the result size limit of \(MCPResultCaps.payloadChars) "
+                + "characters, so raising limit will not return more — \(narrowing)")
+        } else if clamped {
             parts.append("limit was capped at \(maximum)")
         } else if returned < total {
             parts.append("raise limit (max \(maximum)) or \(narrowing)")
@@ -391,20 +446,24 @@ final class MCPBrowserBridge {
         }
         matches.sort { $0.createdAt > $1.createdAt }
 
-        let results = matches.prefix(capped).map { bookmark in
-            MCPBookmarkEntryPayload(
+        var budget = MCPBudget(chars: MCPResultCaps.payloadChars, items: capped)
+        var results: [MCPBookmarkEntryPayload] = []
+        for bookmark in matches {
+            let payload = MCPBookmarkEntryPayload(
                 title: bookmark.title.mcpTruncated(to: MCPResultCaps.entryTitleChars),
                 url: bookmark.url.absoluteString.mcpTruncated(to: MCPResultCaps.urlChars),
                 folder: bookmark.folder?.mcpTruncated(to: MCPResultCaps.folderChars),
                 inBookmarkBar: bookmark.isInBookmarkBar,
                 createdAt: bookmark.createdAt
             )
+            guard budget.admit(chars: payload.approximateChars) else { break }
+            results.append(payload)
         }
 
         let truncated = results.count < matches.count
         return MCPSearchBookmarksPayload(
             query: query,
-            results: Array(results),
+            results: results,
             returned: results.count,
             totalMatches: matches.count,
             truncated: truncated,
@@ -414,7 +473,8 @@ final class MCPBrowserBridge {
                 order: "newest first",
                 clamped: clamped,
                 maximum: MCPResultCaps.bookmarkLimitMaximum,
-                narrowing: "pass folder"
+                narrowing: "pass folder",
+                budget: budget
             )
         )
     }
@@ -477,7 +537,8 @@ final class MCPBrowserBridge {
             )
         }
 
-        // 2. A cherry:// internal page. THE trap in this whole file.
+        // 2. A cherry:// internal page, or the vestigial settings-page flag. THE
+        //    trap in this whole file.
         //
         //    `Tab.openInternalPage` deliberately KEEPS `webView` and `url`
         //    pointing at the site the internal page is covering, so Back restores
@@ -486,13 +547,30 @@ final class MCPBrowserBridge {
         //    the settings page's identity. Cherry's own AI had exactly this bug in
         //    `toggleAskThisPage`; the guard there —
         //    `tab.internalPage == nil, !tab.showHomePage, let webView = tab.webView`
-        //    — is reproduced by steps 2, 3 and 6 of this ladder, in that order.
-        if let page = tab.internalPage {
-            return refuse(
-                .internalPage,
-                "This tab is showing Cherry's own \(page.displayTitle) page (\(page.url.absoluteString)), "
-                    + "which has no readable page text. Nothing was read."
-            )
+        //    — is reproduced by steps 2, 3 and 5 of this ladder, in that order.
+        //
+        //    `showSettingsPage` is included because it is a cover-the-web-view flag
+        //    of exactly the same shape, `BrowserView` still has a live render branch
+        //    for it, and `BrowserViewModel.canZoom` checks all three together. It is
+        //    vestigial today; if it is ever set again this rung already holds.
+        if tab.internalPage != nil || tab.showSettingsPage {
+            // The internal page's OWN address, never `displayURL`.
+            //
+            // For `internalPage` those are the same thing. For `showSettingsPage`
+            // they are not: `Tab.displayURL` only returns a `cherry://` address when
+            // `internalPage != nil`, so on a settings-flag tab it returns the
+            // COVERED SITE's URL — which this rung exists to withhold. A test caught
+            // exactly that. Deriving the address from the page rather than the tab
+            // makes the leak unreachable rather than merely absent.
+            let page = tab.internalPage ?? .settings
+            return .unreadable(MCPUnreadablePayload(
+                reason: .internalPage,
+                detail: "This tab is showing Cherry's own \(page.displayTitle) page "
+                    + "(\(page.url.absoluteString)), which has no readable page text. Nothing was read.",
+                tabID: identity.tabID,
+                windowID: identity.windowID,
+                url: page.url.absoluteString
+            ))
         }
 
         // 3. The home / new-tab page.
@@ -504,25 +582,7 @@ final class MCPBrowserBridge {
             )
         }
 
-        // 4. A PDF. WebKit's PDF viewer has no DOM the extractor's heuristics
-        //    apply to, so a read returns viewer chrome or nothing — say so rather
-        //    than hand a model junk.
-        //
-        //    `BrowserViewModel.isViewingPDF` is a per-WINDOW flag set from the
-        //    DISPLAYED page's navigation, so it only speaks for a tab the window
-        //    is currently showing; applying it to any tab in the window would
-        //    wrongly refuse the window's other tabs. The URL check covers the
-        //    background-PDF case that flag cannot see.
-        if (viewModel.isViewingPDF && isSelected(tab, in: viewModel))
-            || tab.url?.pathExtension.lowercased() == "pdf" {
-            return refuse(
-                .pdf,
-                "This tab is a PDF (\(identity.url)). Cherry's text extraction does not apply to "
-                    + "WebKit's PDF viewer, so nothing was read."
-            )
-        }
-
-        // 5. Never displayed, so no web view was ever built and nothing loaded.
+        // 4. Never displayed, so no web view was ever built and nothing loaded.
         //    A background tab from `open_tab(activate: false)` is in this state
         //    until the user selects it.
         guard let webView = tab.webView else {
@@ -531,6 +591,37 @@ final class MCPBrowserBridge {
                 "This tab has never been displayed, so Cherry has not created a web view for it and "
                     + "nothing has loaded. Its URL is \(identity.url) — ask the user to switch to it, "
                     + "or call open_tab with activate: true."
+            )
+        }
+
+        // 5. A PDF, asked of the DOCUMENT rather than guessed from the URL.
+        //
+        //    This used to read `BrowserViewModel.isViewingPDF` plus
+        //    `url.pathExtension == "pdf"`, and both were wrong in a way that
+        //    mattered. `isViewingPDF` is per-WINDOW and last-writer-wins across
+        //    split panes, so a PDF in one pane falsely refused the article in the
+        //    other — the same "one tab's state answering for another's" bug as the
+        //    cherry:// trap. And the extension test misses every extensionless PDF
+        //    (`arxiv.org/pdf/2401.00001`), which then degraded to a misleading
+        //    `no_content`. It is also exactly what `isViewingPDF` already computes
+        //    (`WebViewWrapper`'s `didFinish` sets it from `pathExtension`), so the
+        //    window flag never added anything the URL check did not.
+        //
+        //    `document.contentType` is the real answer: verified to return
+        //    `application/pdf` for a PDF in WebKit's viewer and `text/html` for a
+        //    page, per tab, regardless of URL. It costs one `evaluateJavaScript`,
+        //    and the main actor is released across it.
+        //
+        //    Worth knowing why this must refuse at all: WebKit's PDF viewer DOES
+        //    expose a DOM — the probe measured 839 characters of viewer chrome in
+        //    `document.body.textContent`. Extraction happens to return nil for it on
+        //    this WebKit build, but that is luck, not a guarantee, and the failure
+        //    mode is viewer chrome returned as though it were the paper.
+        if await Self.isPDFDocument(webView) {
+            return refuse(
+                .pdf,
+                "This tab is a PDF (\(identity.url)). Cherry's text extraction does not apply to "
+                    + "WebKit's PDF viewer, so nothing was read."
             )
         }
 
@@ -548,15 +639,35 @@ final class MCPBrowserBridge {
             )
         }
 
+        // The URL is reported from the LIVE document here, not from the tab model.
+        // They diverge during navigation and across redirects, and a mismatch means
+        // text from page A labelled as page B.
+        //
+        // Only on this branch. The refusals above keep using `displayURL`, because
+        // on a cherry:// tab `webView.url` IS the covered site — reporting it there
+        // would leak exactly what rung 2 exists to withhold.
+        let liveURL = (webView.url?.absoluteString).map { $0.mcpTruncated(to: MCPResultCaps.urlChars) }
+
         return .page(Self.chunk(
             content,
             offset: offset,
             tabID: identity.tabID,
             windowID: identity.windowID,
-            url: identity.url,
+            url: liveURL ?? identity.url,
             fallbackTitle: tab.displayTitle,
             loading: loading
         ))
+    }
+
+    /// Whether WebKit is displaying this web view's content as a PDF.
+    ///
+    /// Asks the document, so it is per-tab, extension-independent, and cannot false
+    /// positive on an HTML page served at a `.pdf` path. A thrown or unexpected
+    /// result means "not a PDF" — the extraction path below handles that safely, and
+    /// refusing a readable page because one JS call failed would be worse.
+    private static func isPDFDocument(_ webView: WKWebView) async -> Bool {
+        let contentType = try? await webView.evaluateJavaScript("document.contentType")
+        return (contentType as? String)?.lowercased() == "application/pdf"
     }
 
     /// Slices extracted text into one `read_page` answer.
@@ -565,6 +676,20 @@ final class MCPBrowserBridge {
     /// walking a page by `next_offset` sees no overlap and no gap: each call
     /// returns `[offset, offset + returned_chars)` and hands back exactly
     /// `offset + returned_chars`.
+    ///
+    /// ## Why this does not build an array
+    ///
+    /// It used to open with `Array(content.text)` — full grapheme-cluster
+    /// segmentation of the entire page, synchronously, with nothing bounding
+    /// `content.text` first, because the 40,000 cap only applies once the array
+    /// exists. Walking an N-character page therefore did O(N) allocation per call
+    /// for O(N/40000) calls, and only `open_tab` is rate-limited, so a client could
+    /// repeat it freely.
+    ///
+    /// Two changes: the page is clamped to `readPageTotalChars` before anything
+    /// walks it (with `page_clamped` and a `note` saying so), and the slice is taken
+    /// by `String.Index` rather than by materialising an array. Each call is now
+    /// bounded work over a bounded string.
     ///
     /// `nonisolated static` because it is pure string work — no reason for it to
     /// hold the main actor, and it is directly testable.
@@ -577,22 +702,37 @@ final class MCPBrowserBridge {
         fallbackTitle: String,
         loading: Bool
     ) -> MCPReadPagePayload {
-        let characters = Array(content.text)
-        let total = characters.count
+        let extractedChars = content.text.count
+        let clamped = extractedChars > MCPResultCaps.readPageTotalChars
+        // One `prefix` on the clamping path only; the common case does not copy.
+        let text = clamped
+            ? String(content.text.prefix(MCPResultCaps.readPageTotalChars))
+            : content.text
+        let total = clamped ? MCPResultCaps.readPageTotalChars : extractedChars
+
         let start = min(max(0, offset), total)
         let end = min(start + MCPResultCaps.readPageChars, total)
-        let slice = String(characters[start..<end])
+        let lower = text.index(text.startIndex, offsetBy: start)
+        let upper = text.index(lower, offsetBy: end - start)
+        let slice = String(text[lower..<upper])
         let hasMore = end < total
 
-        let note: String?
+        var notes: [String] = []
         if hasMore {
-            note = "Showing characters \(start)–\(end) of \(total). "
-                + "Call read_page again with offset: \(end) for the next chunk."
+            notes.append("Showing characters \(start)–\(end) of \(total); "
+                + "call read_page again with offset: \(end) for the next chunk")
         } else if start == total, total > 0 {
-            note = "offset \(offset) is at or past the end of this page (total_chars \(total)); "
-                + "nothing left to read."
-        } else {
-            note = nil
+            notes.append("offset \(offset) is at or past the end of this page "
+                + "(total_chars \(total)); nothing left to read")
+        }
+        if clamped {
+            notes.append("this page extracted to \(extractedChars) characters and was clamped to "
+                + "the first \(total); the rest is not reachable through read_page")
+        }
+        if content.source?.isSourceDisplayed == false {
+            notes.append("text_source is \(content.source?.rawValue ?? "") — this text came from part "
+                + "of the document that is not being displayed at all (a hidden or collapsed panel, "
+                + "off-screen navigation), so do not tell the user it is what they are looking at")
         }
 
         let title = content.title.isEmpty ? fallbackTitle : content.title
@@ -603,12 +743,15 @@ final class MCPBrowserBridge {
             url: url,
             text: slice,
             offset: start,
-            returnedChars: slice.count,
+            returnedChars: end - start,
             totalChars: total,
             hasMore: hasMore,
             nextOffset: hasMore ? end : nil,
             loading: loading,
-            note: note
+            textSource: content.source?.rawValue,
+            sourceDisplayed: content.source?.isSourceDisplayed,
+            pageClamped: clamped ? true : nil,
+            note: notes.isEmpty ? nil : notes.joined(separator: ". ") + "."
         )
     }
 }
