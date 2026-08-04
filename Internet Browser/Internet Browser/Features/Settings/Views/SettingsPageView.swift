@@ -12,6 +12,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     case focus = "Focus"
     case extensions = "Extensions"
     case importData = "Import"
+    case connections = "Connections"
     case about = "About"
 
     var id: String { rawValue }
@@ -24,6 +25,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         case .focus: "brain.head.profile"
         case .extensions: "puzzlepiece.extension"
         case .importData: "square.and.arrow.down"
+        case .connections: "point.3.connected.trianglepath.dotted"
         case .about: "info.circle"
         }
     }
@@ -36,9 +38,20 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         case .focus: "Block distracting sites while you work"
         case .extensions: "Manage installed WebExtensions"
         case .importData: "Bring bookmarks and history from another browser"
+        case .connections: "Let Claude Code use this browser over MCP"
         case .about: "About Cherry"
         }
     }
+
+    /// A section the next Settings page to open should land on instead of
+    /// General, consumed once.
+    ///
+    /// Set by the MCP connection indicator: when the toolbar says an outside
+    /// program is reading this browser, the switch that stops it has to be one
+    /// click away, not four. Deliberately not a notification — the pane it
+    /// needs to reach usually does not exist yet at the moment the indicator is
+    /// clicked, because clicking it is what creates it.
+    @MainActor static var pendingSelection: SettingsSection?
 }
 
 struct SettingsPageView: View {
@@ -70,6 +83,11 @@ struct SettingsPageView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(nsColor: .windowBackgroundColor))
+        .onAppear {
+            guard let pending = SettingsSection.pendingSelection else { return }
+            SettingsSection.pendingSelection = nil
+            selectedSection = pending
+        }
     }
 
     @ViewBuilder
@@ -151,6 +169,8 @@ struct SettingsPageView: View {
                         ExtensionsSettingsView()
                     case .importData:
                         ImportSettingsView()
+                    case .connections:
+                        MCPSettingsView()
                     case .passwords, .about:
                         EmptyView() // handled above
                     }
