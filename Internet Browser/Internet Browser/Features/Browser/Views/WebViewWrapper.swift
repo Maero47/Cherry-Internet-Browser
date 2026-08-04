@@ -1186,6 +1186,25 @@ struct WebViewWrapper: NSViewRepresentable {
                 return nil
             }
 
+            // While an agent holds an action session for this tab, a popup that
+            // no link and no form asked for is refused outright.
+            //
+            // This is not theoretical and the plan's claim about it was wrong.
+            // `evaluateJavaScript` runs with a LIVE user gesture —
+            // `navigator.userActivation.isActive` is true at the top of every
+            // eval — so a synthesised click reaches `window.open` even with
+            // `javaScriptCanOpenWindowsAutomatically` false. The popup arrives
+            // here as `.other`, and the block below only refuses `.other` when
+            // the popup blocker is on AND the URL looks like an ad, so an agent
+            // click could open a real window over the user's browser. The gate
+            // is narrow on purpose: an agent clicking a genuine
+            // `<a target="_blank">` arrives as `.linkActivated` and still works.
+            if let tab = self.tab,
+               WebActionSessionStore.shared.hasLiveSession(forTab: tab.id),
+               !WebActionPopupPolicy.allowsPopup(navigationType: navigationAction.navigationType) {
+                return nil
+            }
+
             if SettingsManager.shared.blockPopups {
                 let isUserInitiated = navigationAction.navigationType == .linkActivated ||
                     navigationAction.navigationType == .formSubmitted ||
@@ -1299,6 +1318,42 @@ struct WebViewWrapper: NSViewRepresentable {
                 "apk", "ipa", "bin", "dat",
             ]
             return downloadExtensions.contains(ext)
+        }
+
+        /// The file chooser, gated.
+        ///
+        /// `click_element` already refuses a `role: "file"` element outright, so
+        /// an agent cannot open a panel by clicking the input itself. This closes
+        /// the OTHER route: a page's own button whose handler calls
+        /// `fileInput.click()`. A synthesised click carries a live user gesture —
+        /// `runOpenPanelWith` was measured firing from `evaluateJavaScript` — so
+        /// without this a tool call could put a modal macOS panel over the user's
+        /// browser with no user action behind it, and a modal panel is precisely
+        /// the thing that stops the browser answering anything else.
+        ///
+        /// The cost, stated rather than buried: implementing this delegate method
+        /// means Cherry owns file panels for every page, not only for pages under
+        /// a session, and `WKOpenPanelParameters` does not expose the `accept`
+        /// attribute — so the panel below cannot pre-filter by file type the way
+        /// WebKit's own does. That is a real if small regression in exchange for
+        /// closing the gate, and it is the reason this method exists at all.
+        func webView(
+            _ webView: WKWebView,
+            runOpenPanelWith parameters: WKOpenPanelParameters,
+            initiatedByFrame frame: WKFrameInfo,
+            completionHandler: @escaping ([URL]?) -> Void
+        ) {
+            if let tab, WebActionSessionStore.shared.hasLiveSession(forTab: tab.id) {
+                completionHandler(nil)
+                return
+            }
+            let panel = NSOpenPanel()
+            panel.allowsMultipleSelection = parameters.allowsMultipleSelection
+            panel.canChooseDirectories = parameters.allowsDirectories
+            panel.canChooseFiles = true
+            panel.begin { response in
+                completionHandler(response == .OK ? panel.urls : nil)
+            }
         }
 
         func webView(_ webView: WKWebView, runJavaScriptAlertPanelWithMessage message: String, initiatedByFrame frame: WKFrameInfo) async {

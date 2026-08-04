@@ -51,7 +51,15 @@ final class MCPToolInvokerTests: XCTestCase {
         // The action bridge is built over the SAME browser bridge, so
         // `read_elements` sees exactly the windows this test built — and inherits
         // the same privacy gate rather than a test-only copy of it.
-        let actions = WebActionBridge(browser: { bridge })
+        //
+        // Its session store and audit log are this test's own: a shared store
+        // would let one test's grant leak into another's, and a shared log would
+        // write test rows into the developer's real action history.
+        let store = WebActionSessionStore()
+        let audit = WebActionAuditLog(directory: nil)
+        let actions = WebActionBridge(
+            browser: { bridge }, sessions: { store }, auditLog: { audit }
+        )
         return MCPToolInvoker(bridge: { bridge }, actions: { actions })
     }
 
@@ -328,6 +336,25 @@ final class MCPToolInvokerTests: XCTestCase {
             "search_history": ["query": .string("x")],
             "search_bookmarks": ["query": .string("x")],
             "open_tab": ["url": .string("https://example.com")],
+            // A tab id nothing owns, so the wiring is proved by a `no_such_tab`
+            // refusal rather than by a consent sheet nobody is here to answer.
+            "request_action_session": [
+                "tab_id": .string(UUID().uuidString),
+                "purpose": .string("Check that this tool is wired up at all"),
+            ],
+            // No session, so these refuse — which is a successful call, and the
+            // wiring is what is under test.
+            "click_element": [
+                "element": .int(1),
+                "expect_name": .string("Show more"),
+                "document": .string("0123456789abcdef0123456789abcdef"),
+            ],
+            "type_text": [
+                "element": .int(1),
+                "expect_name": .string("Search"),
+                "document": .string("0123456789abcdef0123456789abcdef"),
+                "text": .string("hello"),
+            ],
         ]
         for tool in MCPToolRegistry.tools {
             let result = await call(invoker, tool.name, arguments[tool.name] ?? [:])

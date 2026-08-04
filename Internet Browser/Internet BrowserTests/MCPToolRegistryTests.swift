@@ -14,10 +14,14 @@ import MCP
 
 final class MCPToolRegistryTests: XCTestCase {
 
-    func testExposesExactlyTheSixDeclaredTools() {
+    func testExposesExactlyTheNineDeclaredTools() {
         XCTAssertEqual(
             MCPToolRegistry.tools.map(\.name),
-            ["list_tabs", "read_page", "read_elements", "search_history", "search_bookmarks", "open_tab"]
+            [
+                "list_tabs", "read_page", "read_elements",
+                "request_action_session", "click_element", "type_text",
+                "search_history", "search_bookmarks", "open_tab",
+            ]
         )
     }
 
@@ -117,7 +121,9 @@ final class MCPToolRegistryTests: XCTestCase {
     /// carries `idempotentHint` because that is the part a model actually needs —
     /// re-listing after the page moves costs nothing.
     func testOnlyTheToolsThatReachPastCherryAreWritable() {
-        let reachOut = ["open_tab", "read_elements"]
+        let reachOut = [
+            "open_tab", "read_elements", "request_action_session", "click_element", "type_text",
+        ]
         for tool in MCPToolRegistry.tools where !reachOut.contains(tool.name) {
             XCTAssertEqual(tool.annotations.readOnlyHint, true, "\(tool.name) is not marked read-only")
             XCTAssertEqual(tool.annotations.openWorldHint, false, "\(tool.name)")
@@ -134,6 +140,59 @@ final class MCPToolRegistryTests: XCTestCase {
         XCTAssertEqual(readElements?.annotations.destructiveHint, false)
         XCTAssertEqual(readElements?.annotations.idempotentHint, true)
         XCTAssertEqual(readElements?.annotations.openWorldHint, true)
+
+        // The two acting tools declare `destructiveHint: true`, and it is the
+        // honest value. A click can send a message or empty a cart; Cherry's
+        // commitment heuristic catches some of those and is explicit about how
+        // much it misses. Declaring them non-destructive would be a claim Cherry
+        // cannot support.
+        for name in ["click_element", "type_text"] {
+            let tool = MCPToolRegistry.tool(named: name)
+            XCTAssertEqual(tool?.annotations.readOnlyHint, false, name)
+            XCTAssertEqual(tool?.annotations.destructiveHint, true, name)
+            XCTAssertEqual(tool?.annotations.idempotentHint, false, name)
+            XCTAssertEqual(tool?.annotations.openWorldHint, true, name)
+        }
+    }
+
+    /// The acting tools require the caller to say which page load its element
+    /// number came from. An element number paired with nothing is the positional
+    /// id defect wearing a different hat, so `document` is required in the schema
+    /// — and, because the SDK validates no schema at all, in `MCPToolInvoker` too
+    /// (see `MCPActionArgumentTests`).
+    func testTheActingToolsRequireTheDocumentTheNumberCameFrom() {
+        for name in ["click_element", "type_text"] {
+            guard case .object(let schema)? = MCPToolRegistry.tool(named: name)?.inputSchema,
+                  case .array(let required)? = schema["required"]
+            else {
+                return XCTFail("\(name) declares no required arguments")
+            }
+            let names = required.compactMap(\.stringValue)
+            XCTAssertTrue(names.contains("element"), name)
+            XCTAssertTrue(names.contains("expect_name"), name)
+            XCTAssertTrue(
+                names.contains("document"),
+                "\(name) does not require the document its element number belongs to"
+            )
+        }
+    }
+
+    /// The three sentences a model has to read before it acts. Each one has an
+    /// enforcement point behind it, and a description that stopped saying so
+    /// would be describing a different tool than the one that ships.
+    func testTheActingToolsSayWhatTheEngineActuallyEnforces() {
+        let click = MCPToolRegistry.tool(named: "click_element")?.description ?? ""
+        XCTAssertTrue(click.contains("active action session"), "click_element does not name the session")
+        XCTAssertTrue(click.contains("refuses"), "click_element does not say it refuses commitments")
+        XCTAssertTrue(click.lowercased().contains("guess"),
+                      "click_element presents the commitment heuristic as more than a guess")
+
+        let type = MCPToolRegistry.tool(named: "type_text")?.description ?? ""
+        XCTAssertTrue(type.contains("password"), "type_text does not name the password refusal")
+        XCTAssertTrue(type.contains("submit"), "type_text does not explain submit: true")
+
+        let session = MCPToolRegistry.tool(named: "request_action_session")?.description ?? ""
+        XCTAssertTrue(session.contains("decline"), "request_action_session does not say a no is a no")
     }
 
     /// `read_elements` names its own limits in the copy a model reads, because a

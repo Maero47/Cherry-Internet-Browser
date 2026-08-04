@@ -367,6 +367,12 @@ final class Tab: NSObject, Identifiable {
         // WKWebView alive so Back can restore it with history intact —
         // sleeping would destroy exactly that preserved state.
         guard !isSleeping, !showHomePage, internalPage == nil else { return }
+        // A sleeping tab has no web view, so nothing could act on it in any
+        // case — the refusal ladder already answers `sleeping`. Ending the grant
+        // HERE is what takes the session bar down at the moment the tab sleeps,
+        // rather than leaving a bar claiming something is clicking in a tab that
+        // no longer exists to be clicked in.
+        WebActionSessionStore.shared.endSessions(forTab: id, reason: .tabUnavailable)
         sleepURL = url
         isSleeping = true
         // Release the WebView to free memory (a never-displayed background

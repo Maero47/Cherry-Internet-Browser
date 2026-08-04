@@ -128,6 +128,23 @@ nonisolated struct MCPToolInvoker: Sendable {
                 case .unreadable(let payload):
                     return MCPPayloadEncoding.result(MCPReadElementsOutcome.unreadable(payload))
                 }
+            case MCPToolRegistry.requestActionSession.name:
+                switch try await requestActionSession(arguments) {
+                case .granted(let grant):
+                    return MCPPayloadEncoding.result(
+                        MCPActionSessionOutcome.granted(MCPActionSessionPayload(grant))
+                    )
+                case .refused(let refusal):
+                    return MCPPayloadEncoding.result(
+                        MCPActionSessionOutcome.refused(MCPActionRefusalPayload(refusal))
+                    )
+                case .failed(let message):
+                    return MCPPayloadEncoding.failure(message)
+                }
+            case MCPToolRegistry.clickElement.name:
+                return encode(try await click(arguments))
+            case MCPToolRegistry.typeText.name:
+                return encode(try await type(arguments))
             case MCPToolRegistry.searchHistory.name:
                 return MCPPayloadEncoding.result(try await searchHistory(arguments))
             case MCPToolRegistry.searchBookmarks.name:
@@ -201,6 +218,144 @@ nonisolated struct MCPToolInvoker: Sendable {
             .flatMap { $0.isEmpty ? nil : $0 }
 
         return await hop { await resolveActions().snapshot(tabID: tabID, scope: scope, filter: filter) }
+    }
+
+    // MARK: The acting tools
+
+    /// A `WebActionResult` as a `tools/call` answer.
+    ///
+    /// Refusals are results, failures are failures — the distinction this file's
+    /// header describes. An action Cherry declined to take is a successful call
+    /// whose answer is "no", and a model handed `isError: true` for one would
+    /// retry it.
+    private func encode(_ result: WebActionResult) -> CallTool.Result {
+        switch result {
+        case .acted(let acted):
+            MCPPayloadEncoding.result(MCPActionOutcome.acted(MCPActionResultPayload(acted)))
+        case .refused(let refusal):
+            MCPPayloadEncoding.result(MCPActionOutcome.refused(MCPActionRefusalPayload(refusal)))
+        case .failed(let message):
+            MCPPayloadEncoding.failure(message)
+        }
+    }
+
+    private func requestActionSession(_ arguments: MCPArguments) async throws -> WebActionSessionResult {
+        // Required, and never defaulted to the focused tab. A grant is the one
+        // place where "whatever the user happens to be looking at" is exactly the
+        // wrong answer: the sheet names a tab, and the tab it names must be the
+        // one the client meant.
+        let raw = try arguments.requiredString("tab_id")
+        guard let tabID = UUID(uuidString: raw.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+            throw MCPArgumentError(
+                message: "tab_id \"\(raw)\" is not an id Cherry issued. Use one from list_tabs."
+            )
+        }
+
+        let purpose = try arguments.requiredString("purpose").trimmingCharacters(in: .whitespacesAndNewlines)
+        // The schema says `minLength`, and the SDK performs no schema validation
+        // at all, so this is the only thing that actually enforces it. A purpose
+        // is the one string the user reads; "do stuff" is not one.
+        guard purpose.count >= WebActionText.purposeMinimumChars else {
+            throw MCPArgumentError(
+                message: "purpose must be at least \(WebActionText.purposeMinimumChars) characters "
+                    + "and say what you intend to do in the user's own terms. The user reads it "
+                    + "verbatim and it is the only thing they have to judge your request by."
+            )
+        }
+
+        let minutes = try arguments.optionalInt("minutes") ?? 10
+        guard (1...30).contains(minutes) else {
+            throw MCPArgumentError(message: "minutes must be between 1 and 30; got \(minutes).")
+        }
+
+        return await hop {
+            await resolveActions().requestSession(
+                tabID: tabID, purpose: purpose, minutes: minutes, by: .mcp
+            )
+        }
+    }
+
+    private func click(_ arguments: MCPArguments) async throws -> WebActionResult {
+        let common = try actionArguments(arguments)
+        return await hop {
+            await resolveActions().perform(
+                .click(
+                    element: common.element,
+                    expectName: common.expectName,
+                    document: common.document,
+                    waitMS: common.waitMS
+                ),
+                on: common.tabID,
+                by: .mcp
+            )
+        }
+    }
+
+    private func type(_ arguments: MCPArguments) async throws -> WebActionResult {
+        let common = try actionArguments(arguments)
+        let text = try arguments.requiredString("text")
+        guard text.count <= MCPResultCaps.typedTextChars else {
+            throw MCPArgumentError(
+                message: "text must be at most \(MCPResultCaps.typedTextChars) characters; "
+                    + "got \(text.count)."
+            )
+        }
+        let append = try arguments.optionalBool("append") ?? false
+        let submit = try arguments.optionalBool("submit") ?? false
+        return await hop {
+            await resolveActions().perform(
+                .type(
+                    element: common.element,
+                    expectName: common.expectName,
+                    document: common.document,
+                    text: text,
+                    append: append,
+                    submit: submit,
+                    waitMS: common.waitMS
+                ),
+                on: common.tabID,
+                by: .mcp
+            )
+        }
+    }
+
+    /// The four arguments both acting tools share.
+    ///
+    /// `document` is required, and a missing one is an argument ERROR rather than
+    /// a refusal — because a caller that cannot say which page load it read is
+    /// not making a well-formed call at all. That is the whole reason the token
+    /// exists: an element number paired with nothing is the positional-id defect
+    /// wearing a different hat.
+    private func actionArguments(
+        _ arguments: MCPArguments
+    ) throws -> (element: Int, expectName: String, document: String, tabID: UUID?, waitMS: Int) {
+        guard let element = try arguments.optionalInt("element") else {
+            throw MCPArgumentError(
+                message: "element is required. Pass a number from a read_elements listing."
+            )
+        }
+        guard element > 0 else {
+            throw MCPArgumentError(
+                message: "element must be a number read_elements gave you; got \(element)."
+            )
+        }
+        let expectName = try arguments.requiredString("expect_name")
+        // Read as OPTIONAL and rejected here, rather than through
+        // `requiredString`, so the message is this one. "document is required."
+        // on its own tells a model nothing about where to get one, and the
+        // whole point of the token is that a caller has to understand what it is.
+        let document = (try arguments.optionalString("document") ?? "")
+            .trimmingCharacters(in: .whitespaces)
+        guard !document.isEmpty else {
+            throw MCPArgumentError(
+                message: "document is required and must be the `document` value from the same "
+                    + "read_elements answer element \(element) came from. Element numbers are only "
+                    + "meaningful paired with the page load they were listed in."
+            )
+        }
+        let tabID = try arguments.optionalUUID("tab_id")
+        let waitMS = WebActionSettleWait.boundedWait(try arguments.optionalInt("wait_ms"))
+        return (element, expectName, document, tabID, waitMS)
     }
 
     private func searchHistory(_ arguments: MCPArguments) async throws -> MCPSearchHistoryPayload {

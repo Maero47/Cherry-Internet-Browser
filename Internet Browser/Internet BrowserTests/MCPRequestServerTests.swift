@@ -158,8 +158,14 @@ final class MCPRequestServerTests: XCTestCase {
 
         let result = body(of: response)["result"] as? [String: Any]
         let tools = result?["tools"] as? [[String: Any]] ?? []
-        XCTAssertEqual(tools.compactMap { $0["name"] as? String },
-                       ["list_tabs", "read_page", "read_elements", "search_history", "search_bookmarks", "open_tab"])
+        XCTAssertEqual(
+            tools.compactMap { $0["name"] as? String },
+            [
+                "list_tabs", "read_page", "read_elements",
+                "request_action_session", "click_element", "type_text",
+                "search_history", "search_bookmarks", "open_tab",
+            ]
+        )
     }
 
     func testToolsListSurvivesAcrossSeparateRequests() async {

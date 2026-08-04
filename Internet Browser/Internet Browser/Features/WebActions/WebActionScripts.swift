@@ -595,6 +595,378 @@ nonisolated enum WebActionScripts {
             };
         };
 
+        // ---- shared bits the acting primitives need -------------------------
+
+        function nowMS() {
+            try { return window.performance && performance.now ? performance.now() : Date.now(); }
+            catch (e) { return Date.now(); }
+        }
+
+        // A CSS-ish name for whatever is on top of an element. Page-authored, so
+        // it is sanitised on the Swift side like every other string from here.
+        function describeNode(node) {
+            if (!node || !node.tagName) { return null; }
+            var out = node.tagName.toLowerCase();
+            if (node.id) { return out + "#" + node.id; }
+            var cls = node.getAttribute ? node.getAttribute("class") : null;
+            if (cls) {
+                var first = String(cls).trim().split(/\\s+/)[0];
+                if (first) { return out + "." + first; }
+            }
+            return out;
+        }
+
+        // What is actually at the element's centre. `self` / `descendant` mean the
+        // click lands where a user's would; `occluded` means it does NOT, and
+        // Cherry clicks the element anyway and says so — element.click() reaches
+        // an element buried under a full-screen cookie wall, where a faithful
+        // pointer sequence at those coordinates hits the wall instead.
+        function hitTest(el, box) {
+            var onscreen = window.innerWidth > 0 &&
+                           box.top < window.innerHeight && box.bottom > 0 &&
+                           box.left < window.innerWidth && box.right > 0;
+            if (!onscreen) { return { onscreen: false, hit: "offscreen", obscured_by: null }; }
+            try {
+                var at = document.elementFromPoint(
+                    box.left + box.width / 2,
+                    box.top + box.height / 2
+                );
+                if (at === el) { return { onscreen: true, hit: "self", obscured_by: null }; }
+                if (at && el.contains(at)) { return { onscreen: true, hit: "descendant", obscured_by: null }; }
+                if (at) { return { onscreen: true, hit: "occluded", obscured_by: describeNode(at) }; }
+                return { onscreen: true, hit: "none", obscured_by: null };
+            } catch (e) {
+                return { onscreen: true, hit: "unknown", obscured_by: null };
+            }
+        }
+
+        // The button the browser would press if Enter were typed in this form.
+        // HTML calls it the default button: the first submit control in tree
+        // order. It is described, never pressed, until Swift has classified it.
+        function defaultSubmitControl(form) {
+            if (!form || !form.querySelector) { return null; }
+            var candidate;
+            try {
+                candidate = form.querySelector(
+                    'button:not([type]), button[type="submit"], input[type="submit"], input[type="image"]'
+                );
+            } catch (e) { candidate = null; }
+            if (!candidate) { return null; }
+            var named = accessibleName(candidate);
+            return {
+                id: A.handleFor(candidate),
+                role: roleOf(candidate) || "button",
+                name: named.name,
+                tag: candidate.tagName,
+                type: attr(candidate, "type"),
+                href: attr(candidate, "href") !== null,
+                nav: false,
+                form: true
+            };
+        }
+
+        function formOf(el) {
+            try {
+                if (el.form) { return el.form; }
+                return el.closest ? el.closest("form") : null;
+            } catch (e) { return null; }
+        }
+
+        // ---- the outcome watcher --------------------------------------------
+
+        // Installed immediately BEFORE the action, in the same evaluation, so no
+        // mutation can land in the gap between arming the observer and acting.
+        A.watching = null;
+
+        A.watchStart = function () {
+            A.watchStop();
+            var state = { mutations: 0, last: 0, started: nowMS(), url: location.href };
+            try {
+                var observer = new MutationObserver(function (records) {
+                    state.mutations = state.mutations + records.length;
+                    state.last = nowMS();
+                });
+                observer.observe(document.documentElement || document, {
+                    childList: true, subtree: true, attributes: true, characterData: true
+                });
+                state.observer = observer;
+            } catch (e) { state.observer = null; }
+            A.watching = state;
+        };
+
+        // Deliberately does NOT call checkDocument. A poll is a READ: burning
+        // every handle from inside the answer to "has anything happened yet"
+        // would mean the same call both reported a change and caused one. A
+        // same-document URL change is reported as `url_changed` and the NEXT arm
+        // is what re-mints.
+        A.watchPoll = function () {
+            var w = A.watching;
+            if (!w) { return { ok: false, reason: "not_watching", doc: A.doc }; }
+            var t = nowMS();
+            return {
+                ok: true,
+                doc: A.doc,
+                mutations: w.mutations,
+                elapsed_ms: Math.round(t - w.started),
+                since_last_ms: w.mutations > 0 ? Math.round(t - w.last) : 0,
+                url: location.href,
+                url_changed: location.href !== w.url
+            };
+        };
+
+        A.watchStop = function () {
+            if (A.watching && A.watching.observer) {
+                try { A.watching.observer.disconnect(); } catch (e) {}
+            }
+            A.watching = null;
+        };
+
+        // ---- arm / fire ------------------------------------------------------
+
+        // Acting is two evaluations, and the split is not an accident.
+        //
+        // Swift has to decide things JavaScript must not be trusted with — is
+        // this control commitment-shaped, does its name still match the one the
+        // model agreed to, is the session still live — and those decisions need
+        // the element's identity BEFORE anything happens to it. But a check on
+        // the Swift side and an action on the page side are separated by
+        // asynchronous IPC, and a page that mutates in that gap would be acted
+        // on after the checks stopped being true.
+        //
+        // So `arm` describes and remembers, `fire` re-verifies EVERYTHING inside
+        // the page, atomically with the action:
+        //
+        //   * the document token still matches the one the caller passed,
+        //   * the element is the same object and still connected,
+        //   * and its accessible name is byte-identical to the one `arm` returned
+        //     and Swift approved.
+        //
+        // That last check is why the name comparison Swift performs is not the
+        // only one, and why this file does not need a second copy of
+        // `sanitiseName`: Swift compares the DISPLAY form it showed the model,
+        // and the page compares the RAW form it produced a moment ago. Neither
+        // can drift, because neither is a re-derivation.
+        A.armed = null;
+
+        A.arm = function (id, expectName, doc, wantsSubmit) {
+            A.checkDocument();
+            if (A.doc !== doc) { return { ok: false, reason: "snapshot_gone", doc: A.doc }; }
+
+            var ref = A.live.get(id);
+            var el = ref ? ref.deref() : null;
+            if (!el) {
+                return {
+                    ok: false,
+                    reason: (id > 0 && id < A.next) ? "element_detached" : "unknown_element",
+                    doc: A.doc
+                };
+            }
+            if (!el.isConnected) { return { ok: false, reason: "element_detached", doc: A.doc }; }
+
+            var named = accessibleName(el);
+            var token = mintDocumentToken();
+            // A STRONG reference for the few milliseconds between the two calls.
+            // A WeakRef here would let the element be collected inside the gap
+            // and turn a clean `element_detached` into a confusing one.
+            A.armed = { token: token, id: id, el: el, name: named.name, doc: A.doc };
+
+            var box = el.getBoundingClientRect();
+            var placement = hitTest(el, box);
+
+            var href = attr(el, "href");
+            var navigational = false;
+            if (href !== null) {
+                var trimmed = String(href).trim();
+                navigational = trimmed.length > 0 && trimmed !== "#" &&
+                               trimmed.toLowerCase().indexOf("javascript:") !== 0;
+            }
+            var form = formOf(el);
+            var disabled = false;
+            try {
+                disabled = el.disabled === true || attr(el, "aria-disabled") === "true";
+            } catch (e) {}
+            var editable = false;
+            try { editable = !!el.isContentEditable; } catch (e) {}
+
+            return {
+                ok: true,
+                doc: A.doc,
+                token: token,
+                role: roleOf(el),
+                name_now: named.name,
+                tag: el.tagName,
+                type: attr(el, "type"),
+                has_href: href !== null,
+                href: href === null ? null : String(href).slice(0, 300),
+                nav: navigational,
+                in_form: !!form,
+                form_action: form ? String(form.getAttribute("action") || "") .slice(0, 300) : null,
+                form_method: form ? String(form.getAttribute("method") || "get").toLowerCase() : null,
+                disabled: disabled,
+                editable: editable,
+                onscreen: placement.onscreen,
+                hit: placement.hit,
+                obscured_by: placement.obscured_by,
+                url: location.href,
+                submit_control: wantsSubmit ? defaultSubmitControl(form) : null
+            };
+        };
+
+        // ---- typing ----------------------------------------------------------
+
+        // React installs a per-node value tracker and DROPS the change event when
+        // the tracked value already matches, so a naive `el.value = x` leaves the
+        // DOM showing the text while application state stays empty — measured on
+        // duckduckgo.com: naive typing produced 0 suggestions, the prototype
+        // setter produced 7. `PasswordAutoFillScripts.autoFillScript` already met
+        // this problem on real login forms and its technique is reused verbatim.
+        //
+        // `contenteditable` needs the other answer entirely: the setter does not
+        // apply, `textContent = x` fires no events at all, and
+        // `execCommand("insertText")` fires `beforeinput` and `input` the way a
+        // person's keystroke does.
+        function typeInto(el, text, append) {
+            if (el.isContentEditable) {
+                try { el.focus(); } catch (e) {}
+                try {
+                    var selection = window.getSelection();
+                    var range = document.createRange();
+                    range.selectNodeContents(el);
+                    if (append) { range.collapse(false); }
+                    selection.removeAllRanges();
+                    selection.addRange(range);
+                } catch (e) {}
+                var inserted = false;
+                try { inserted = document.execCommand("insertText", false, text); } catch (e) { inserted = false; }
+                if (!inserted) {
+                    // Last resort, and it is a worse one: no beforeinput, and a
+                    // framework listening for it will not see this. Reported
+                    // through `framework_observed` rather than hidden.
+                    el.textContent = append ? String(el.textContent || "") + text : text;
+                    try {
+                        el.dispatchEvent(new InputEvent("input", {
+                            bubbles: true, data: text, inputType: "insertText"
+                        }));
+                    } catch (e) {
+                        el.dispatchEvent(new Event("input", { bubbles: true }));
+                    }
+                }
+                return String(el.textContent || "");
+            }
+
+            var prototype = el.tagName === "TEXTAREA"
+                ? window.HTMLTextAreaElement.prototype
+                : window.HTMLInputElement.prototype;
+            var setter = null;
+            try {
+                setter = Object.getOwnPropertyDescriptor(prototype, "value").set;
+            } catch (e) { setter = null; }
+
+            var current = el.value == null ? "" : String(el.value);
+            var next = append ? current + text : text;
+            try { el.focus(); } catch (e) {}
+            if (setter) { setter.call(el, next); } else { el.value = next; }
+            el.dispatchEvent(new Event("input", { bubbles: true }));
+            el.dispatchEvent(new Event("change", { bubbles: true }));
+            el.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true }));
+            el.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true }));
+            return el.value == null ? "" : String(el.value);
+        }
+
+        // A synthesised Enter does NOT perform implicit form submission — only a
+        // trusted keystroke does — so this is two separate things said honestly.
+        // The key events are what a search box's own handler listens for. The
+        // default button click is what actually submits a form, and Cherry only
+        // reaches it because Swift has already classified that button and let it
+        // through; when there is no form, or no default button, only the key
+        // events happen and the answer says so.
+        function pressEnter(el, clickDefaultButton) {
+            var options = {
+                bubbles: true, cancelable: true,
+                key: "Enter", code: "Enter", keyCode: 13, which: 13
+            };
+            var notCancelled = true;
+            try {
+                notCancelled = el.dispatchEvent(new KeyboardEvent("keydown", options));
+                el.dispatchEvent(new KeyboardEvent("keypress", options));
+                el.dispatchEvent(new KeyboardEvent("keyup", options));
+            } catch (e) {}
+            if (!clickDefaultButton || !notCancelled) { return false; }
+            var form = formOf(el);
+            var button = null;
+            try {
+                button = form ? form.querySelector(
+                    'button:not([type]), button[type="submit"], input[type="submit"], input[type="image"]'
+                ) : null;
+            } catch (e) { button = null; }
+            if (!button) { return false; }
+            button.click();
+            return true;
+        }
+
+        // ---- fire ------------------------------------------------------------
+
+        A.fire = function (token, mode, text, append, submit, clickDefaultButton) {
+            var armed = A.armed;
+            A.armed = null;
+            if (!armed || armed.token !== token) {
+                return { ok: false, reason: "snapshot_gone", doc: A.doc };
+            }
+            A.checkDocument();
+            if (A.doc !== armed.doc) { return { ok: false, reason: "snapshot_gone", doc: A.doc }; }
+
+            var el = armed.el;
+            if (!el || !el.isConnected) { return { ok: false, reason: "element_detached", doc: A.doc }; }
+
+            // The RAW name, against the RAW name `arm` returned and Swift
+            // approved. Same function, same document, milliseconds apart — so
+            // this compares an identity rather than re-deriving one.
+            var nameNow = accessibleName(el).name;
+            if (nameNow !== armed.name) {
+                return { ok: false, reason: "name_mismatch", name_now: nameNow, doc: A.doc };
+            }
+
+            var box = el.getBoundingClientRect();
+            var placement = hitTest(el, box);
+            var urlBefore = location.href;
+
+            // The observer goes up FIRST, in this same evaluation.
+            A.watchStart();
+
+            if (mode === "click") {
+                // focus() before click(). It fires a TRUSTED focus event, because
+                // it is a real API call rather than a synthesised event, and
+                // plenty of controls only behave once focused.
+                try { el.focus(); } catch (e) {}
+                try {
+                    el.click();
+                } catch (e) {
+                    A.watchStop();
+                    return { ok: false, reason: "click_threw", doc: A.doc };
+                }
+                return {
+                    ok: true, doc: A.doc, url_before: urlBefore,
+                    hit: placement.hit, obscured_by: placement.obscured_by,
+                    value_after: null, submitted: false
+                };
+            }
+
+            var after;
+            try {
+                after = typeInto(el, text, append);
+            } catch (e) {
+                A.watchStop();
+                return { ok: false, reason: "type_threw", doc: A.doc };
+            }
+            var submitted = false;
+            if (submit) { submitted = pressEnter(el, clickDefaultButton); }
+            return {
+                ok: true, doc: A.doc, url_before: urlBefore,
+                hit: placement.hit, obscured_by: placement.obscured_by,
+                value_after: after, submitted: !!submit, submit_button_clicked: submitted
+            };
+        };
+
         // ---- resolve -------------------------------------------------------
 
         // Written now, unused until the acting slice. It answers WHAT the id is
@@ -714,6 +1086,86 @@ nonisolated enum WebActionScripts {
         })();
         """
     }
+
+    // MARK: - arm / fire / watch
+
+    /// Describe one element and remember it, WITHOUT touching it.
+    ///
+    /// `document` is required and is compared inside the page. An element number
+    /// is only ever meaningful paired with the page load it was minted in, so a
+    /// caller that cannot say which load it read is a caller acting on a number
+    /// it does not understand — and that is exactly the failure stable handles
+    /// exist to prevent, arrived at from the other end.
+    static func arm(id: Int, expectName: String, document: String, wantsSubmit: Bool) -> String {
+        installWorld + "\n" + """
+        (function () {
+            var A = window.__cherryAct;
+            if (!A) { return JSON.stringify({ ok: false, reason: "snapshot_gone" }); }
+            return JSON.stringify(A.arm(\(id), \(jsString(expectName)), \(jsString(document)), \(wantsSubmit ? "true" : "false")));
+        })();
+        """
+    }
+
+    /// Act on the element `arm` remembered, after re-verifying every check
+    /// inside the page.
+    ///
+    /// `installWorld` is prepended here as everywhere — and if the world had gone
+    /// away, the freshly installed one has no `armed` entry and this refuses with
+    /// `snapshot_gone` rather than acting on a page nobody described.
+    static func fireClick(token: String) -> String {
+        installWorld + "\n" + """
+        (function () {
+            var A = window.__cherryAct;
+            if (!A) { return JSON.stringify({ ok: false, reason: "snapshot_gone" }); }
+            return JSON.stringify(A.fire(\(jsString(token)), "click", null, false, false, false));
+        })();
+        """
+    }
+
+    static func fireType(
+        token: String,
+        text: String,
+        append: Bool,
+        submit: Bool,
+        clickDefaultButton: Bool
+    ) -> String {
+        installWorld + "\n" + """
+        (function () {
+            var A = window.__cherryAct;
+            if (!A) { return JSON.stringify({ ok: false, reason: "snapshot_gone" }); }
+            return JSON.stringify(A.fire(
+                \(jsString(token)), "type", \(jsString(text)),
+                \(append ? "true" : "false"), \(submit ? "true" : "false"),
+                \(clickDefaultButton ? "true" : "false")
+            ));
+        })();
+        """
+    }
+
+    /// Sample the outcome watcher.
+    ///
+    /// The ONE script that does not prepend `installWorld`, and the omission is
+    /// the mechanism rather than an oversight. A navigation destroys the isolated
+    /// world; a poll that reinstalled it would answer "the page is quiet" about a
+    /// world it had just created, which is precisely the signal being looked for
+    /// turned into its opposite. A missing `__cherryAct` here MEANS the document
+    /// went away.
+    static let watchPoll = """
+    (function () {
+        var A = window.__cherryAct;
+        if (!A) { return JSON.stringify({ ok: false, reason: "gone" }); }
+        if (!A.watchPoll) { return JSON.stringify({ ok: false, reason: "gone" }); }
+        return JSON.stringify(A.watchPoll());
+    })();
+    """
+
+    static let watchStop = """
+    (function () {
+        var A = window.__cherryAct;
+        if (A && A.watchStop) { A.watchStop(); }
+        return "stopped";
+    })();
+    """
 
     // MARK: - Name sanitisation
 
