@@ -55,7 +55,12 @@ final class WebActionAuditLogTests: XCTestCase {
             formAction: "/send",
             formMethod: "post",
             charsTyped: charsTyped,
+            // Every optional set to something, so the key-set assertion below
+            // covers the whole shape: Swift's synthesised encoder omits a nil
+            // optional entirely, and a field that is always nil in the fixture is
+            // a field the assertion cannot see.
             submitted: charsTyped == nil ? nil : false,
+            submitControl: "Search",
             decision: "acted",
             result: "changed",
             revokedMidAction: nil,
@@ -99,6 +104,7 @@ final class WebActionAuditLogTests: XCTestCase {
                 "action", "at", "session_id", "requester", "purpose", "tab_id", "window_id",
                 "document", "url_before", "url_after", "element", "role", "name", "tag", "type",
                 "form_action", "form_method", "chars_typed", "submitted", "decision", "result",
+                "submit_control",
             ],
             "the audit entry grew or lost a field — if a new one can carry page or caller text, "
                 + "that is the leak this file exists to prevent"
@@ -248,6 +254,23 @@ final class WebActionAuditLogTests: XCTestCase {
         }
         XCTAssertEqual(log.tail.count, WebActionAuditLog.tailCount)
         XCTAssertEqual(log.tail.last?.name, "Button \(WebActionAuditLog.tailCount + 39)")
+    }
+
+    /// The disk separation was real and the mirror's was not: `write` appended to
+    /// one shared tail before branching on the destination, so a sessionless
+    /// caller could still evict every real action from the surface a viewer reads.
+    func testASessionlessFloodCannotEvictRealActionsFromTheTail() {
+        let log = WebActionAuditLog(directory: directory)
+        log.record(entry(name: "A real action"))
+
+        for index in 0..<(WebActionAuditLog.tailCount + 40) {
+            log.recordSessionless(entry(name: "Refusal \(index)"))
+        }
+
+        XCTAssertEqual(log.tail.map(\.name), ["A real action"],
+                       "a caller with no session pushed the real actions out of the mirror")
+        XCTAssertEqual(log.sessionlessTail.count, WebActionAuditLog.tailCount,
+                       "and its own tail is bounded too")
     }
 
     // MARK: - A log that cannot be written must not take the browser down

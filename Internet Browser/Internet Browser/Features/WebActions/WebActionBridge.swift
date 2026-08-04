@@ -511,25 +511,35 @@ final class WebActionBridge {
         let session = authorisation.session
         let tab = authorisation.tab
 
-        // The limiter sits AFTER the gate, deliberately. Before it, an
-        // unauthorised caller could spend a budget that is not theirs and
-        // rate-limit the user's own agent out of its session. After it, only a
-        // grant holder can reach it, and what it bounds is main-actor JavaScript
-        // evaluation in a loop.
-        guard actionLimiter.allow() else {
-            return .refused(WebActionRefusal(
-                .rateLimited,
-                "Cherry is limiting actions to \(Self.actionsPerMinute) a minute and this session "
-                    + "has reached it. Wait \(actionLimiter.retryAfterSeconds()) seconds. If you "
-                    + "are looping, stop and tell the user what is not working."
-            ))
-        }
+        // The context is built BEFORE the limiter, so a rate-limited call is
+        // audited like every other refusal. It used to return `.refused` directly
+        // and leave no trace — which made it the one refusal class with a live
+        // session, a known tab and a known element that both file headers claimed
+        // was recorded and was not. A client looping itself into the limiter is
+        // exactly the behaviour a log should show.
         var context = ActionContext(
             action: action,
             session: session,
             windowID: authorisation.viewModel.windowID,
             urlBefore: tab.displayURL.mcpTruncated(to: MCPResultCaps.urlChars)
         )
+
+        // The limiter sits AFTER the gate, deliberately. Before it, an
+        // unauthorised caller could spend a budget that is not theirs and
+        // rate-limit the user's own agent out of its session. After it, only a
+        // grant holder can reach it, and what it bounds is main-actor JavaScript
+        // evaluation in a loop.
+        guard actionLimiter.allow() else {
+            return refuse(
+                WebActionRefusal(
+                    .rateLimited,
+                    "Cherry is limiting actions to \(Self.actionsPerMinute) a minute and this "
+                        + "session has reached it. Wait \(actionLimiter.retryAfterSeconds()) "
+                        + "seconds. If you are looping, stop and tell the user what is not working."
+                ),
+                context
+            )
+        }
 
         // 2. The same five rungs `read_page` and `read_elements` run. A tab that
         //    went to sleep or was covered by a cherry:// page under a live grant
@@ -648,6 +658,15 @@ final class WebActionBridge {
             return refuse(Self.fireRefusal(fired, action: action, shownName: shownName), context)
         }
 
+        // What the page actually did with Enter, as opposed to what was asked
+        // for. Recorded from here on, including on the refusal paths below.
+        if case .type(_, _, _, _, _, true, _) = action {
+            context.didSubmit = fired.submitButtonClicked == true
+            context.submitControl = (fired.submitButtonClicked == true)
+                ? armed.submitControl.map { WebActionScripts.sanitiseName($0.name) }
+                : nil
+        }
+
         // 8. Watch.
         let waited = await watchOutcome(in: webView, waitMS: action.waitMS, authorisation)
         _ = try? await webView.evaluateJavaScript(
@@ -715,7 +734,10 @@ final class WebActionBridge {
             valueAfter: value,
             valueTruncated: fired.valueAfter.map { $0.count > WebActionScripts.nameChars },
             frameworkObserved: action.kind == "type" ? waited.mutations > 0 : nil,
-            submitted: fired.submitted,
+            // Whether a form was actually submitted through its button, not
+            // whether Enter was asked for. The key events happened either way and
+            // the `note` says so; this field is about the control.
+            submitted: fired.submitted == true ? fired.submitButtonClicked == true : nil,
             note: Self.note(
                 for: outcome, action: action, fired: fired,
                 mutations: waited.mutations, origin: session.origin,
@@ -1197,6 +1219,23 @@ final class WebActionBridge {
         var document: String?
         var element: AuditIdentity?
 
+        /// Whether a form's submit button was ACTUALLY pressed, and which one.
+        ///
+        /// Both nil until `fire` has answered. `submitted` used to be read
+        /// straight off the request — `if case .type(…, submit, …)` — so every
+        /// entry for a `submit: true` call said `"submitted":true`, including the
+        /// scenario `testAButtonTheEnterHandlerInsertsIsNotThePressedOne` exists
+        /// for, where Cherry correctly presses nothing. The log recorded the
+        /// intention and called it the outcome, which is the one thing a log must
+        /// never do.
+        ///
+        /// `submitControl` is the other half: a real submit is the one action
+        /// that commits through a control the entry otherwise never names. The
+        /// field, the form and its method were all recorded; the button that was
+        /// pressed was not.
+        var didSubmit: Bool?
+        var submitControl: String?
+
         func entry(
             decision: String,
             result: String,
@@ -1206,11 +1245,6 @@ final class WebActionBridge {
         ) -> WebActionAuditEntry {
             let charsTyped: Int? = if case .type(_, _, _, let text, _, _, _) = action {
                 text.count
-            } else {
-                nil
-            }
-            let submitted: Bool? = if case .type(_, _, _, _, _, let submit, _) = action {
-                submit
             } else {
                 nil
             }
@@ -1234,7 +1268,8 @@ final class WebActionBridge {
                 formAction: element?.formAction,
                 formMethod: element?.formMethod,
                 charsTyped: charsTyped,
-                submitted: submitted,
+                submitted: didSubmit,
+                submitControl: submitControl,
                 decision: decision,
                 result: result,
                 revokedMidAction: revokedMidAction,
@@ -1264,9 +1299,15 @@ final class WebActionBridge {
     /// which after one `type_text` is the agent's own text. `WebActionAuditEntry`
     /// having no field for typed text is true of its SHAPE and was not true of
     /// its contents: type into a composer, act on the same element again, and the
-    /// name written to the log is the previous message. A search box that mirrors
-    /// its input into a button's `aria-label` is the same leak one step removed,
-    /// which is why this tests the rung and the host rather than the tag.
+    /// name written to the log is the previous message.
+    ///
+    /// The test is the RUNG and the HOST rather than the tag, so it covers any
+    /// editable element whose name is its own contents. It does NOT cover a page
+    /// that mirrors a field's contents into another control's `aria-label` — that
+    /// is the `aria-label` rung on a non-editable element and it is recorded.
+    /// Withholding every `aria-label`-derived name would empty the log of the
+    /// identities it exists to hold; the edge is stated in this file's header and
+    /// in the report rather than quietly claimed as covered.
     nonisolated static func nameIsOwnContents(_ armed: WebActionRawArm) -> Bool {
         armed.editable && armed.nameFrom == "text"
     }

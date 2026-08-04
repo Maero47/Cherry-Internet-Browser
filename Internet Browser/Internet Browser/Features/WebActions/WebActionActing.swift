@@ -286,6 +286,14 @@ nonisolated struct WebActionActed: Sendable, Equatable {
     /// showing the text while application state stays empty.
     let frameworkObserved: Bool?
 
+    /// Whether a form was actually SUBMITTED through its button — not whether
+    /// Enter was asked for.
+    ///
+    /// Those are different facts and reporting the second as the first is how a
+    /// model stops watching. Cherry presses the button `arm` pinned only if it is
+    /// still the same object, still connected, still named what it was and still
+    /// the form's default; the key events happen either way, and the `note` says
+    /// which case this was. Nil when `submit` was not passed.
     let submitted: Bool?
 
     /// What Cherry wants the model to do next. Never nil after a navigation.

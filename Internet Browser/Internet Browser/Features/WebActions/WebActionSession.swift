@@ -87,8 +87,20 @@ nonisolated struct WebActionSession: Sendable, Equatable, Identifiable {
     /// The one tab this grant covers.
     let tabID: UUID
 
-    /// The window that tab was in when the user granted it — used to put the
-    /// session bar in the right place, never to widen what is permitted.
+    /// The window that tab was in **when the user granted it**. PROVENANCE, and
+    /// nothing else decides anything from it.
+    ///
+    /// It is frozen, and a tab does not stay put: `transferTab` and `detachTab`
+    /// move one between windows through `TabManager.removeTab`, which ends
+    /// nothing. So this is not where the session is happening, only where it was
+    /// agreed to. `WebActionSessionBar` asks which window holds the tab now, the
+    /// consent sheet is selected by tab, and each audit entry records the window
+    /// the action ACTUALLY ran in (`authorisation.viewModel.windowID`), not this.
+    /// The only two places this appears are the grant payload the client is
+    /// handed and the `session_granted` audit line — both records of a past
+    /// moment, which is what it is.
+    ///
+    /// **Do not filter anything by it.** That was the defect fixed in round 2.
     let windowID: UUID
 
     /// `scheme://host[:port]` at grant time, as `WebActionOrigin.of(_:)` derives

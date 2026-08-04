@@ -307,6 +307,15 @@ final class TabManager {
         return tab
     }
 
+    /// The ids of the tabs this window holds RIGHT NOW.
+    ///
+    /// For the things that must follow a tab between windows rather than trust a
+    /// window id frozen when they were created — the action-session bar and its
+    /// consent sheet. `removeTab` moves a tab out of one manager and
+    /// `addExistingTab` moves it into another, so this changes underneath them,
+    /// which is the point.
+    var tabIDs: Set<UUID> { Set(tabs.map(\.id)) }
+
     /// Add an existing tab (transferred from another window)
     func addExistingTab(_ tab: Tab, switchTo: Bool = true) {
         let previous = selectedTab

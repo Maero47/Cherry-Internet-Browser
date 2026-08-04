@@ -166,20 +166,42 @@ final class WebActionSessionStore {
     /// ended, wrong tab and wrong requester alike, because the caller's next move
     /// is the same for all of them: do not act. `endedSession(forTab:requester:)`
     /// is what supplies the sentence explaining which it was.
+    ///
+    /// ## Why this scans instead of taking the first match
+    ///
+    /// It used to be `sessions.firstIndex(where:)`, and that was a real defect
+    /// rather than a style point. `allow(_:)` ENDS prior grants for a tab and
+    /// APPENDS the new one, and `pruneEndedSessions` leaves up to sixteen entries
+    /// standing — so after a perfectly ordinary sequence (grant, let it expire or
+    /// press End, ask again, user allows) the array holds `[S1(ended),
+    /// S2(live)]`. `firstIndex` found S1, saw it was not live, and returned nil.
+    ///
+    /// The store then gave three different answers to the same question: a click
+    /// naming the tab was refused `session_expired` for a grant made seconds
+    /// earlier, `liveSessions` / `hasLiveSession` / the session bar all reported
+    /// the session as live, and a click that omitted `tab_id` resolved S2 and
+    /// acted. A type whose header calls it THE authority cannot disagree with its
+    /// own siblings, and the user cannot be shown a live session bar over a
+    /// feature that refuses everything.
+    ///
+    /// So: visit every match, record any lapse into `endReason` on the way past,
+    /// and answer with the live one. There is at most one — `allow(_:)` ends the
+    /// rest before appending — and taking the last is what makes that true even
+    /// if that invariant is ever weakened.
     func liveSession(forTab tabID: UUID, requester: WebActionRequester) -> WebActionSession? {
         let moment = now()
-        guard let index = sessions.firstIndex(where: {
-            $0.tabID == tabID && $0.requester == requester
-        }) else {
-            return nil
+        var live: WebActionSession?
+        for index in sessions.indices
+        where sessions[index].tabID == tabID && sessions[index].requester == requester {
+            // Expiry is recorded the first time it is noticed, so the audit log
+            // and the next refusal both say "expired" rather than "no session".
+            if sessions[index].endedAt == nil, moment >= sessions[index].expiresAt {
+                sessions[index].endedAt = sessions[index].expiresAt
+                sessions[index].endReason = .expired
+            }
+            if sessions[index].isLive(at: moment) { live = sessions[index] }
         }
-        // Expiry is recorded the first time it is noticed, so the audit log and
-        // the next refusal both say "expired" rather than "no session".
-        if sessions[index].endedAt == nil, moment >= sessions[index].expiresAt {
-            sessions[index].endedAt = sessions[index].expiresAt
-            sessions[index].endReason = .expired
-        }
-        return sessions[index].isLive(at: moment) ? sessions[index] : nil
+        return live
     }
 
     /// Every live grant `requester` holds. Used only to resolve an action that
@@ -368,9 +390,15 @@ final class WebActionSessionStore {
         answer(requestID, with: .declined)
     }
 
-    /// The prompt for one window, if there is one. Drives the sheet.
-    func pendingRequest(inWindow windowID: UUID) -> WebActionConsentRequest? {
-        pending.first { $0.windowID == windowID }
+    /// The prompt a window should present, if any.
+    ///
+    /// Selected by the TAB, not by the window the request named. A window's id is
+    /// frozen at the moment the request was raised, and a tab can be dragged into
+    /// another window inside the fifty-five seconds the prompt waits — after
+    /// which the sheet would be asking window A about a tab window B is showing.
+    /// Exactly one window holds a given tab, so exactly one presents.
+    func pendingRequest(forTabIn tabIDs: Set<UUID>) -> WebActionConsentRequest? {
+        pending.first { tabIDs.contains($0.tabID) }
     }
 
     // MARK: - Internals

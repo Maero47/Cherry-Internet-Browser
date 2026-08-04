@@ -61,10 +61,12 @@ struct BrowserView: View {
             // Dismissing it any other way — Escape, clicking away — is a decline.
             // The safe answer has to be the reflexive one.
             .sheet(item: Binding(
-                get: { actionSessions.pendingRequest(inWindow: viewModel.windowID) },
+                get: { actionSessions.pendingRequest(forTabIn: viewModel.tabManager.tabIDs) },
                 set: { newValue in
                     guard newValue == nil,
-                          let request = actionSessions.pendingRequest(inWindow: viewModel.windowID)
+                          let request = actionSessions.pendingRequest(
+                              forTabIn: viewModel.tabManager.tabIDs
+                          )
                     else { return }
                     actionSessions.decline(request.id)
                 }
@@ -369,10 +371,7 @@ struct BrowserView: View {
                 // while the acted-on tab was displayed left an agent working in
                 // one tab with no sign anywhere while the user read another —
                 // and no way to end it without guessing which tab to switch to.
-                WebActionSessionBar(
-                    windowID: viewModel.windowID,
-                    tabManager: viewModel.tabManager
-                )
+                WebActionSessionBar(viewModel: viewModel)
 
                 if viewModel.tabManager.isSplitActive,
                    let primaryTab = viewModel.tabManager.selectedTab,

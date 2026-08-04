@@ -187,13 +187,21 @@ final class MCPToolRegistryTests: XCTestCase {
         XCTAssertTrue(click.lowercased().contains("guess"),
                       "click_element presents the commitment heuristic as more than a guess")
 
-        // The engine ends a session on leaving the ORIGIN, not on any navigation,
-        // and a test asserts the session survives one. The description used to
-        // say the opposite, which is the model's whole interface disagreeing with
-        // the code.
-        XCTAssertFalse(
-            click.contains("`navigated` also ends the action session"),
-            "click_element describes a session lifetime the code does not implement"
+        // The engine ends a session on leaving the ORIGIN, not on any navigation
+        // — `WebActionActingTests.testASameDocumentURLChangeIsReportedAsANavigation`
+        // asserts the session survives one.
+        //
+        // Asserting the PROPERTY, not the absence of one 44-character sentence.
+        // The previous version of this test checked that an exact wrong claim was
+        // gone, so any rewording of the same wrong claim passed it — a test that
+        // could only catch a copy-paste, not a mistake.
+        XCTAssertTrue(
+            click.contains("A navigation does not end your session"),
+            "click_element does not state the session's actual lifetime"
+        )
+        XCTAssertTrue(
+            click.contains("leaving the site the user granted permission for does"),
+            "click_element does not say what DOES end a session"
         )
 
         let type = MCPToolRegistry.tool(named: "type_text")?.description ?? ""

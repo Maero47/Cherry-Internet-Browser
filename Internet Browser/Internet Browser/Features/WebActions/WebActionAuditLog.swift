@@ -33,11 +33,18 @@
 //  written down. The accessible-name ladder's fourth rung is `el.innerText`; on
 //  a `contenteditable` that IS the element's own contents, so typing into a
 //  composer and then acting on the same element again wrote the previous message
-//  into `name`. `WebActionBridge.nameIsOwnContents` is the fix — the rung and the
-//  host, not the tag, so a search box mirroring its input into a button's
-//  `aria-label` is caught by the same test — and
+//  into `name`. `WebActionBridge.nameIsOwnContents` is the fix, and
 //  `testTypingIntoAComposerTwiceDoesNotWriteTheFirstMessageToTheLog` is what
 //  would catch its removal.
+//
+//  **What that does not cover**, because an earlier version of this paragraph
+//  claimed it did: a page that mirrors a field's contents into some OTHER
+//  control's `aria-label`. That name comes from the `aria-label` rung on a
+//  non-editable element, `nameIsOwnContents` is false for it, and it is written.
+//  A page can reproduce the leak that way on a plain `<input>`. Withholding every
+//  `aria-label`-derived name would empty the log of the identities it exists to
+//  record, so the check stays where it is and this paragraph states the edge
+//  rather than papering over it.
 //
 //  The unit test here asserts the shape a second way: the exact set of keys one
 //  entry encodes. Adding a field that could carry text fails it, which the
@@ -111,8 +118,18 @@ nonisolated struct WebActionAuditEntry: Encodable, Sendable {
     /// How many characters a `type_text` carried. NOT what they were.
     let charsTyped: Int?
 
-    /// Whether Enter was pressed after typing.
+    /// Whether a form's submit button was ACTUALLY pressed — not whether the
+    /// call asked for one. Nil for anything that is not a `submit: true` typing,
+    /// and nil for one that never got as far as acting.
     let submitted: Bool?
+
+    /// The name of the control that submission pressed, when it pressed one.
+    ///
+    /// A real submit is the one action that commits through a control the entry
+    /// otherwise never names: the field, the form's `action` and its `method`
+    /// were all recorded, and the button was not. Sanitised like every other
+    /// page-authored string here.
+    let submitControl: String?
 
     /// `acted` or `refused`.
     let decision: String
@@ -153,6 +170,7 @@ nonisolated struct WebActionAuditEntry: Encodable, Sendable {
         formMethod: String?,
         charsTyped: Int?,
         submitted: Bool?,
+        submitControl: String? = nil,
         decision: String,
         result: String,
         revokedMidAction: Bool?,
@@ -178,6 +196,7 @@ nonisolated struct WebActionAuditEntry: Encodable, Sendable {
         self.formMethod = formMethod
         self.charsTyped = charsTyped
         self.submitted = submitted
+        self.submitControl = submitControl
         self.decision = decision
         self.result = result
         self.revokedMidAction = revokedMidAction
@@ -198,6 +217,7 @@ nonisolated struct WebActionAuditEntry: Encodable, Sendable {
         case charsTyped = "chars_typed"
         case submitted
         case revokedMidAction = "revoked_mid_action"
+        case submitControl = "submit_control"
     }
 }
 
@@ -228,9 +248,19 @@ final class WebActionAuditLog {
 
     let directory: URL?
 
-    /// The most recent entries, newest last. Never written to disk from here —
+    /// The most recent ACTIONS, newest last. Never written to disk from here —
     /// this is a mirror, not a buffer.
+    ///
+    /// Separate from `sessionlessTail` for the same reason the two files are
+    /// separate, and it was a real gap that it was not: `write` appended to one
+    /// shared 200-entry array before it branched on the destination, so a caller
+    /// with no session could still evict every real action from the surface a
+    /// viewer reads. The disk separation was doing its job while the mirror
+    /// quietly undid it.
     private(set) var tail: [WebActionAuditEntry] = []
+
+    /// The most recent refusals from callers holding no session.
+    private(set) var sessionlessTail: [WebActionAuditEntry] = []
 
     /// True once a write has failed. Reported to the caller once, not on every
     /// action, so a broken disk does not turn every tool result into a warning.
@@ -288,19 +318,22 @@ final class WebActionAuditLog {
     /// a gap in it.
     @discardableResult
     func record(_ entry: WebActionAuditEntry) -> Bool {
-        write(entry, to: fileURL, rotatingTo: rotatedURL)
+        tail.append(entry)
+        if tail.count > Self.tailCount { tail.removeFirst(tail.count - Self.tailCount) }
+        return write(entry, to: fileURL, rotatingTo: rotatedURL)
     }
 
     /// Append one entry to the sessionless-refusal log. See `sessionlessURL`.
     @discardableResult
     func recordSessionless(_ entry: WebActionAuditEntry) -> Bool {
-        write(entry, to: sessionlessURL, rotatingTo: sessionlessRotatedURL)
+        sessionlessTail.append(entry)
+        if sessionlessTail.count > Self.tailCount {
+            sessionlessTail.removeFirst(sessionlessTail.count - Self.tailCount)
+        }
+        return write(entry, to: sessionlessURL, rotatingTo: sessionlessRotatedURL)
     }
 
     private func write(_ entry: WebActionAuditEntry, to fileURL: URL?, rotatingTo rotated: URL?) -> Bool {
-        tail.append(entry)
-        if tail.count > Self.tailCount { tail.removeFirst(tail.count - Self.tailCount) }
-
         guard let fileURL, let directory else {
             lastWriteFailed = true
             return false

@@ -249,6 +249,61 @@ final class WebActionSessionStoreTests: XCTestCase {
         XCTAssertEqual(store.liveSessions.count, 1)
     }
 
+    /// **Fix round 2, item 1.** After grant → end → re-grant, the store held
+    /// `[S1(ended), S2(live)]` and `liveSession` took the first match — so the
+    /// type documented as THE authority disagreed with its own siblings.
+    ///
+    /// The assertion that matters is that all four accessors say the same thing.
+    /// Any one of them alone would have passed before the fix.
+    func testAReGrantAfterAnEndingIsWhatEveryAccessorReports() async {
+        let store = makeStore()
+        let tab = UUID()
+        guard case .granted(let first) = await grant(store, tab: tab) else {
+            return XCTFail("expected a grant")
+        }
+        store.revoke(sessionID: first.id)
+        clock.advance(1)
+
+        guard case .granted(let second) = await grant(store, tab: tab) else {
+            return XCTFail("expected a second grant")
+        }
+        XCTAssertNotEqual(second.id, first.id, "the second Allow made a new session")
+
+        XCTAssertEqual(
+            store.liveSession(forTab: tab, requester: .mcp)?.id, second.id,
+            "the accessor the enforcement point uses read the dead session"
+        )
+        XCTAssertTrue(store.hasLiveSession(forTab: tab))
+        XCTAssertEqual(store.liveSessions.map(\.id), [second.id])
+        XCTAssertEqual(store.liveSessions(for: .mcp).map(\.id), [second.id])
+    }
+
+    /// The same, for the expiry route rather than the End button.
+    func testAReGrantAfterAnExpiryIsLive() async {
+        let store = makeStore()
+        let tab = UUID()
+        await grant(store, tab: tab, minutes: 1)
+        clock.advance(61)
+        XCTAssertNil(store.liveSession(forTab: tab, requester: .mcp))
+
+        guard case .granted(let second) = await grant(store, tab: tab, minutes: 10) else {
+            return XCTFail("expected a second grant")
+        }
+        XCTAssertEqual(store.liveSession(forTab: tab, requester: .mcp)?.id, second.id)
+    }
+
+    /// A dead session must still be able to explain a refusal — the fix must not
+    /// have been "throw the old ones away".
+    func testTheEndedSessionIsStillWhatExplainsALaterRefusal() async {
+        let store = makeStore()
+        let tab = UUID()
+        guard case .granted(let first) = await grant(store, tab: tab) else {
+            return XCTFail("expected a grant")
+        }
+        store.revoke(sessionID: first.id)
+        XCTAssertEqual(store.endedSession(forTab: tab, requester: .mcp)?.endReason, .revokedByUser)
+    }
+
     /// The constant used to bound only the ended tail, so the comment described a
     /// limit that did not exist and a client could hold a grant on every tab it
     /// could get the user to approve.

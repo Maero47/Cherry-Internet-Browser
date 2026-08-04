@@ -60,6 +60,7 @@ final class WebActionActingTests: XCTestCase {
         let bridge: WebActionBridge
         let store: WebActionSessionStore
         let audit: WebActionAuditLog
+        let viewModel: BrowserViewModel
         let tab: Tab
         let webView: WKWebView
     }
@@ -67,7 +68,14 @@ final class WebActionActingTests: XCTestCase {
     /// One window, one displayed tab holding `html`, and a bridge over exactly
     /// that — with its own session store and its own audit directory, so no test
     /// inherits another's grants or writes into the developer's real log.
-    private func harness(_ html: String) async throws -> Harness {
+    ///
+    /// The browser bridge reads `windows` LIVE rather than capturing it, so a
+    /// test that opens a second window or moves a tab between them is driving the
+    /// same enumeration the app does.
+    private func harness(
+        _ html: String,
+        limiter: MCPRateLimiter? = nil
+    ) async throws -> Harness {
         let viewModel = BrowserViewModel(withDefaultTab: false)
         viewModel.tabManager.newTab(url: URL(string: "https://fixture.invalid/")!, switchTo: true)
         windows = [viewModel]
@@ -78,7 +86,7 @@ final class WebActionActingTests: XCTestCase {
         try await MCPPageFixture.load(html, into: webView)
 
         let browser = MCPBrowserBridge(
-            registeredViewModels: { [viewModel] },
+            registeredViewModels: { [weak self] in self?.windows ?? [] },
             history: MCPRepositoryFixture.emptyHistory,
             bookmarks: MCPRepositoryFixture.emptyBookmarks
         )
@@ -87,10 +95,12 @@ final class WebActionActingTests: XCTestCase {
         let audit = WebActionAuditLog(directory: auditDirectory)
         return Harness(
             bridge: WebActionBridge(
-                browser: { browser }, sessions: { store }, auditLog: { audit }
+                browser: { browser }, sessions: { store }, auditLog: { audit },
+                actionLimiter: limiter
             ),
             store: store,
             audit: audit,
+            viewModel: viewModel,
             tab: tab,
             webView: webView
         )
@@ -462,6 +472,135 @@ final class WebActionActingTests: XCTestCase {
         XCTAssertFalse(harness.store.hasLiveSession(forTab: harness.tab.id))
     }
 
+    // MARK: - A re-grant after an ending
+
+    /// **Fix round 2, item 1.** The store used to answer this question three
+    /// different ways at once.
+    ///
+    /// `allow(_:)` ends prior grants and appends the new one, so after
+    /// grant → end → re-grant the array is `[S1(ended), S2(live)]`.
+    /// `liveSession(forTab:requester:)` took the FIRST match, found S1, and
+    /// returned nil — while `liveSessions`, `hasLiveSession` and the session bar
+    /// all reported S2. The user saw a live bar over a feature that refused every
+    /// click as `session_expired`, for permission they had granted seconds
+    /// earlier.
+    func testAClickAfterARegrantIsNotRefusedAsExpired() async throws {
+        let harness = try await self.harness(Page.counter)
+        try await grant(harness, minutes: 1)
+        clock.advance(61)
+        XCTAssertNil(harness.store.liveSession(forTab: harness.tab.id, requester: .mcp))
+
+        // The user is asked again, and allows again.
+        try await grant(harness, minutes: 10)
+
+        let listing = try await snapshot(harness)
+        let ordinary = try id(of: listing, named: "Show more")
+        let result = await harness.bridge.perform(
+            .click(element: ordinary, expectName: "Show more",
+                   document: listing.document, waitMS: 800),
+            on: harness.tab.id,
+            by: .mcp
+        )
+        XCTAssertEqual(
+            result.outcome, .changed,
+            "a grant made seconds ago was refused because a dead one sat in front of it: \(result)"
+        )
+        let clicks = await pageNumber(harness.webView, "window.__clicks || 0")
+        XCTAssertEqual(clicks, 1)
+    }
+
+    // MARK: - A driven tab moved between windows
+
+    /// **Fix round 2, item 2.** `transferTab` and `detachTab` move a tab through
+    /// `TabManager.removeTab`, which — unlike `closeTab` — ends nothing. The
+    /// session survives, correctly; the INDICATOR used to be filtered on
+    /// `session.windowID`, frozen at grant time, so it stayed with the window the
+    /// tab had left.
+    ///
+    /// The window actually showing the driven tab offered no End at all. And if
+    /// the move emptied the source window, `removeTab` closes it and the bar went
+    /// with it, leaving no way to stop the agent short of closing the tab.
+    ///
+    /// This is `removeTab`'s second appearance as the blind spot in this project:
+    /// the incognito leak was the same shape.
+    func testAGrantFollowsItsTabIntoAnotherWindow() async throws {
+        let harness = try await self.harness(Page.counter)
+        // A second tab, so removing the driven one does not empty (and close)
+        // the source window — that is a different case, tested below in prose
+        // only because closing a window from a unit test takes the app with it.
+        harness.viewModel.tabManager.newTab(url: URL(string: "https://other.invalid/")!, switchTo: false)
+        let granted = try await grant(harness)
+
+        let destination = BrowserViewModel(withDefaultTab: false)
+        destination.tabManager.newTab(url: URL(string: "https://elsewhere.invalid/")!, switchTo: true)
+        windows.append(destination)
+
+        // Before the move the source window draws the bar and the destination
+        // does not — so the assertion after the move is a change, not a constant.
+        XCTAssertEqual(
+            WebActionSessionBar.rows(from: harness.store.liveSessions, in: harness.viewModel)
+                .map(\.id.uuidString),
+            [granted.sessionID]
+        )
+        XCTAssertTrue(
+            WebActionSessionBar.rows(from: harness.store.liveSessions, in: destination).isEmpty
+        )
+
+        // Exactly what `BrowserViewModel.transferTab(tabID:to:)` does.
+        _ = harness.viewModel.tabManager.removeTab(harness.tab)
+        destination.tabManager.addExistingTab(harness.tab)
+
+        XCTAssertTrue(
+            harness.store.hasLiveSession(forTab: harness.tab.id),
+            "moving a tab between windows must not revoke the user's consent"
+        )
+        XCTAssertEqual(
+            WebActionSessionBar.rows(from: harness.store.liveSessions, in: destination)
+                .map(\.id.uuidString),
+            [granted.sessionID],
+            "the window now showing the driven tab draws no bar and offers no End"
+        )
+        XCTAssertTrue(
+            WebActionSessionBar.rows(from: harness.store.liveSessions, in: harness.viewModel).isEmpty,
+            "the window the tab LEFT is still claiming something is happening in it"
+        )
+    }
+
+    /// And acting keeps working after the move, which is why following the tab is
+    /// the right fix rather than ending the session: the enforcement path already
+    /// follows it, so ending the grant would be the UI deciding policy.
+    func testActingContinuesAfterATabIsMovedBetweenWindows() async throws {
+        let harness = try await self.harness(Page.counter)
+        harness.viewModel.tabManager.newTab(url: URL(string: "https://other.invalid/")!, switchTo: false)
+        try await grant(harness)
+        let listing = try await snapshot(harness)
+        let ordinary = try id(of: listing, named: "Show more")
+
+        let destination = BrowserViewModel(withDefaultTab: false)
+        destination.tabManager.newTab(url: URL(string: "https://elsewhere.invalid/")!, switchTo: true)
+        windows.append(destination)
+        _ = harness.viewModel.tabManager.removeTab(harness.tab)
+        destination.tabManager.addExistingTab(harness.tab)
+
+        let result = await harness.bridge.perform(
+            .click(element: ordinary, expectName: "Show more",
+                   document: listing.document, waitMS: 800),
+            on: harness.tab.id,
+            by: .mcp
+        )
+        XCTAssertEqual(result.outcome, .changed, "\(result)")
+
+        // And the audit entry names the window the tab is in NOW, not the one the
+        // grant was made in.
+        let written = try String(
+            contentsOf: try XCTUnwrap(harness.audit.fileURL), encoding: .utf8
+        )
+        XCTAssertTrue(
+            written.contains("\"window_id\":\"\(destination.windowID.uuidString)\""),
+            "the log records the window the grant was made in rather than the one it happened in"
+        )
+    }
+
     // MARK: - Stale ids
 
     /// An element number means nothing without the page load it was minted in.
@@ -814,7 +953,10 @@ final class WebActionActingTests: XCTestCase {
         }
         let searched = await pageNumber(harness.webView, "window.__searchClicks || 0")
         XCTAssertEqual(searched, 0, "the pinned button was displaced and must not be pressed either")
-        XCTAssertEqual(acted.submitted, true, "Enter was pressed")
+        // `submitted` reports whether a form was SUBMITTED, not whether Enter was
+        // asked for — the key events happened and nothing was pressed, and those
+        // are different facts.
+        XCTAssertEqual(acted.submitted, false, "no form was submitted, so the result must not say one was")
         XCTAssertNotNil(acted.note)
         XCTAssertTrue(
             acted.note?.contains("was NOT") == true,
@@ -1088,6 +1230,80 @@ final class WebActionActingTests: XCTestCase {
         )
         XCTAssertLessThan(refused.count, 2_000, "one refusal line carried 100,000 caller bytes")
         XCTAssertTrue(refused.contains("…"), "the cut has to be visible")
+    }
+
+    /// The one refusal class with a live session, a known tab and a known
+    /// element — and it used to return `.refused` directly, leaving no trace,
+    /// against both file headers' claim that every refusal is recorded.
+    func testARateLimitedActionIsRecordedLikeEveryOtherRefusal() async throws {
+        let harness = try await self.harness(
+            Page.counter, limiter: MCPRateLimiter(limit: 1, window: 60)
+        )
+        try await grant(harness)
+        let listing = try await snapshot(harness)
+        let ordinary = try id(of: listing, named: "Show more")
+
+        for _ in 0..<2 {
+            _ = await harness.bridge.perform(
+                .click(element: ordinary, expectName: "Show more",
+                       document: listing.document, waitMS: 300),
+                on: harness.tab.id, by: .mcp
+            )
+        }
+        let second = await harness.bridge.perform(
+            .click(element: ordinary, expectName: "Show more",
+                   document: listing.document, waitMS: 300),
+            on: harness.tab.id, by: .mcp
+        )
+        XCTAssertEqual(second.refusalReason, .rateLimited)
+
+        let written = try String(
+            contentsOf: try XCTUnwrap(harness.audit.fileURL), encoding: .utf8
+        )
+        XCTAssertTrue(written.contains("\"result\":\"rate_limited\""),
+                      "a rate-limited action left no trace in the log")
+        XCTAssertTrue(written.contains("\"session_id\""),
+                      "and it is recorded against the session that hit the limit")
+    }
+
+    /// `submitted` used to be read off the request, so the log said a form was
+    /// submitted in exactly the scenario where Cherry correctly pressed nothing.
+    func testTheLogRecordsWhetherAFormWasSubmittedAndByWhichControl() async throws {
+        let ordinary = try await self.harness(Page.form(buttonLabel: "Search"))
+        try await grant(ordinary)
+        let listing = try await snapshot(ordinary)
+        let field = try id(of: listing, named: "Search the store")
+        _ = await ordinary.bridge.perform(
+            .type(element: field, expectName: "Search the store", document: listing.document,
+                  text: "socks", append: false, submit: true, waitMS: 600),
+            on: ordinary.tab.id, by: .mcp
+        )
+        let submitted = try String(
+            contentsOf: try XCTUnwrap(ordinary.audit.fileURL), encoding: .utf8
+        )
+        XCTAssertTrue(submitted.contains("\"submitted\":true"))
+        XCTAssertTrue(
+            submitted.contains("\"submit_control\":\"Search\""),
+            "the one control the action actually committed through is the one the entry cannot name"
+        )
+    }
+
+    func testTheLogDoesNotClaimAFormWasSubmittedWhenNothingWasPressed() async throws {
+        let harness = try await self.harness(Page.formThatSwapsItsButtonOnEnter)
+        try await grant(harness)
+        let listing = try await snapshot(harness)
+        let field = try id(of: listing, named: "Search the store")
+        _ = await harness.bridge.perform(
+            .type(element: field, expectName: "Search the store", document: listing.document,
+                  text: "socks", append: false, submit: true, waitMS: 600),
+            on: harness.tab.id, by: .mcp
+        )
+        let written = try String(
+            contentsOf: try XCTUnwrap(harness.audit.fileURL), encoding: .utf8
+        )
+        XCTAssertTrue(written.contains("\"submitted\":false"),
+                      "Cherry pressed nothing and the log said the form was submitted")
+        XCTAssertFalse(written.contains("\"submit_control\""))
     }
 
     func testARefusedActionIsRecordedToo() async throws {

@@ -19,6 +19,26 @@
 //  The row for the tab you are looking at says "this tab"; the others name
 //  theirs, so ending the right one needs no guessing and no tab switch.
 //
+//  ## And the window is the one the TAB is in NOW, not the one it was granted in
+//
+//  `WebActionSession.windowID` is frozen at grant time, and a tab does not stay
+//  put: `BrowserViewModel.transferTab` and `detachTab` move one between windows
+//  through `TabManager.removeTab`, which — unlike `closeTab` — ends nothing.
+//  Filtering on the frozen id therefore drew the bar over the window the tab had
+//  LEFT: the window actually showing the driven tab offered no End at all, while
+//  the old one claimed something was happening in "another tab". Worse, if the
+//  move emptied the source window, `removeTab` closes it and the bar went with
+//  it — leaving an agent clicking for up to thirty minutes with no indicator
+//  anywhere and no way to stop it short of closing the tab.
+//
+//  This is the second time `removeTab` has been the blind spot in this project:
+//  the incognito leak was the same shape — a path that moves a `Tab` between
+//  windows while skipping the cleanup `closeTab` performs. So the fix here is
+//  not another hook on `removeTab`. It is to stop trusting the frozen id:
+//  `rows(from:in:)` asks which window holds the tab RIGHT NOW. A grant is for a
+//  tab, and a user's consent does not become void because they rearranged their
+//  windows.
+//
 //  ## Why it is not hideable, and not in the toolbar catalogue
 //
 //  Same argument as `MCPConnectionIndicator`, with more force: that one says a
@@ -47,20 +67,29 @@ import SwiftUI
 
 struct WebActionSessionBar: View {
 
-    /// The window this bar belongs to. Every live session granted in it is drawn,
-    /// whether or not its tab is the one on screen.
-    let windowID: UUID
-
-    /// The window's tabs, so a row can name the tab it is about and say whether
-    /// it is the one being looked at.
-    let tabManager: TabManager
+    /// The window this bar belongs to — which tabs it currently holds, which of
+    /// them are on screen, and what they are called.
+    @Bindable var viewModel: BrowserViewModel
 
     @State private var store = WebActionSessionStore.shared
     @State private var now = Date()
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
+    /// Which of the live grants THIS window is responsible for drawing.
+    ///
+    /// Keyed on where the tab is now, never on `session.windowID`. Pulled out as
+    /// a static so the property is a unit test rather than a screenshot — see
+    /// `testAGrantFollowsItsTabIntoAnotherWindow`.
+    nonisolated static func rows(
+        from live: [WebActionSession],
+        in viewModel: BrowserViewModel
+    ) -> [WebActionSession] {
+        let here = Set(viewModel.tabManager.tabs.map(\.id))
+        return live.filter { here.contains($0.tabID) }
+    }
+
     private var sessions: [WebActionSession] {
-        store.liveSessions.filter { $0.windowID == windowID }
+        Self.rows(from: store.liveSessions, in: viewModel)
     }
 
     var body: some View {
@@ -92,9 +121,10 @@ struct WebActionSessionBar: View {
     /// panes count. Otherwise the tab's own title, so the user can tell which of
     /// their tabs is being driven without switching to find out.
     private func where_(_ session: WebActionSession) -> String {
-        let displayed = [tabManager.selectedTabID, tabManager.secondarySelectedTabID]
+        let manager = viewModel.tabManager
+        let displayed = [manager.selectedTabID, manager.secondarySelectedTabID]
         if displayed.contains(session.tabID) { return "this tab" }
-        guard let tab = tabManager.tabs.first(where: { $0.id == session.tabID }) else {
+        guard let tab = manager.tabs.first(where: { $0.id == session.tabID }) else {
             return "another tab"
         }
         return "“\(WebActionText.singleLine(tab.displayTitle, limit: 40))”"
