@@ -416,10 +416,17 @@ extension Tab: WKWebExtensionTab {
     func isPrivate(for context: WKWebExtensionContext) -> Bool { isPrivate }
     func isLoadingComplete(for context: WKWebExtensionContext) -> Bool { !isLoading }
 
-    // `Tab` isn't `@MainActor`-isolated but WebKit only ever calls these on
-    // the main thread — `assumeIsolated` to reach the `@MainActor`-isolated
-    // `ExtensionManager.shared`, matching `TabManager.notifyExtensionManager`'s
-    // pattern elsewhere in the extension integration.
+    // `Tab` IS `@MainActor`-isolated: this target builds with
+    // `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor`, so an unannotated type here is
+    // main-actor-isolated — `NSObject` subclasses included. `WKWebExtensionTab`'s
+    // requirements are main-actor-isolated too, so these methods would be either
+    // way. The `MainActor.assumeIsolated` calls below are therefore redundant
+    // rather than load-bearing; they are harmless and left alone.
+    //
+    // The comment that used to sit here said the opposite. Do not read it, or
+    // `TabManager`'s twin, as licence to touch `Tab` off the main actor: the
+    // language mode is Swift 5, so an isolation violation compiles as a WARNING
+    // and the compiler will not stop you.
 
     /// The `WKWebExtensionWindow` for this tab's owning browser window. Without
     /// this, WebKit can't associate a tab with a window, so `tabs.query`

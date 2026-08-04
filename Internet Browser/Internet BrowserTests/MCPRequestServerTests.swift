@@ -24,8 +24,15 @@ final class MCPRequestServerTests: XCTestCase {
     private let token = "test-token-abcdef"
     private let port = 8787
 
+    /// A stand-in for the real invoker. This file is about the transport, not
+    /// about what the tools return — `MCPToolInvokerTests` covers that, and a
+    /// bridge to the running app's windows has no business in these tests.
+    private static let echoInvoker: MCPRequestServer.ToolInvoker = { params in
+        CallTool.Result(content: [.text(text: "echo:\(params.name)", annotations: nil, _meta: nil)])
+    }
+
     private func makeServer(
-        invokeTool: @escaping MCPRequestServer.ToolInvoker = MCPToolStubs.notImplemented
+        invokeTool: @escaping MCPRequestServer.ToolInvoker = MCPRequestServerTests.echoInvoker
     ) -> MCPRequestServer {
         MCPRequestServer(
             serverName: "Cherry",
@@ -163,10 +170,9 @@ final class MCPRequestServerTests: XCTestCase {
         XCTAssertEqual(tools.count, 5)
     }
 
-    /// Every declared tool must be callable and must say plainly that it is not
-    /// wired up yet — a cheerful empty success would invite the model to invent
-    /// an answer.
-    func testEveryToolReportsNotImplemented() async {
+    /// Every declared tool is dispatched to the invoker by name, and the
+    /// invoker's answer is what reaches the client.
+    func testEveryDeclaredToolIsDispatchedToTheInvoker() async {
         let server = makeServer()
         for tool in MCPToolRegistry.tools {
             let response = await server.serve(request(
@@ -175,15 +181,18 @@ final class MCPRequestServerTests: XCTestCase {
             XCTAssertEqual(response.statusCode, 200, tool.name)
 
             let result = body(of: response)["result"] as? [String: Any]
-            XCTAssertEqual(result?["isError"] as? Bool, true, tool.name)
+            XCTAssertNil(result?["isError"], tool.name)
 
             let content = (result?["content"] as? [[String: Any]])?.first?["text"] as? String ?? ""
-            XCTAssertTrue(content.contains("not implemented yet"), "\(tool.name): \(content)")
+            XCTAssertEqual(content, "echo:\(tool.name)", tool.name)
         }
     }
 
+    /// The real invoker's answer for a name Cherry does not have. It never
+    /// reaches the browser bridge — the registry lookup refuses first — so this
+    /// is safe to drive against the live invoker.
     func testUnknownToolIsNamedInTheRefusal() async {
-        let response = await makeServer().serve(request(
+        let response = await makeServer(invokeTool: MCPToolInvoker().invoker).serve(request(
             json: #"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"delete_history","arguments":{}}}"#
         ))
         let result = body(of: response)["result"] as? [String: Any]
@@ -322,7 +331,7 @@ final class MCPRequestServerTests: XCTestCase {
             serverVersion: "1.0-test",
             port: port,
             expectedToken: { nil },
-            invokeTool: MCPToolStubs.notImplemented
+            invokeTool: Self.echoInvoker
         )
         let response = await server.serve(request(json: #"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#))
         XCTAssertEqual(response.statusCode, 401)

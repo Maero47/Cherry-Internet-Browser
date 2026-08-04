@@ -49,12 +49,12 @@ import MCP
 /// validation), a token lookup, and the tool invoker.
 nonisolated struct MCPRequestServer: Sendable {
 
-    /// The seam steps 5–7 attach to.
+    /// The seam the five tools attach to, and the only one they needed.
     ///
-    /// Today it returns "not implemented yet" for all five tools. When the
-    /// bridge lands, this becomes the closure that hops to `@MainActor` and
-    /// asks `MCPBrowserBridge` to do the work — and nothing else in this file
-    /// changes.
+    /// `MCPToolInvoker` fills it: it parses arguments off-main, hops to the main
+    /// actor once to ask `MCPBrowserBridge` for a `Sendable` payload, and encodes
+    /// that payload to JSON. Nothing in this file, the listener, the bearer
+    /// validator or the token store knows which tools exist or what they return.
     typealias ToolInvoker = @Sendable (CallTool.Parameters) async -> CallTool.Result
 
     let serverName: String
@@ -146,43 +146,6 @@ nonisolated struct MCPRequestServer: Sendable {
         page text, browsing history, bookmarks. Private and incognito windows are never \
         visible through them.
         """
-}
-
-// MARK: - Stub tools
-
-/// The placeholder `tools/call` behaviour for the foundation step.
-///
-/// Steps 5–7 replace this with `MCPBrowserBridge`. Until then a call is a real
-/// failure, so it answers `isError: true` — a model that gets a cheerful empty
-/// success back will invent an answer instead of telling the user the tool is
-/// not wired up.
-nonisolated enum MCPToolStubs {
-
-    static let notImplemented: MCPRequestServer.ToolInvoker = { params in
-        guard MCPToolRegistry.tool(named: params.name) != nil else {
-            return CallTool.Result(
-                content: [.text(
-                    text: "Unknown tool \"\(params.name)\". Cherry exposes: "
-                        + MCPToolRegistry.tools.map(\.name).joined(separator: ", ")
-                        + ".",
-                    annotations: nil,
-                    _meta: nil
-                )],
-                isError: true
-            )
-        }
-
-        return CallTool.Result(
-            content: [.text(
-                text: "\(params.name) is declared but not implemented yet in this build of Cherry. "
-                    + "The MCP transport is live; the browser tools are not wired up. "
-                    + "Do not retry, and do not guess what it would have returned.",
-                annotations: nil,
-                _meta: nil
-            )],
-            isError: true
-        )
-    }
 }
 
 // MARK: - Manager
@@ -280,7 +243,8 @@ final class MCPServerManager {
             // becomes unsecurable while the server runs locks it, rather than
             // being served out of a directory someone else now controls.
             expectedToken: { MCPTokenStore.shared?.tokenForAuthentication() },
-            invokeTool: MCPToolStubs.notImplemented
+            // The whole of the browser side of this feature, behind one closure.
+            invokeTool: MCPToolInvoker().invoker
         )
 
         let newListener = MCPHTTPListener(

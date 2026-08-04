@@ -11,11 +11,17 @@ import Observation
 final class HistoryRepository {
     static let shared = HistoryRepository()
 
-    private let persistence = PersistenceController.shared
+    private let persistence: PersistenceController
     private(set) var historyItems: [HistoryItem] = []
     private(set) var groupedHistory: [HistoryGroup] = []
 
-    init() {
+    /// - Parameter persistence: the store to read and write. The app always uses
+    ///   the shared one; the parameter exists so a test can point a repository at
+    ///   `PersistenceController(inMemory: true)` and populate it, which is how
+    ///   `MCPHistorySearchCostTests` measures `searchHistory` against 20,000 rows
+    ///   without touching the user's real history.
+    init(persistence: PersistenceController = .shared) {
+        self.persistence = persistence
         fetchHistory()
     }
 

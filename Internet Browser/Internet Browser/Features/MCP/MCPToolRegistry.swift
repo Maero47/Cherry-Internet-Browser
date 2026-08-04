@@ -88,10 +88,11 @@ nonisolated enum MCPToolRegistry {
             Use this when you need the actual content of something the user has on screen — an article they \
             are reading, docs they are looking at, a page they just asked about.
 
-            This reads what is genuinely displayed. It will refuse, with a reason, when there is nothing on \
-            screen to read: a sleeping tab, a Cherry settings/history/bookmarks page, the new-tab page, or a \
-            PDF. It does not navigate, click, scroll, or run arbitrary JavaScript, and it cannot read a page \
-            that is not already open — use `open_tab` first if you need a page loaded, then read it.
+            This reads what is genuinely displayed. It will refuse, with a `reason`, when there is nothing on \
+            screen to read: a sleeping tab, a Cherry settings/history/bookmarks page, the new-tab page, a PDF, \
+            or a tab that has never been displayed and so has not loaded anything yet. It does not navigate, \
+            click, scroll, or run arbitrary JavaScript, and it cannot read a page that is not already open — \
+            use `open_tab` first if you need a page loaded, then read it.
 
             Long pages are returned in chunks. Check `has_more` and call again with `offset` set to \
             `next_offset` if you need the rest; do not re-read from the start.
@@ -210,9 +211,15 @@ nonisolated enum MCPToolRegistry {
             already open.
 
             This changes what is on the user's screen, so do not call it speculatively or in a loop — one \
-            deliberate tab at a time. It only opens `http` and `https` URLs. It cannot click, type, submit \
-            forms, or interact with the page in any way after opening it. The page will not be readable \
-            immediately; expect `read_page` to report `loading` on the first attempt.
+            deliberate tab at a time; more than five tabs in a minute is refused. It only opens `http` and \
+            `https` URLs. It cannot click, type, submit forms, or interact with the page in any way after \
+            opening it.
+
+            The new tab is not readable immediately, and by default it is not readable at all: Cherry only \
+            loads a tab once it is displayed, so a background tab (`activate` false, the default) stays empty \
+            and `read_page` will answer `reason: "not_rendered"`. Pass `activate: true` if you intend to read \
+            the page — that takes over the user's current tab, so only do it when they asked for the page or \
+            you genuinely need its content.
             """,
         inputSchema: [
             "type": "object",
