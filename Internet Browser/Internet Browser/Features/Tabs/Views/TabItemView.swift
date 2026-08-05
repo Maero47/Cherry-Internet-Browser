@@ -55,6 +55,22 @@ struct TabItemView: View {
         return isSelected ? manager.tabText : manager.tabStripText
     }
 
+    /// The tab strip is the SAME theme header backdrop the toolbar sits on —
+    /// one continuous canvas — so a title has exactly the toolbar's problem.
+    /// An UNSELECTED tab is the bad case: it paints nothing of its own, so its
+    /// title is a flat colour straight on the illustration.
+    ///
+    /// Nil for private tabs and when no theme is active, which leaves the stock
+    /// strip untouched.
+    private var titleLegibility: ThemeLegibility? {
+        let manager = FirefoxThemeManager.shared
+        guard !tab.isPrivate, manager.activeTheme != nil, manager.hasHeaderBackdrop else { return nil }
+        // A selected tab paints its own fill over the artwork first; an
+        // unselected one paints nothing.
+        let overlays = (isSelected ? [themedSelectedBackground] : []).compactMap(\.self)
+        return ThemeLegibility(foreground: themedTitleColor ?? Color.primary, overlays: overlays)
+    }
+
     var body: some View {
         HStack(spacing: 8) {
             // Favicon
@@ -75,6 +91,18 @@ struct TabItemView: View {
                                      : AnyShapeStyle(themedTitleColor ?? Color.primary))
                     .lineLimit(1)
                     .truncationMode(.tail)
+                    // Behind the TITLE, not behind the whole tab: a wash over
+                    // every cell would cover most of the strip's artwork to fix
+                    // a run of text that occupies a third of it. Applied before
+                    // the `.frame` below so it hugs the text's own width.
+                    .themeLegibilityScrim(
+                        titleLegibility,
+                        floor: ThemeContrast.textFloor,
+                        cornerRadius: 6,
+                        measureInset: 0,
+                        softness: 2,
+                        spread: 5
+                    )
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
 

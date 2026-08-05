@@ -54,6 +54,25 @@ struct NavigationBarView: View {
         isPrivateMode ? nil : FirefoxThemeManager.shared.toolbarText
     }
 
+    /// The tone the bar's glyphs are ACTUALLY drawn in, which is what the
+    /// contrast guard has to measure — `toolbar_text` when the theme names one,
+    /// otherwise the system label colour the bar falls back to. That fallback
+    /// is the worst case, not a corner case: a theme is free to ship a header
+    /// illustration and no `toolbar_text` at all, and then the icons are a
+    /// system colour with no relationship to the artwork behind them.
+    ///
+    /// Nil in a private window and when no theme is active, which switches the
+    /// guard off and leaves the stock look byte-for-byte as it was.
+    private var legibility: ThemeLegibility? {
+        guard !isPrivateMode, FirefoxThemeManager.shared.activeTheme != nil else { return nil }
+        let manager = FirefoxThemeManager.shared
+        // Only the header-backdrop path layers `toolbar` over artwork; the
+        // flat-fill path IS the toolbar colour and the sampler reads it as the
+        // base, so listing it again would darken the measurement twice.
+        let overlays = manager.hasHeaderBackdrop ? [manager.toolbarColor].compactMap(\.self) : []
+        return ThemeLegibility(foreground: themedToolbarText ?? Color.primary, overlays: overlays)
+    }
+
     @State private var addressText: String = ""
     @State private var isEditing: Bool = false
     @State private var suggestService = SearchSuggestService()
@@ -291,7 +310,14 @@ struct NavigationBarView: View {
             // Shown in private windows too. The MCP tools cannot see a private
             // window, but the server can still be reading the user's other
             // windows, and that is exactly when they need to know.
+            //
+            // Opted out of the contrast guard, and not by oversight: the glyph
+            // sits on an opaque accent badge and takes its tone from that
+            // badge, so it is already decoupled from whatever is behind the bar
+            // (see MCPConnectionIndicator). A scrim behind an opaque badge
+            // would darken artwork to fix a number that is already ≥4.60:1.
             MCPConnectionIndicator { onSettings?() }
+                .themeLegibility(nil)
 
             // Action buttons
             actionButtons
@@ -301,6 +327,11 @@ struct NavigationBarView: View {
         // against this, so the whole toolbar's icons/text follow the theme's
         // toolbar_text; Color.primary is the stock look when unthemed.
         .foregroundStyle(themedToolbarText ?? Color.primary)
+        // …and this tells every control in the bar what tone it was just given,
+        // so `ToolbarButtonStyle` can measure it against the header artwork
+        // behind it. Nil unthemed and in private windows, where the guard does
+        // nothing at all.
+        .themeLegibility(legibility)
         .padding(.leading, verticalTabsCollapsedPadding)
         .padding(.trailing, 12)
         .padding(.vertical, 8)
@@ -467,6 +498,7 @@ struct NavigationBarView: View {
                     .foregroundStyle(SettingsManager.shared.accentColor)
             }
             .buttonStyle(ToolbarButtonStyle())
+            .themeLegibilityTint(SettingsManager.shared.accentColor)
             .help("Ask Cherry AI (Cmd+Shift+K)")
 
         case .home:
@@ -484,6 +516,7 @@ struct NavigationBarView: View {
                     .foregroundStyle(isBookmarked ? Color.yellow : .primary)
             }
             .buttonStyle(ToolbarButtonStyle())
+            .themeLegibilityTint(isBookmarked ? Color.yellow : Color.primary)
             .help("Add Bookmark (Cmd+D)")
 
         case .savePDF:
@@ -493,6 +526,7 @@ struct NavigationBarView: View {
                     .foregroundStyle(SettingsManager.shared.accentColor)
             }
             .buttonStyle(ToolbarButtonStyle())
+            .themeLegibilityTint(SettingsManager.shared.accentColor)
             .help("Save PDF")
 
         case .autoFill:
@@ -502,6 +536,7 @@ struct NavigationBarView: View {
                     .foregroundStyle(SettingsManager.shared.accentColor)
             }
             .buttonStyle(ToolbarButtonStyle())
+            .themeLegibilityTint(SettingsManager.shared.accentColor)
             .help("Auto-fill Password (Cmd+\\)")
 
         case .adBlock:
@@ -511,6 +546,7 @@ struct NavigationBarView: View {
                     .foregroundStyle(isAdBlockPaused ? .secondary : SettingsManager.shared.accentColor)
             }
             .buttonStyle(ToolbarButtonStyle())
+            .themeLegibilityTint(isAdBlockPaused ? Color.secondary : SettingsManager.shared.accentColor)
             .help(isAdBlockPaused ? "Ad blocker paused for this site" : "Ad blocker active — click to pause for this site")
 
         case .focusMode:
@@ -522,6 +558,7 @@ struct NavigationBarView: View {
                     .symbolVariant(isFocusOn ? .fill : .none)
             }
             .buttonStyle(ToolbarButtonStyle())
+            .themeLegibilityTint(isFocusOn ? SettingsManager.shared.accentColor : Color.primary)
             .help(isFocusOn ? "Focus Mode On — click to disable (Cmd+Shift+F)" : "Enable Focus Mode (Cmd+Shift+F)")
 
         case .readerMode:
@@ -531,6 +568,7 @@ struct NavigationBarView: View {
                     .foregroundStyle(showReaderMode ? SettingsManager.shared.accentColor : .primary)
             }
             .buttonStyle(ToolbarButtonStyle())
+            .themeLegibilityTint(showReaderMode ? SettingsManager.shared.accentColor : Color.primary)
             .help("Reader Mode (Cmd+Shift+R)")
 
         case .privateMode:
@@ -540,6 +578,7 @@ struct NavigationBarView: View {
                     .foregroundStyle(isPrivateMode ? Color.purple : .primary)
             }
             .buttonStyle(ToolbarButtonStyle())
+            .themeLegibilityTint(Color.primary)
             .help(isPrivateMode ? "Exit Incognito Mode" : "Enter Incognito Mode")
         }
     }
@@ -645,11 +684,34 @@ struct NavigationBarView: View {
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .frame(width: 28, height: 28)
+        .themedMenuTint(legibility?.foreground)
+        .themeLegibilityScrim()
         .help("Menu")
     }
 }
 
 private extension View {
+    /// Puts the ⋯ menu's glyph in the tone the rest of the bar is drawn in.
+    ///
+    /// A borderless `Menu` does not take the bar's `.foregroundStyle` for its
+    /// label — it renders the glyph in the app tint, which is why the ⋯ came
+    /// out accent-blue on a themed bar while every button beside it was in
+    /// `toolbar_text`. `.tint` is the knob that does reach it.
+    ///
+    /// Applied ONLY when a theme is supplying the bar, and by an `if` rather
+    /// than by passing a fallback colour: unthemed, the ⋯ has always been the
+    /// app tint, and naming any colour here — even the one it currently
+    /// resolves to — would be this change reaching into the stock look. Not
+    /// applying the modifier at all cannot.
+    @ViewBuilder
+    func themedMenuTint(_ tone: Color?) -> some View {
+        if let tone {
+            tint(tone)
+        } else {
+            self
+        }
+    }
+
     /// The nav bar's "Customise Toolbar…" secondary-click menu.
     ///
     /// Applied to the bar's background and to each button cluster — and
@@ -678,6 +740,10 @@ struct ToolbarButtonStyle: ButtonStyle {
                 RoundedRectangle(cornerRadius: 6)
                     .fill(configuration.isPressed ? Color.gray.opacity(0.25) : Color.clear)
             )
+            // Behind the pressed fill, and behind nothing at all unless a
+            // themed surface has said what tone this button's glyph is and the
+            // artwork under it fails the floor. See ThemeContrastGuard.
+            .themeLegibilityScrim()
             .foregroundStyle(isEnabled ? .primary : .tertiary)
             .scaleEffect(configuration.isPressed ? 0.90 : 1.0)
             .animation(.easeOut(duration: 0.12), value: configuration.isPressed)

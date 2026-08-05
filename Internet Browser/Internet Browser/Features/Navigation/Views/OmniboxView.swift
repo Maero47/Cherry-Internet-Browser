@@ -39,6 +39,20 @@ struct OmniboxView: View {
         isPrivateMode ? nil : FirefoxThemeManager.shared.fieldFocusBorder
     }
 
+    /// What the URL is drawn in, and what the bar paints between the theme
+    /// header artwork and it — the theme's `toolbar` colour and then the
+    /// field's own (frequently translucent) fill. Nil unthemed and in private
+    /// windows, which leaves the material field exactly as it was.
+    private var fieldLegibility: ThemeLegibility? {
+        let manager = FirefoxThemeManager.shared
+        guard !isPrivateMode, manager.activeTheme != nil,
+              let fieldBackground = themedFieldBackground else { return nil }
+        var overlays: [Color] = []
+        if manager.hasHeaderBackdrop, let toolbar = manager.toolbarColor { overlays.append(toolbar) }
+        overlays.append(fieldBackground)
+        return ThemeLegibility(foreground: themedFieldText ?? Color.primary, overlays: overlays)
+    }
+
     var body: some View {
         HStack(spacing: 8) {
             // Security indicator
@@ -112,8 +126,31 @@ struct OmniboxView: View {
                 // composites over the nav bar's theme header backdrop
                 // (frame color + header images + toolbar color) behind this
                 // view, exactly like Firefox's URL field over its header.
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(themedFieldBackground)
+                //
+                // Which is exactly why the field needs the guard too: a 34%
+                // black fill over a bright illustration is not a background,
+                // it is a tint on the artwork, and the URL is read against
+                // whatever shows through. The scrim stays inside the field's
+                // own rounded rect, so all that changes is how opaque the
+                // field is — no new shape appears on the bar.
+                ZStack {
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(themedFieldBackground)
+                    // ON TOP of the field colour, not under it: the guard
+                    // solves for a scrim composited over the backdrop it
+                    // sampled, and that sample already includes the field fill.
+                    // Sliding it underneath would make the shipped opacity
+                    // stop matching the arithmetic that chose it.
+                    Color.clear
+                        .themeLegibilityScrim(
+                            fieldLegibility,
+                            floor: ThemeContrast.textFloor,
+                            cornerRadius: 8,
+                            measureInset: 2,
+                            softness: 0,
+                            spread: 0
+                        )
+                }
             } else {
                 RoundedRectangle(cornerRadius: 8)
                     .fill(.regularMaterial)
