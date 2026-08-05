@@ -60,55 +60,7 @@ struct OmniboxView: View {
                 securityIndicator
             }
 
-            // Text field
-            TextField("Search or enter website name", text: $text)
-                .textFieldStyle(.plain)
-                .font(.system(size: 13))
-                .focused($isFocused)
-                .onSubmit {
-                    submitInput()
-                }
-                .onChange(of: isFocused) { _, newValue in
-                    if newValue {
-                        onFocus()
-                        // Select all text when focused
-                        DispatchQueue.main.async {
-                            NSApp.keyWindow?.firstResponder?
-                                .tryToPerform(#selector(NSText.selectAll(_:)), with: nil)
-                        }
-                    } else {
-                        onBlur?()
-                    }
-                }
-                .onChange(of: text) { _, newValue in
-                    if isFocused {
-                        onTextChange?(newValue)
-                    }
-                }
-                .onKeyPress(.downArrow) {
-                    onArrowDown?()
-                    return onArrowDown != nil ? .handled : .ignored
-                }
-                .onKeyPress(.upArrow) {
-                    onArrowUp?()
-                    return onArrowUp != nil ? .handled : .ignored
-                }
-                .onKeyPress(.escape) {
-                    onEscape?()
-                    return onEscape != nil ? .handled : .ignored
-                }
-                .onChange(of: focusTrigger) { _, _ in
-                    // Already focused? Re-select all, which `onChange(of:
-                    // isFocused)` would otherwise skip.
-                    if isFocused {
-                        DispatchQueue.main.async {
-                            NSApp.keyWindow?.firstResponder?
-                                .tryToPerform(#selector(NSText.selectAll(_:)), with: nil)
-                        }
-                    } else {
-                        isFocused = true
-                    }
-                }
+            addressField
 
             // Loading indicator or reload button
             if isLoading {
@@ -119,7 +71,17 @@ struct OmniboxView: View {
         }
         .foregroundStyle(themedFieldText ?? Color.primary)
         .padding(.horizontal, 12)
+        // The padding still insets the CONTENT; the frame states the ROW's
+        // height, which is the number the cluster surfaces beside this one are
+        // built to. Both are kept deliberately: drop the padding and the
+        // material pill's antialiased edge shifts by a value or two, which is
+        // invisible but is still the stock look moving, and it does not have to.
         .padding(.vertical, 6)
+        // The padding insets the CONTENT; this states the ROW's height, which
+        // is the number the cluster surfaces beside this one are built to. The
+        // two are not duplicates — 28 is not 2×6 — and stating it here is what
+        // stops a future surface in this row inventing its own.
+        .frame(height: AppConstants.ToolbarSurface.height)
         .background {
             if let themedFieldBackground {
                 // Often semi-transparent (e.g. rgba(0,0,0,0.34)) — it
@@ -134,7 +96,7 @@ struct OmniboxView: View {
                 // own rounded rect, so all that changes is how opaque the
                 // field is — no new shape appears on the bar.
                 ZStack {
-                    RoundedRectangle(cornerRadius: 8)
+                    AppConstants.ToolbarSurface.shape
                         .fill(themedFieldBackground)
                     // ON TOP of the field colour, not under it: the guard
                     // solves for a scrim composited over the backdrop it
@@ -145,28 +107,80 @@ struct OmniboxView: View {
                         .themeLegibilityPlate(
                             fieldLegibility,
                             floor: ThemeContrast.textFloor,
-                            cornerRadius: 8,
                             measureInset: 2,
                             // The URL can be any length, so every run-of-text
                             // width across the field has to hold, not just the
                             // stretch this particular address happens to cover.
-                            windowPoints: 40,
-                            spread: 0
+                            windowPoints: 40
                         )
                 }
             } else {
-                RoundedRectangle(cornerRadius: 8)
+                AppConstants.ToolbarSurface.shape
                     .fill(.regularMaterial)
             }
         }
         .overlay(
-            RoundedRectangle(cornerRadius: 8)
+            AppConstants.ToolbarSurface.shape
                 .stroke(
                     isFocused ? (themedFocusBorder ?? SettingsManager.shared.accentColor) : Color.primary.opacity(0.12),
                     lineWidth: isFocused ? 2 : 0.5
                 )
                 .animation(.easeInOut(duration: 0.15), value: isFocused)
         )
+    }
+
+    /// Split out of `body` purely so the type-checker can cope: the bar's
+    /// one expression grew past what it will solve in reasonable time once
+    /// the row's shared geometry was added to it.
+    private var addressField: some View {
+        TextField("Search or enter website name", text: $text)
+            .textFieldStyle(.plain)
+            .font(.system(size: 13))
+            .focused($isFocused)
+            .onSubmit {
+                submitInput()
+            }
+            .onChange(of: isFocused) { _, newValue in
+                if newValue {
+                    onFocus()
+                    // Select all text when focused
+                    DispatchQueue.main.async {
+                        NSApp.keyWindow?.firstResponder?
+                            .tryToPerform(#selector(NSText.selectAll(_:)), with: nil)
+                    }
+                } else {
+                    onBlur?()
+                }
+            }
+            .onChange(of: text) { _, newValue in
+                if isFocused {
+                    onTextChange?(newValue)
+                }
+            }
+            .onKeyPress(.downArrow) {
+                onArrowDown?()
+                return onArrowDown != nil ? .handled : .ignored
+            }
+            .onKeyPress(.upArrow) {
+                onArrowUp?()
+                return onArrowUp != nil ? .handled : .ignored
+            }
+            .onKeyPress(.escape) {
+                onEscape?()
+                return onEscape != nil ? .handled : .ignored
+            }
+            .onChange(of: focusTrigger) { _, _ in
+                // Already focused? Re-select all, which `onChange(of:
+                // isFocused)` would otherwise skip.
+                if isFocused {
+                    DispatchQueue.main.async {
+                        NSApp.keyWindow?.firstResponder?
+                            .tryToPerform(#selector(NSText.selectAll(_:)), with: nil)
+                    }
+                } else {
+                    isFocused = true
+                }
+            }
     }
 
     @ViewBuilder

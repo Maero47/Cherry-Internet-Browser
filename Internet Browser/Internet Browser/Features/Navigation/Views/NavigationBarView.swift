@@ -91,6 +91,11 @@ struct NavigationBarView: View {
         isThemed ? (themedToolbarText ?? Color.primary) : stock
     }
 
+    /// The whole toolbar row's frame, republished to the cluster surfaces so
+    /// BOTH of them are decided from the same region and therefore come out
+    /// the same weight. See the note on `navigationButtons` in `body`.
+    @State private var toolbarRowSpan: CGRect?
+
     @State private var addressText: String = ""
     @State private var isEditing: Bool = false
     @State private var suggestService = SearchSuggestService()
@@ -223,7 +228,7 @@ struct NavigationBarView: View {
             // `themeLegibilityPlate`.
             navigationButtons
                 .customizeToolbarContextMenu { onSettings?() }
-                .themeLegibilityPlate(legibility)
+                .themeLegibilityPlate(legibility, decidedAcrossCluster: true)
 
             // Omnibox. Note what is NOT here: the customise context menu. It
             // is attached to the button clusters and the bar's background, so
@@ -311,6 +316,11 @@ struct NavigationBarView: View {
 
             trailingControls
         }
+        // Both cluster surfaces are decided from the WHOLE row rather than each
+        // from its own patch of artwork, so the row carries one weight instead
+        // of a heavy surface at one end and a barely-there one at the other.
+        .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { toolbarRowSpan = $0 }
+        .themeClusterSpan(toolbarRowSpan)
         // Hierarchical styles (.primary/.secondary) on the buttons resolve
         // against this, so the whole toolbar's icons/text follow the theme's
         // toolbar_text; Color.primary is the stock look when unthemed.
@@ -434,7 +444,7 @@ struct NavigationBarView: View {
             actionButtons
                 .customizeToolbarContextMenu { onSettings?() }
         }
-        .themeLegibilityPlate(legibility)
+        .themeLegibilityPlate(legibility, decidedAcrossCluster: true)
     }
 
     @ViewBuilder

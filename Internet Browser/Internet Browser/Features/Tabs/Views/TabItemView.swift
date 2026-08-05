@@ -172,10 +172,14 @@ struct TabItemView: View {
                 .themeLegibilityPlate(
                     titleLegibility,
                     floor: ThemeContrast.textFloor,
-                    cornerRadius: AppConstants.UI.tabCornerRadius,
+                    // A tab is its own shape in its own row, so it takes the
+                    // tab corner and its own height rather than the toolbar
+                    // row's; what it shares with the toolbar is the rule, not
+                    // the geometry.
+                    shape: RoundedRectangle(cornerRadius: AppConstants.UI.tabCornerRadius),
+                    height: nil,
                     measureInset: 4,
                     windowPoints: 60,
-                    spread: 0,
                     decidedAcrossCluster: true
                 )
         }

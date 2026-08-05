@@ -601,8 +601,12 @@ extension View {
     ///     are, vertically. A 28pt toolbar button carries a 16pt symbol, so the
     ///     rows above and below carry no glyph and must not be averaged in.
     ///   - windowPoints: the width of one control in this cluster.
-    ///   - spread: how far the surface extends beyond the cluster's bounds, so
-    ///     the controls are not flush against its edge.
+    ///   - height: the row's shared surface height. Defaults to
+    ///     `AppConstants.ToolbarSurface.height`, which is the omnibox's, so a
+    ///     cluster surface is the same size and on the same centre line as the
+    ///     pill beside it instead of being however tall its own contents plus
+    ///     padding happened to come out. Tabs pass their own, being a different
+    ///     row.
     ///   - decidedAcrossCluster: measure the whole cluster's span (published by
     ///     the container via `themeClusterSpan`) at this view's own vertical
     ///     band, instead of just this view's rect. For a row of SEPARATE views
@@ -612,20 +616,20 @@ extension View {
     func themeLegibilityPlate(
         _ context: ThemeLegibility?,
         floor: Double = ThemeContrast.iconFloor,
-        cornerRadius: CGFloat = 8,
+        shape: RoundedRectangle = AppConstants.ToolbarSurface.shape,
+        height: CGFloat? = AppConstants.ToolbarSurface.height,
         measureInset: CGFloat = 5,
         windowPoints: CGFloat = 28,
-        spread: CGFloat = 3,
         decidedAcrossCluster: Bool = false
     ) -> some View {
         background {
             ThemeLegibilityPlateLayer(
                 context: context,
                 floor: floor,
-                cornerRadius: cornerRadius,
+                shape: shape,
+                height: height,
                 measureInset: measureInset,
                 windowPoints: windowPoints,
-                spread: spread,
                 decidedAcrossCluster: decidedAcrossCluster
             )
         }
@@ -664,10 +668,11 @@ private struct ThemeLegibilityPlateLayer: View {
 
     let context: ThemeLegibility?
     let floor: Double
-    let cornerRadius: CGFloat
+    let shape: RoundedRectangle
+    /// Nil means "as tall as the thing being backed" — what a tab wants.
+    let height: CGFloat?
     let measureInset: CGFloat
     let windowPoints: CGFloat
-    let spread: CGFloat
     let decidedAcrossCluster: Bool
 
     var body: some View {
@@ -691,9 +696,16 @@ private struct ThemeLegibilityPlateLayer: View {
                 // A crisp edge, and no blur: this is a surface, not a smudge.
                 // It also keeps the shipped opacity equal to the solved one
                 // everywhere inside it, which a blurred shape does not.
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                //
+                // Drawn at the ROW's height on the row's centre line, in the
+                // row's corner — not at whatever size this particular cluster's
+                // contents came out. That is what makes it a sibling of the
+                // omnibox pill rather than a second, separately-sized surface
+                // that happens to sit beside one.
+                shape
                     .fill(plan.color.opacity(plan.opacity))
-                    .padding(-spread)
+                    .frame(height: height)
+                    .frame(maxHeight: .infinity, alignment: .center)
             }
         }
         .allowsHitTesting(false)
