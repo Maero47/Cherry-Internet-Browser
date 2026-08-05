@@ -22,9 +22,17 @@ struct BookmarkBarView: View {
     private var themedToolbarBackground: Color? {
         isPrivateMode ? nil : FirefoxThemeManager.shared.toolbarBackground
     }
+    /// Resolved the same way the navigation bar resolves it, and for the same
+    /// reason: a theme names one `toolbar_text` for both appearances, so on the
+    /// wrong side of the crossover it would put light labels on a pale bar.
     private var themedToolbarText: Color? {
-        isPrivateMode ? nil : FirefoxThemeManager.shared.toolbarText
+        guard !isPrivateMode, FirefoxThemeManager.shared.activeTheme != nil else { return nil }
+        return ThemeContrast.toolbarGlyph(
+            themeText: FirefoxThemeManager.shared.toolbarText, appearance: colorScheme
+        )
     }
+
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {

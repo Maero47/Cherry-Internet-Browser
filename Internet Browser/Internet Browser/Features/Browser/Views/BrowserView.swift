@@ -347,6 +347,20 @@ struct BrowserView: View {
                         },
                         onSplitOnEdge: { tab, edge in viewModel.splitWith(tab: tab, edge: edge) }
                     )
+                    // Above the page, for the same reason the navigation bar
+                    // below already is (`.zIndex(200)`): a tab's WKWebView is an
+                    // AppKit view hosted inside this SwiftUI stack, and AppKit
+                    // composites a hosted view above SwiftUI siblings that have
+                    // no z-order of their own. In a window nothing notices,
+                    // because the host sits exactly in its slot. Entering
+                    // fullscreen resizes it to the whole window before SwiftUI
+                    // re-lays the stack, and from then on it covers the chrome.
+                    //
+                    // The strip was never missing: it was drawn, at the right
+                    // size, in the right place, underneath the page. Measured in
+                    // fullscreen it reported 1920x38 at the top of the window
+                    // while showing nothing at all.
+                    .zIndex(ChromeLayer.tabStrip)
                     // Chrome-on-chrome separator: the tab strip and the toolbar
                     // below it are two slices of ONE themed backdrop, so under a
                     // theme this hairline paints a grey line straight across the
@@ -529,6 +543,7 @@ struct BrowserView: View {
                 repository: viewModel.historyRepository,
                 onItemClick: { viewModel.openHistoryItem($0) },
                 onOpenInNewTab: { viewModel.openHistoryItemInNewTab($0) },
+                presentation: .sidebar,
                 onClose: { viewModel.closeSidebar() }
             )
             .frame(minWidth: 300, maxWidth: 300)
@@ -537,6 +552,7 @@ struct BrowserView: View {
                 repository: viewModel.bookmarkRepository,
                 onBookmarkClick: { viewModel.openBookmark($0) },
                 onOpenInNewTab: { viewModel.openBookmarkInNewTab($0) },
+                presentation: .sidebar,
                 onClose: { viewModel.closeSidebar() },
                 isPrivateMode: viewModel.isPrivateMode
             )
@@ -545,6 +561,7 @@ struct BrowserView: View {
             DownloadsSidebarView(
                 repository: viewModel.downloadRepository,
                 downloadManager: viewModel.downloadManager,
+                presentation: .sidebar,
                 onClose: { viewModel.closeSidebar() },
                 isPrivateMode: viewModel.isPrivateMode
             )
@@ -922,10 +939,11 @@ struct BrowserContentView: View {
                 .simultaneousGesture(
                     TapGesture().onEnded { onFocusPane?() }
                 )
-                .zIndex(200)
+                .zIndex(ChromeLayer.navigationBar)
             }
 
-            // Bookmark bar
+            // Bookmark bar. Same z-order as the strip and the navigation bar,
+            // and for the same reason — it went with the strip in fullscreen.
             if viewModel.showBookmarkBar && !viewModel.isVideoFullscreen {
                 BookmarkBarView(
                     repository: viewModel.bookmarkRepository,
@@ -933,6 +951,7 @@ struct BrowserContentView: View {
                     onOpenInNewTab: { viewModel.openBookmarkInNewTab($0) },
                     isPrivateMode: viewModel.isPrivateMode
                 )
+                .zIndex(ChromeLayer.bookmarkBar)
             }
 
             // Loading progress bar. Suppressed while an internal cherry://

@@ -312,10 +312,13 @@ struct HomepageSwatch: View {
             LinearGradient(colors: colors, startPoint: .topLeading, endPoint: .bottomTrailing)
                 .overlay { HomepageGradientWash() }
         case .wallpaper(let assetName):
+            // Bare, because the homepage now draws it bare. The swatch used to
+            // carry the page's wash so it would not read more saturated than
+            // the page; there is no wash left to carry, and adding one here
+            // would make the preview the only place the wallpaper is dimmed.
             Image(assetName)
                 .resizable()
                 .scaledToFill()
-                .overlay { HomepageWallpaperScrim(startRadius: 8, endRadius: 72) }
         case .flat(let color):
             color
         }

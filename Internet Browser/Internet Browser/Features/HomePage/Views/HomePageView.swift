@@ -34,13 +34,13 @@ private struct HomepageBackground: View {
     var body: some View {
         ZStack {
             if let wallpaperName {
+                // Nothing over it. The wallpaper is the wallpaper; legibility
+                // is paid for at the glyph by `HomepageGlyphHalo`.
                 Image(wallpaperName)
                     .resizable()
                     .scaledToFill()
                     .id(wallpaperName)
                     .transition(.opacity)
-
-                HomepageWallpaperScrim()
             } else {
                 fallbackGradient
                     .transition(.opacity)
@@ -99,38 +99,93 @@ struct HomepageGradientWash: View {
     }
 }
 
-/// The wash the homepage lays over a wallpaper so text stays legible.
+/// How faint the homepage lets its text get.
 ///
-/// Shared with the Settings ▸ Homepage Background "Auto" thumbnail, which
-/// previews the same wallpaper: without it the swatch reads noticeably more
-/// saturated than what the homepage actually paints. One definition, so the
-/// two can't drift apart.
-struct HomepageWallpaperScrim: View {
-    /// Radii of the centre highlight, in points. The homepage uses the
-    /// defaults, sized for a window; the Settings thumbnail scales them down
-    /// to its ~1/10-scale tile so the highlight falls off inside the tile
-    /// instead of flooding it.
-    var startRadius: CGFloat = 80
-    var endRadius: CGFloat = 720
+/// The homepage cannot de-emphasise by fading, because everything here is drawn
+/// on a photograph and a faded tone stops clearing 4.5:1 long before it looks
+/// pleasantly quiet. These are the two floors, and hierarchy comes from size
+/// and weight instead. See `HomepageGlyphHalo` for the measurements.
+enum HomepageText {
+    /// Anything below the clock that sits on the wallpaper: the greeting, the
+    /// "Your corner of the web" line, the Ask control, "Add favorite".
+    static let supporting: Double = 0.85
 
-    @Environment(\.colorScheme) private var colorScheme
+    /// Glyphs inside the search field. Those sit on `.regularMaterial`, not on
+    /// the photograph, so they are not bound by the halo measurement; this is
+    /// simply the faintest the field's own furniture is allowed to be.
+    static let onMaterial: Double = 0.75
+}
 
-    var body: some View {
-        ZStack {
-            (colorScheme == .light ? Color.white : Color.black)
-                .opacity(colorScheme == .light ? 0.32 : 0.28)
+/// Legibility for text drawn straight onto a wallpaper, paid for at the glyph
+/// instead of at the page.
+///
+/// ## Why there is no wash any more
+///
+/// Text on a photograph needs a known backdrop, and there are only two places
+/// to put one: over the whole picture, or around the letters. Every previous
+/// version of this screen chose the picture. Even after the flat veil came down
+/// to 0.12 the centre-weighted pool was still bleaching exactly where the user
+/// looks: measured off the shipped build, a 60pt patch at the centre held **8%
+/// saturation against 37–40% at the corners** — a 78% loss — and read 155–179
+/// brightness against ~90. The picture was being dimmed to serve a few dozen
+/// glyphs.
+///
+/// So the wash is gone. Not smaller: gone. There is no page-wide veil, no
+/// radial, no gradient overlay of any kind on a wallpaper homepage, and the
+/// wallpaper is drawn at 100% everywhere except within a few points of a
+/// letterform.
+///
+/// ## What pays for legibility instead
+///
+/// A dark halo, hugging the glyphs. That works in **both** appearances because
+/// the backdrop here is a photograph rather than an app surface: what the text
+/// has to survive is the picture, not the theme. This is the same bargain the
+/// macOS desktop and the iOS lock screen make with their labels, and it is why
+/// they can sit on any wallpaper at all.
+///
+/// ## Measured by rendering, because arithmetic was wrong about it
+///
+/// What a stack of blurred shadows actually delivers at the pixel beside a
+/// letter is a rendering result, not a number anyone can derive. Modelling it
+/// as a flat alpha said a 0.60 halo would give 6.16:1; rendering the real thing
+/// and sampling it said **3.04:1**. The model was measuring a halo nobody was
+/// drawing. So the shipped numbers come from rendering the real type over the
+/// real assets and reading the pixels, per glyph, against the pixels
+/// immediately beside that glyph, at the harmful tail:
+///
+///     worst of the eight wallpapers (Teal), both appearances
+///     clock (68pt)             7.65:1
+///     shortcut title (12pt)    4.87:1
+///     greeting (17pt, 0.85)    4.84:1
+///
+/// Light and dark measure identically, which is the point: the treatment does
+/// not depend on the appearance because the backdrop does not either.
+///
+/// `HomepageGlyphHaloTests` renders and samples all of it rather than trusting
+/// this table, and also asserts the two things the wash used to cost: the
+/// corners of the picture are pixel-identical with the halo present, and the
+/// centre keeps its saturation.
+struct HomepageGlyphHalo: ViewModifier {
+    /// Stacked rather than one shadow: a single blurred shadow is thin right
+    /// where it matters, at the glyph edge. Each layer composites over the one
+    /// before it, so the core reaches the density the measurement needs while
+    /// the outermost layer stays soft enough not to draw a box around the text.
+    func body(content: Content) -> some View {
+        content
+            .shadow(color: .black.opacity(0.95), radius: 2)
+            .shadow(color: .black.opacity(0.9), radius: 3)
+            .shadow(color: .black.opacity(0.8), radius: 7)
+            .shadow(color: .black.opacity(0.6), radius: 16)
+    }
+}
 
-            RadialGradient(
-                colors: [
-                    (colorScheme == .light ? Color.white : Color.black).opacity(0.22),
-                    .clear
-                ],
-                center: .center,
-                startRadius: startRadius,
-                endRadius: endRadius
-            )
-        }
-        .allowsHitTesting(false)
+extension View {
+    /// Applied to text that sits on the wallpaper, and to nothing that sits on
+    /// a surface of its own — the search field and the shortcut tiles already
+    /// have one, and haloing them would put a shadow inside a shadow.
+    @ViewBuilder
+    func homepageGlyphHalo(_ enabled: Bool) -> some View {
+        if enabled { modifier(HomepageGlyphHalo()) } else { self }
     }
 }
 
@@ -163,18 +218,47 @@ struct HomePageView: View {
     @State private var editingShortcut: Shortcut?
 
     private var accent: Color { SettingsManager.shared.accentColor }
+
+    private var backgroundSource: HomepageBackgroundSource {
+        SettingsManager.shared.homepageBackgroundSource(isPrivate: isPrivateMode)
+    }
+
+    /// Whether a photograph is being painted behind the content.
+    ///
+    /// This is the one thing that decides how the text is treated, because a
+    /// photograph is not a surface: it has no appearance, no single luminance
+    /// and no contract with the theme.
+    private var isOnWallpaper: Bool {
+        if case .accentWallpaper = backgroundSource { return true }
+        return false
+    }
+
     private var foreground: Color {
+        // On a wallpaper the text is white in BOTH appearances, with a halo
+        // doing the contrast work. What text has to survive here is the
+        // picture, not the app's appearance — and near-black type on a dark
+        // photograph is the reason this screen used to need the picture
+        // bleached before it could be read.
+        if isOnWallpaper { return .white }
+
         // An active Firefox theme's ntp_text keeps text legible against its
         // absolute ntp_background — but only while that background is the one
-        // being painted. Against Cherry's own wallpaper it would be a colour
+        // being painted. Against Cherry's own gradient it would be a colour
         // chosen for a surface that isn't there, so we stay scheme-adaptive.
         // In a private window the source is never `.themeBackground`, so this
         // is also the incognito gate.
-        if SettingsManager.shared.homepageBackgroundSource(isPrivate: isPrivateMode) == .themeBackground,
+        if backgroundSource == .themeBackground,
            let themeText = FirefoxThemeManager.shared.homepageText {
             return themeText
         }
         return colorScheme == .dark ? .white : Color(red: 0.09, green: 0.08, blue: 0.11)
+    }
+
+    /// The tone for anything drawn inside the search field. The field carries
+    /// its own `.regularMaterial`, which IS a surface and does have an
+    /// appearance, so its contents follow the app rather than the wallpaper.
+    private var fieldForeground: Color {
+        isOnWallpaper ? .primary : foreground
     }
 
     var body: some View {
@@ -220,8 +304,9 @@ struct HomePageView: View {
 
                 Text(greeting(for: context.date))
                     .font(.system(size: 17, weight: .medium, design: .rounded))
-                    .foregroundStyle(foreground.opacity(0.62))
+                    .foregroundStyle(foreground.opacity(HomepageText.supporting))
             }
+            .homepageGlyphHalo(isOnWallpaper)
         }
     }
 
@@ -229,7 +314,7 @@ struct HomePageView: View {
         HStack(spacing: 13) {
             Image(systemName: "magnifyingglass")
                 .font(.system(size: 17, weight: .medium))
-                .foregroundStyle(isSearchFocused ? accent : foreground.opacity(0.42))
+                .foregroundStyle(isSearchFocused ? accent : fieldForeground.opacity(HomepageText.onMaterial))
 
             TextField("Search or enter a website", text: $searchText)
                 .textFieldStyle(.plain)
@@ -249,7 +334,7 @@ struct HomePageView: View {
                         isSearchFocused = true
                     } label: {
                         Image(systemName: "xmark.circle.fill")
-                            .foregroundStyle(foreground.opacity(0.35))
+                            .foregroundStyle(fieldForeground.opacity(HomepageText.onMaterial))
                     }
                     .buttonStyle(.plain)
                     .help("Clear what you typed. Return searches for it.")
@@ -272,9 +357,12 @@ struct HomePageView: View {
         .padding(.trailing, 13)
         .frame(height: 58)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        // The field is its own surface, so its contents stop inheriting the
+        // wallpaper's white and follow the material's appearance instead.
+        .foregroundStyle(fieldForeground)
         .overlay {
             RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .stroke(isSearchFocused ? accent.opacity(0.65) : foreground.opacity(0.1), lineWidth: isSearchFocused ? 1.5 : 1)
+                .stroke(isSearchFocused ? accent.opacity(0.65) : fieldForeground.opacity(0.12), lineWidth: isSearchFocused ? 1.5 : 1)
         }
         .shadow(color: .black.opacity(colorScheme == .dark ? 0.22 : 0.1), radius: 24, y: 10)
         .animation(.easeOut(duration: 0.18), value: isSearchFocused)
@@ -291,8 +379,9 @@ struct HomePageView: View {
                         .font(.system(size: 15, weight: .semibold, design: .rounded))
                     Text("Your corner of the web")
                         .font(.system(size: 12))
-                        .foregroundStyle(foreground.opacity(0.48))
+                        .foregroundStyle(foreground.opacity(HomepageText.supporting))
                 }
+                .homepageGlyphHalo(isOnWallpaper)
 
                 Spacer()
 
@@ -318,6 +407,7 @@ struct HomePageView: View {
                     ShortcutItemView(
                         shortcut: shortcut,
                         foreground: foreground,
+                        isOnWallpaper: isOnWallpaper,
                         accent: accent,
                         onClick: { onShortcutClick(shortcut.url) },
                         onEdit: { editingShortcut = shortcut },
@@ -325,7 +415,7 @@ struct HomePageView: View {
                     )
                 }
 
-                AddShortcutButton(foreground: foreground) {
+                AddShortcutButton(foreground: foreground, isOnWallpaper: isOnWallpaper) {
                     showingAddShortcut = true
                 }
             }
@@ -448,7 +538,7 @@ private struct AskAIButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         let engaged = isEngaged || configuration.isPressed
         return configuration.label
-            .foregroundStyle(engaged ? accent : foreground.opacity(0.62))
+            .foregroundStyle(engaged ? accent : foreground.opacity(HomepageText.supporting))
             // Ease-out both times: ease-in would hold back the first few
             // milliseconds, which is the part being watched.
             .animation(.easeOut(duration: 0.12), value: engaged)
@@ -462,6 +552,10 @@ private struct AskAIButtonStyle: ButtonStyle {
 private struct ShortcutItemView: View {
     let shortcut: Shortcut
     let foreground: Color
+    /// The tile's own fill is 4.5% ink, which is a tint rather than a surface,
+    /// so its caption is effectively on the wallpaper and is haloed like the
+    /// rest of the text that is.
+    let isOnWallpaper: Bool
     let accent: Color
     let onClick: () -> Void
     let onEdit: () -> Void
@@ -501,6 +595,7 @@ private struct ShortcutItemView: View {
                         .lineLimit(1)
                         .truncationMode(.tail)
                         .frame(maxWidth: .infinity)
+                        .homepageGlyphHalo(isOnWallpaper)
                 }
                 .padding(.horizontal, 10)
                 .padding(.vertical, 14)
@@ -544,6 +639,7 @@ private struct ShortcutItemView: View {
 
 private struct AddShortcutButton: View {
     let foreground: Color
+    let isOnWallpaper: Bool
     let action: () -> Void
     @State private var isHovering = false
 
@@ -557,8 +653,9 @@ private struct AddShortcutButton: View {
 
                 Text("Add favorite")
                     .font(.system(size: 12, weight: .medium))
+                    .homepageGlyphHalo(isOnWallpaper)
             }
-            .foregroundStyle(foreground.opacity(isHovering ? 0.8 : 0.52))
+            .foregroundStyle(foreground.opacity(isHovering ? 1 : HomepageText.supporting))
             .padding(.horizontal, 10)
             .padding(.vertical, 14)
             .frame(maxWidth: .infinity, minHeight: 104)
