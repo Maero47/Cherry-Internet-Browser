@@ -142,12 +142,15 @@ struct OmniboxView: View {
                     // Sliding it underneath would make the shipped opacity
                     // stop matching the arithmetic that chose it.
                     Color.clear
-                        .themeLegibilityScrim(
+                        .themeLegibilityPlate(
                             fieldLegibility,
                             floor: ThemeContrast.textFloor,
                             cornerRadius: 8,
                             measureInset: 2,
-                            softness: 0,
+                            // The URL can be any length, so every run-of-text
+                            // width across the field has to hold, not just the
+                            // stretch this particular address happens to cover.
+                            windowPoints: 40,
                             spread: 0
                         )
                 }

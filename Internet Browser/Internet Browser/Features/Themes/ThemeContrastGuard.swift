@@ -23,27 +23,50 @@
 //  ## What this does about it
 //
 //  Nothing, wherever the theme is already legible. That is the whole design.
-//  For each control the guard re-composites the exact backdrop that control is
-//  drawn against — same frame colour, same header images, same anchoring and
-//  tiling arithmetic (`ThemeHeaderLayerPlacement`), same overlay colours — into
-//  a small offscreen bitmap, and measures it. If the control already clears its
-//  floor, the guard returns nil and NOT ONE PIXEL changes.
+//  The guard re-composites the exact backdrop a CLUSTER of controls is drawn
+//  against — same frame colour, same header images, same anchoring and tiling
+//  arithmetic (`ThemeHeaderLayerPlacement`), same overlay colours — into a
+//  small offscreen bitmap, and measures it. If every control in the cluster
+//  already clears its floor, the guard returns nil and NOT ONE PIXEL changes.
 //
-//  Only where it fails does a scrim appear: behind that one control, in the
-//  direction that moves the backdrop away from the glyph (dark under a light
-//  glyph, light under a dark one), at the LOWEST opacity that clears the floor
-//  and no more. It is soft-edged and control-sized, so the artwork still runs
-//  between and around the controls and still reads as the illustration the user
-//  imported the theme for. A flat bar across the cluster would fix the number
-//  and destroy the reason the theme is there.
+//  Where it does not, ONE surface appears behind the WHOLE cluster: one colour,
+//  one opacity, one shape, decided once from the worst control-sized window
+//  anywhere under it.
 //
-//  ## Why a percentile and not the mean
+//  ## Why the decision is per cluster and never per control
 //
-//  A control's backdrop is not one colour, it is a few hundred pixels of
-//  illustration. Averaging hides the highlight the glyph actually vanishes
-//  against. The guard solves for the **10th-percentile pixel** — the worst
-//  tenth of the region must clear the floor — which makes the median (what a
-//  screenshot audit measures) clear it comfortably.
+//  The first version of this solved each control separately, and it was wrong
+//  in a way no ratio caught. A translucent scrim takes its colour from whatever
+//  it is over, so the sparkle got a pale pink patch, Home an orange one, the
+//  star a tan one — each a different tint, a different width, and three
+//  controls further along the row got nothing at all because they happened not
+//  to need it. Magnified, it read as smudges rather than as a treatment, and
+//  the patches were more eye-catching than the icons they existed to serve.
+//
+//  A control must not look different from the control beside it because of what
+//  happens to be behind it. So: one decision per cluster, applied uniformly,
+//  including to the controls that would have passed on their own. There is
+//  deliberately NO per-control fallback — a fallback that fires on one icon in a
+//  row would reproduce exactly the defect it was added to avoid.
+//
+//  That uniformity also constrains the glyphs. One surface can only serve one
+//  polarity of foreground, so a themed toolbar draws EVERY glyph in the theme's
+//  `toolbar_text` (see `NavigationBarView.themedGlyph`) rather than letting some
+//  keep an accent tint. Firefox does the same thing with the same key, and the
+//  toggles carry their state in their symbol (`book` vs `book.fill`) rather than
+//  in their colour, so nothing is lost saying it.
+//
+//  ## Why a percentile, and why a window
+//
+//  A backdrop is not one colour, it is a few hundred pixels of illustration.
+//  Averaging hides the highlight the glyph actually vanishes into, so the guard
+//  solves for the **10th-percentile pixel** rather than the mean.
+//
+//  Across a cluster that is not enough on its own: a tenth of a nine-button
+//  cluster is most of one button, so a single control could be sacrificed to the
+//  average of its neighbours. The criterion is therefore applied to a sliding
+//  CONTROL-SIZED window and the strictest answer wins — the tolerance is a
+//  fraction of one control, never a fraction of the whole row.
 //
 
 import AppKit
@@ -132,32 +155,32 @@ nonisolated enum ThemeContrast {
         return ratios[index]
     }
 
-    /// The scrim `foreground` needs over `backdrop` to clear `floor`, or nil
-    /// when it already does — which is the answer for every control the theme
-    /// already draws legibly, and the reason a legible theme is untouched.
-    ///
-    /// Opacity is found by bisection rather than a formula because the
-    /// criterion is a percentile over the real pixels, not a single blended
-    /// colour. It is monotonic in opacity (every pixel moves the same way), so
-    /// bisection converges on the minimum.
-    static func scrim(foreground: RGBA, backdrop: [RGB], floor: Double) -> ThemeScrimPlan? {
-        guard !backdrop.isEmpty else { return nil }
-
-        let before = harmfulRatio(foreground: foreground, backdrop: backdrop)
-        guard before < floor else { return nil }
-
-        // Away from the glyph's own tone: darken under a light glyph, lighten
-        // under a dark one. Chosen from the foreground alone, so every control
-        // sharing a colour gets the same direction and the row stays coherent.
+    /// Which way a scrim has to move the backdrop for this foreground: darken
+    /// under a light glyph, lighten under a dark one. A property of the
+    /// foreground ALONE, which is what lets one surface serve a whole cluster.
+    static func scrimIsDark(for foreground: RGBA) -> Bool {
         let glyph = composite(foreground, over: RGB(red: 0.5, green: 0.5, blue: 0.5))
-        let isDark = relativeLuminance(glyph) > scrimCrossoverLuminance
-        let scrimColor: RGB = isDark ? .black : .white
+        return relativeLuminance(glyph) > scrimCrossoverLuminance
+    }
+
+    /// The least opacity of `scrimColor` that brings `backdrop` up to `floor`
+    /// for `foreground`, or nil when it is already there.
+    ///
+    /// Found by bisection rather than a formula because the criterion is a
+    /// percentile over the real pixels, not a single blended colour. It is
+    /// monotonic in opacity (every pixel moves the same way), so bisection
+    /// converges on the minimum.
+    static func minimumOpacity(
+        foreground: RGBA, backdrop: [RGB], scrimColor: RGB, floor: Double
+    ) -> Double? {
+        guard !backdrop.isEmpty else { return nil }
+        guard harmfulRatio(foreground: foreground, backdrop: backdrop) < floor else { return nil }
 
         func ratioAt(_ opacity: Double) -> Double {
-            let scrimmed = backdrop.map { pixel in
-                composite(RGBA(rgb: scrimColor, alpha: opacity), over: pixel)
-            }
-            return harmfulRatio(foreground: foreground, backdrop: scrimmed)
+            harmfulRatio(
+                foreground: foreground,
+                backdrop: backdrop.map { composite(RGBA(rgb: scrimColor, alpha: opacity), over: $0) }
+            )
         }
 
         var low = 0.0
@@ -168,14 +191,96 @@ nonisolated enum ThemeContrast {
         }
         // Rounded UP to a hundredth so the shipped opacity is never a hair
         // under the solved one.
-        let opacity = min(1.0, (high * 100).rounded(.up) / 100)
+        return min(1.0, (high * 100).rounded(.up) / 100)
+    }
+
+    /// ONE surface for a whole cluster: the colour and opacity that make EVERY
+    /// control-sized window under `sample` clear `floor`, or nil when they all
+    /// already do.
+    ///
+    /// The window is what stops a cluster averaging one of its own controls
+    /// away. `harmfulPercentile` of a nine-button row is most of one button, so
+    /// applying the percentile to the row as a whole would let a single control
+    /// sit under the floor and still pass. Applied to a sliding control-sized
+    /// window instead, the tolerance stays a fraction of ONE control wherever
+    /// the window happens to be, and the strictest window sets the surface.
+    ///
+    /// Windows overlap by half, so a bad patch straddling two of them is caught
+    /// whole by the one centred on it rather than diluted by both.
+    static func plate(
+        foreground: RGBA,
+        sample: ThemeBackdropSample,
+        floor: Double,
+        windowPoints: CGFloat
+    ) -> ThemeScrimPlan? {
+        guard !sample.pixels.isEmpty, sample.columns > 0, sample.rows > 0 else { return nil }
+
+        let isDark = scrimIsDark(for: foreground)
+        let scrimColor: RGB = isDark ? .black : .white
+
+        var worstBefore = Double.infinity
+        var required = 0.0
+        for window in sample.windows(ofPoints: windowPoints) {
+            worstBefore = min(worstBefore, harmfulRatio(foreground: foreground, backdrop: window))
+            if let opacity = minimumOpacity(
+                foreground: foreground, backdrop: window, scrimColor: scrimColor, floor: floor
+            ) {
+                required = max(required, opacity)
+            }
+        }
+        guard required > 0 else { return nil }
+
+        // Reported at the worst window, which is the one the surface was sized
+        // for — every other window clears by more.
+        var worstAfter = Double.infinity
+        for window in sample.windows(ofPoints: windowPoints) {
+            worstAfter = min(worstAfter, harmfulRatio(
+                foreground: foreground,
+                backdrop: window.map { composite(RGBA(rgb: scrimColor, alpha: required), over: $0) }
+            ))
+        }
 
         return ThemeScrimPlan(
-            isDark: isDark,
-            opacity: opacity,
-            ratioBefore: before,
-            ratioAfter: ratioAt(opacity)
+            isDark: isDark, opacity: required, ratioBefore: worstBefore, ratioAfter: worstAfter
         )
+    }
+}
+
+/// A rectangle of composited backdrop, kept 2-D so it can be walked a control
+/// at a time rather than averaged whole.
+struct ThemeBackdropSample: Equatable {
+    /// Row-major, `columns` per row.
+    var pixels: [ThemeContrast.RGB]
+    var columns: Int
+    var rows: Int
+    /// Width in POINTS of the region these samples cover, which is what turns a
+    /// control size into a number of columns.
+    var pointWidth: CGFloat
+
+    static let empty = ThemeBackdropSample(pixels: [], columns: 0, rows: 0, pointWidth: 0)
+
+    /// Every control-sized window across the sample, each as a flat pixel list.
+    /// A region narrower than one window is one window.
+    func windows(ofPoints windowPoints: CGFloat) -> [[ThemeContrast.RGB]] {
+        guard columns > 0, rows > 0, pixels.count == columns * rows else { return [] }
+        guard pointWidth > 0, windowPoints > 0, pointWidth > windowPoints else { return [pixels] }
+
+        let width = max(1, min(columns, Int((windowPoints / pointWidth * CGFloat(columns)).rounded())))
+        let stride = max(1, width / 2)
+        var result: [[ThemeContrast.RGB]] = []
+        var start = 0
+        while start + width <= columns {
+            var window: [ThemeContrast.RGB] = []
+            window.reserveCapacity(width * rows)
+            for row in 0..<rows {
+                let base = row * columns + start
+                window.append(contentsOf: pixels[base..<(base + width)])
+            }
+            result.append(window)
+            if start + width == columns { break }
+            start = min(start + stride, columns - width)
+        }
+        return result
     }
 }
 
@@ -205,32 +310,37 @@ struct ThemeScrimPlan: Equatable {
 @MainActor
 enum ThemeBackdropSampler {
 
-    /// Longest side of the sampling bitmap. A toolbar glyph box is 18pt, so
-    /// this is 1:1 for buttons and a downsample for the wider text runs.
-    ///
-    /// Sampling is POINT-sampled, not interpolated (see `interpolationQuality`
-    /// below), and that is the whole reason this number can be small. Smoothly
-    /// downsampling a patterned backdrop averages its highlights into its
-    /// shadows, and the highlight IS the thing a glyph disappears into — a
-    /// blended sample reports a backdrop that is nowhere on screen and solves
-    /// for a scrim too weak to deliver its own ratio.
-    static let maxResolution = 48
+    /// Horizontal sampling resolution — effectively one sample per point up to
+    /// a whole cluster's width. It has to stay near 1:1 ACROSS the row, because
+    /// the cluster surface is decided by the worst control-sized window in it:
+    /// squeeze a 280pt row into a few dozen columns and one control is five
+    /// columns wide, far too coarse to find the highlight it vanishes into.
+    static let maxColumns = 320
+
+    /// Vertical resolution. A glyph box is 18pt, so this is 1:1 for the toolbar
+    /// and a mild downsample for a tall region.
+    static let maxRows = 24
 
     /// Animated header layers (GIF/APNG) are sampled at up to this many frames
-    /// and the results UNIONED, so the scrim is solved against the whole loop.
-    /// A scrim that only holds on frame 0 is not a fix for an animated theme.
+    /// and STACKED into one sample, so every control-sized window spans the
+    /// whole loop. A surface that only holds on frame 0 is not a fix for an
+    /// animated theme.
     static let maxAnimationSamples = 6
 
     /// The composited backdrop under `rect` (global/SwiftUI coordinates),
     /// anchored inside `canvas` (the window-wide virtual canvas header images
     /// align to). Empty when no theme is active.
+    ///
+    /// Kept 2-D: the returned sample is walked a control at a time, so it
+    /// cannot be flattened to a bag of pixels here. Animation frames stack
+    /// along ROWS, which keeps each column band covering every frame.
     static func backdrop(
         under rect: CGRect,
         canvas: CGRect,
         overlays: [Color]
-    ) -> [ThemeContrast.RGB] {
+    ) -> ThemeBackdropSample {
         let manager = FirefoxThemeManager.shared
-        guard manager.activeTheme != nil, rect.width >= 1, rect.height >= 1 else { return [] }
+        guard manager.activeTheme != nil, rect.width >= 1, rect.height >= 1 else { return .empty }
 
         let base = manager.frameBackground.map(ThemeContrast.resolve)
             // Image-only theme with no frame colour: the stock `.bar` material
@@ -240,34 +350,45 @@ enum ThemeBackdropSampler {
         let renderers = manager.headerBackgrounds.map(BackgroundLayerRenderer.init)
         let resolvedOverlays = overlays.map(ThemeContrast.resolve)
 
+        let columns = max(1, min(maxColumns, Int(rect.width.rounded())))
+        let rows = max(1, min(maxRows, Int(rect.height.rounded())))
         let frames = min(
             maxAnimationSamples,
             max(1, renderers.map(\.sampleFrameCount).max() ?? 1)
         )
+
         var pixels: [ThemeContrast.RGB] = []
+        pixels.reserveCapacity(columns * rows * frames)
         for frame in 0..<frames {
             pixels += compose(
                 rect: rect,
                 canvas: canvas,
+                columns: columns,
+                rows: rows,
                 base: base.rgb,
                 renderers: renderers,
                 frame: frame,
                 overlays: resolvedOverlays
             )
         }
-        return pixels
+        guard pixels.count == columns * rows * frames else { return .empty }
+        return ThemeBackdropSample(
+            pixels: pixels, columns: columns, rows: rows * frames, pointWidth: rect.width
+        )
     }
 
     private static func compose(
         rect: CGRect,
         canvas: CGRect,
+        columns: Int,
+        rows: Int,
         base: ThemeContrast.RGB,
         renderers: [BackgroundLayerRenderer],
         frame: Int,
         overlays: [ThemeContrast.RGBA]
     ) -> [ThemeContrast.RGB] {
-        let width = max(1, min(maxResolution, Int(rect.width.rounded())))
-        let height = max(1, min(maxResolution, Int(rect.height.rounded())))
+        let width = columns
+        let height = rows
         guard let context = CGContext(
             data: nil,
             width: width,
@@ -357,121 +478,77 @@ extension ThemeContrast {
 
 // MARK: - The guard
 
-/// Answers "does this control need a scrim, and how much" for one rectangle,
+/// Answers "does this CLUSTER need a surface, and which one" for one rectangle,
 /// caching the answer.
 ///
+/// The unit is deliberately a cluster and never a control. Asking per control
+/// is what produced a row of differently-tinted patches with gaps in it; asking
+/// once for the row produces one surface or none.
+///
 /// A cache is not an optimisation here, it is what makes the guard usable from
-/// a view body at all: the question is asked on every layout pass of every
-/// control, and the answer only changes when the theme, the geometry, or the
-/// colours do — which is exactly the key.
+/// a view body at all: the question is asked on every layout pass, and the
+/// answer only changes when the theme, the geometry, or the colours do — which
+/// is exactly the key.
 @MainActor
 final class ThemeContrastGuard {
     static let shared = ThemeContrastGuard()
 
     private var cache: [String: ThemeScrimPlan?] = [:]
-    /// Dominant tones of extension action icons, by extension id.
-    private var tones: [String: Color] = [:]
 
-    /// Plenty for every control in several windows at a few window widths;
+    /// Plenty for every cluster in several windows at a few window widths;
     /// dropped wholesale rather than evicted one by one, because a resize
     /// invalidates a whole generation of keys at once anyway.
-    private let cacheLimit = 1024
+    private let cacheLimit = 512
 
     private init() {}
 
-    /// The scrim needed behind `rect` (global coordinates) for a control drawn
-    /// in `foreground`, or nil when the theme already draws it above `floor` —
-    /// including whenever no theme is active at all, which is what keeps the
-    /// stock look untouched.
+    /// The one surface `rect` needs so that EVERY control-sized window in it
+    /// clears `floor`, or nil when they all already do — including whenever no
+    /// theme is active at all, which is what keeps the stock look untouched.
     ///
     /// - Parameters:
-    ///   - rect: the region actually occupied by the glyph or text, not the
-    ///     whole hit target: measuring the padding around a 16pt icon would
-    ///     average in artwork nothing is drawn on.
+    ///   - rect: the band the glyphs actually occupy across the whole cluster,
+    ///     not the whole hit area: measuring the padding above and below a 16pt
+    ///     row of icons would average in artwork nothing is drawn on.
+    ///   - windowPoints: the width of one control. The tolerance inside the
+    ///     percentile is a fraction of THIS, not of the cluster, so a wide row
+    ///     cannot average one of its own controls away.
     ///   - overlays: colours this surface paints between the header backdrop
-    ///     and the control (the theme's `toolbar`, a field fill, a tab fill).
-    func scrim(
+    ///     and the controls (the theme's `toolbar`, a field fill).
+    func plate(
         behind rect: CGRect,
         canvas: CGRect?,
-        foreground: Color?,
-        overlays: [Color],
-        floor: Double
+        context: ThemeLegibility?,
+        floor: Double,
+        windowPoints: CGFloat
     ) -> ThemeScrimPlan? {
         // Read first and unconditionally: this is the @Observable dependency
         // that re-runs the caller's body when the theme changes, and a cache
         // hit must not skip it.
         let themeID = FirefoxThemeManager.shared.activeTheme?.id
-        guard let themeID, let foreground, rect.width >= 1, rect.height >= 1 else { return nil }
+        guard let themeID, let context, rect.width >= 1, rect.height >= 1 else { return nil }
 
         let canvas = canvas ?? rect
-        let resolved = ThemeContrast.resolve(foreground)
+        let resolved = ThemeContrast.resolve(context.foreground)
         let key = [
             themeID,
             Self.quantized(rect), Self.quantized(canvas),
-            Self.tag(resolved), overlays.map { Self.tag(ThemeContrast.resolve($0)) }.joined(separator: "/"),
-            String(format: "%.2f", floor)
+            Self.tag(resolved),
+            context.overlays.map { Self.tag(ThemeContrast.resolve($0)) }.joined(separator: "/"),
+            String(format: "%.2f/%.0f", floor, windowPoints)
         ].joined(separator: "|")
 
         if let cached = cache[key] { return cached }
 
-        let backdrop = ThemeBackdropSampler.backdrop(under: rect, canvas: canvas, overlays: overlays)
-        let plan = ThemeContrast.scrim(foreground: resolved, backdrop: backdrop, floor: floor)
+        let sample = ThemeBackdropSampler.backdrop(
+            under: rect, canvas: canvas, overlays: context.overlays
+        )
+        let plan = ThemeContrast.plate(
+            foreground: resolved, sample: sample, floor: floor, windowPoints: windowPoints
+        )
         if cache.count >= cacheLimit { cache.removeAll(keepingCapacity: true) }
         cache[key] = plan
         return plan
-    }
-
-    /// The dominant tone of an arbitrary icon image, for the one kind of
-    /// toolbar control whose glyph Cherry does not choose: an extension's
-    /// action icon.
-    ///
-    /// Without this the guard measures such a button against the bar's
-    /// `toolbar_text` — a colour that button never draws — and can pick the
-    /// wrong direction outright. uBO Lite's icon is a dark red shield, so on a
-    /// bright illustration it needs the backdrop LIGHTENED while its neighbours
-    /// need it darkened.
-    ///
-    /// The tone is the alpha-weighted mean over the icon, so it describes the
-    /// silhouette that has to read against the bar. A two-tone icon still has
-    /// internal contrast of its own, and that is the extension's design, not
-    /// something a scrim behind it can or should correct.
-    func dominantTone(of image: NSImage, id: String) -> Color? {
-        if let cached = tones[id] { return cached }
-
-        let side = 16
-        guard let context = CGContext(
-            data: nil, width: side, height: side, bitsPerComponent: 8, bytesPerRow: side * 4,
-            space: CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB(),
-            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-        ), let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
-            return nil
-        }
-        context.draw(cgImage, in: CGRect(x: 0, y: 0, width: side, height: side))
-        guard let data = context.data else { return nil }
-
-        let bytes = data.bindMemory(to: UInt8.self, capacity: side * side * 4)
-        var total = (red: 0.0, green: 0.0, blue: 0.0, weight: 0.0)
-        for index in stride(from: 0, to: side * side * 4, by: 4) {
-            // Premultiplied, so the stored components are already alpha-scaled
-            // — summing them and dividing by summed alpha is the weighted mean.
-            let alpha = Double(bytes[index + 3]) / 255
-            guard alpha > 0 else { continue }
-            total.red += Double(bytes[index]) / 255
-            total.green += Double(bytes[index + 1]) / 255
-            total.blue += Double(bytes[index + 2]) / 255
-            total.weight += alpha
-        }
-        guard total.weight > 0 else { return nil }
-
-        let tone = Color(
-            .sRGB,
-            red: total.red / total.weight,
-            green: total.green / total.weight,
-            blue: total.blue / total.weight,
-            opacity: 1
-        )
-        tones[id] = tone
-        return tone
     }
 
     private static func quantized(_ rect: CGRect) -> String {
@@ -504,121 +581,119 @@ struct ThemeLegibility: Equatable {
     var overlays: [Color] = []
 }
 
-private struct ThemeLegibilityKey: EnvironmentKey {
-    static let defaultValue: ThemeLegibility? = nil
-}
-
-extension EnvironmentValues {
-    var themeLegibility: ThemeLegibility? {
-        get { self[ThemeLegibilityKey.self] }
-        set { self[ThemeLegibilityKey.self] = newValue }
-    }
-}
-
 extension View {
-    /// Declares how this subtree's controls are drawn, for
-    /// `themeLegibilityScrim()` to measure against. Set once per themed
-    /// surface; pass nil to opt a subtree out.
-    func themeLegibility(_ value: ThemeLegibility?) -> some View {
-        environment(\.themeLegibility, value)
-    }
-
-    /// Overrides just the glyph tone for one control — the few that carry
-    /// their own tint (the accent-coloured state indicators) rather than the
-    /// theme's `toolbar_text`. Keeps the surface's overlay stack. Passing nil
-    /// keeps the inherited tone, which is what a toggle in its OFF state wants:
-    /// it is back to plain `toolbar_text` then.
-    func themeLegibilityTint(_ tint: Color?) -> some View {
-        modifier(ThemeLegibilityTint(tint: tint))
-    }
-
-    /// Backs this control with the measured scrim it needs — and with nothing
-    /// at all when the theme already draws it above `floor`, which is the
-    /// common case and the whole point.
+    /// Puts ONE measured surface behind this whole cluster — and nothing at all
+    /// when every control-sized window under it already clears `floor`, which
+    /// is the common case and the whole point.
+    ///
+    /// There is no per-control variant on purpose. The colour, the opacity and
+    /// the shape are decided once for the cluster and applied to all of it,
+    /// including to the controls that would have passed alone: a treatment that
+    /// appears on some icons in a row and not others is the defect, not the fix.
     ///
     /// - Parameters:
-    ///   - measureInset: how far in from this view's bounds the glyph actually
-    ///     is. A 28pt toolbar button carries a 16pt symbol, so the outer ring
-    ///     is padding no glyph is drawn on and must not be averaged in.
-    ///   - softness: blur applied to the scrim's edge, so it reads as light
-    ///     falling off rather than as a chip stamped on the artwork.
-    ///   - spread: how far the scrim shape is grown BEYOND this view before it
-    ///     is blurred. This is not decoration: a blur eats into the middle as
-    ///     well as the rim, and a scrim that only reaches its solved opacity at
-    ///     the very centre does not deliver the ratio it was solved for.
-    ///     Growing by more than the blur's reach keeps the whole measured
-    ///     region at full opacity and puts the entire falloff outside it —
-    ///     which is what makes the shipped pixels match the arithmetic.
-    ///   - context: how this one control is drawn. Given explicitly rather
-    ///     than read from the environment wherever the surface knows it, since
-    ///     `.background` content sits OUTSIDE an `.environment` applied to the
-    ///     view it backs — so `.themeLegibility(x).themeLegibilityScrim()`
-    ///     would silently measure nothing. Nil falls back to the environment,
-    ///     which is how `ToolbarButtonStyle` picks up the whole bar's tone.
-    func themeLegibilityScrim(
-        _ context: ThemeLegibility? = nil,
+    ///   - context: how this cluster's glyphs are drawn. Passed explicitly
+    ///     rather than read from the environment, since `.background` content
+    ///     sits OUTSIDE an `.environment` applied to the view it backs — so
+    ///     `.themeLegibility(x).themeLegibilityPlate()` would silently measure
+    ///     nothing.
+    ///   - measureInset: how far in from this view's bounds the glyphs actually
+    ///     are, vertically. A 28pt toolbar button carries a 16pt symbol, so the
+    ///     rows above and below carry no glyph and must not be averaged in.
+    ///   - windowPoints: the width of one control in this cluster.
+    ///   - spread: how far the surface extends beyond the cluster's bounds, so
+    ///     the controls are not flush against its edge.
+    ///   - decidedAcrossCluster: measure the whole cluster's span (published by
+    ///     the container via `themeClusterSpan`) at this view's own vertical
+    ///     band, instead of just this view's rect. For a row of SEPARATE views
+    ///     that still form one cluster — the tab strip's tabs — which is what
+    ///     makes every one of them reach the same answer and so look the same,
+    ///     instead of each solving the patch of artwork it happens to sit on.
+    func themeLegibilityPlate(
+        _ context: ThemeLegibility?,
         floor: Double = ThemeContrast.iconFloor,
-        cornerRadius: CGFloat = 9,
+        cornerRadius: CGFloat = 8,
         measureInset: CGFloat = 5,
-        softness: CGFloat = 1,
-        spread: CGFloat = 3
+        windowPoints: CGFloat = 28,
+        spread: CGFloat = 3,
+        decidedAcrossCluster: Bool = false
     ) -> some View {
         background {
-            ThemeLegibilityScrimLayer(
-                explicitContext: context,
+            ThemeLegibilityPlateLayer(
+                context: context,
                 floor: floor,
                 cornerRadius: cornerRadius,
                 measureInset: measureInset,
-                softness: softness,
-                spread: spread
+                windowPoints: windowPoints,
+                spread: spread,
+                decidedAcrossCluster: decidedAcrossCluster
             )
         }
     }
 }
 
-private struct ThemeLegibilityTint: ViewModifier {
-    @Environment(\.themeLegibility) private var context
-    let tint: Color?
+/// The horizontal span a cluster occupies, published by whoever owns the
+/// cluster, for members that are SEPARATE views and cannot see each other —
+/// the tab strip's tabs. Without it each tab would solve the patch of artwork
+/// it happens to sit on and end up looking unlike its neighbour; with it they
+/// all measure the same region and reach the same answer.
+///
+/// Only x and width are used; the vertical band comes from the member itself.
+private struct ThemeClusterSpanKey: EnvironmentKey {
+    static let defaultValue: CGRect? = nil
+}
 
-    func body(content: Content) -> some View {
-        content.environment(
-            \.themeLegibility,
-            context.map { ThemeLegibility(foreground: tint ?? $0.foreground, overlays: $0.overlays) }
-        )
+extension EnvironmentValues {
+    var themeClusterSpan: CGRect? {
+        get { self[ThemeClusterSpanKey.self] }
+        set { self[ThemeClusterSpanKey.self] = newValue }
     }
 }
 
-private struct ThemeLegibilityScrimLayer: View {
-    @Environment(\.chromeCanvasFrame) private var chromeCanvasFrame
-    @Environment(\.themeLegibility) private var inherited
+extension View {
+    /// Declares the span its members should all be measured across. Set by the
+    /// container, read by `themeLegibilityPlate(decidedAcrossCluster:)`.
+    func themeClusterSpan(_ span: CGRect?) -> some View {
+        environment(\.themeClusterSpan, span)
+    }
+}
 
-    let explicitContext: ThemeLegibility?
+private struct ThemeLegibilityPlateLayer: View {
+    @Environment(\.chromeCanvasFrame) private var chromeCanvasFrame
+    @Environment(\.themeClusterSpan) private var clusterSpan
+
+    let context: ThemeLegibility?
     let floor: Double
     let cornerRadius: CGFloat
     let measureInset: CGFloat
-    let softness: CGFloat
+    let windowPoints: CGFloat
     let spread: CGFloat
-
-    private var context: ThemeLegibility? { explicitContext ?? inherited }
+    let decidedAcrossCluster: Bool
 
     var body: some View {
         GeometryReader { geometry in
             let bounds = geometry.frame(in: .global)
-            let measured = bounds.insetBy(
-                dx: min(measureInset, bounds.width / 3),
-                dy: min(measureInset, bounds.height / 3)
-            )
-            if let plan = ThemeContrastGuard.shared.scrim(
+            // Only the vertical band the glyphs occupy is measured; the full
+            // width is, because the surface spans the full width and every
+            // control-sized window in it has to hold.
+            let own = bounds.insetBy(dx: 0, dy: min(measureInset, bounds.height / 3))
+            let span = decidedAcrossCluster ? clusterSpan : nil
+            let measured = span.map {
+                CGRect(x: $0.minX, y: own.minY, width: max(1, $0.width), height: own.height)
+            } ?? own
+            if let plan = ThemeContrastGuard.shared.plate(
                 behind: measured,
                 canvas: chromeCanvasFrame,
-                foreground: context?.foreground,
-                overlays: context?.overlays ?? [],
-                floor: floor
+                context: context,
+                floor: floor,
+                windowPoints: windowPoints
             ) {
+                // A crisp edge, and no blur: this is a surface, not a smudge.
+                // It also keeps the shipped opacity equal to the solved one
+                // everywhere inside it, which a blurred shape does not.
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                     .fill(plan.color.opacity(plan.opacity))
                     .padding(-spread)
-                    .blur(radius: softness)
             }
         }
         .allowsHitTesting(false)

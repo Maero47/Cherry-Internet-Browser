@@ -34,6 +34,22 @@ final class ThemeContrastGuardTests: XCTestCase {
         Array(repeating: color, count: count)
     }
 
+    /// One flat region put through the SHIPPING solver as a single window, so
+    /// these cases exercise the code the app actually runs rather than a
+    /// simplified twin of it.
+    private func plan(
+        foreground: ThemeContrast.RGBA, over backdrop: [ThemeContrast.RGB], floor: Double
+    ) -> ThemeScrimPlan? {
+        ThemeContrast.plate(
+            foreground: foreground,
+            sample: ThemeBackdropSample(
+                pixels: backdrop, columns: backdrop.count, rows: 1, pointWidth: 1
+            ),
+            floor: floor,
+            windowPoints: 28
+        )
+    }
+
     // MARK: - The arithmetic itself
 
     /// If the luminance formula is wrong, every number the guard reports is
@@ -103,14 +119,14 @@ final class ThemeContrastGuardTests: XCTestCase {
     /// The default answer, and the reason a theme that already reads keeps
     /// every pixel of its artwork: no scrim at all.
     func testALegibleBackdropGetsNoScrim() {
-        XCTAssertNil(ThemeContrast.scrim(
+        XCTAssertNil(plan(
             foreground: opaque(.white),
-            backdrop: flat(rgb(0.1, 0.1, 0.12)),
+            over: flat(rgb(0.1, 0.1, 0.12)),
             floor: ThemeContrast.iconFloor
         ))
-        XCTAssertNil(ThemeContrast.scrim(
+        XCTAssertNil(plan(
             foreground: opaque(.black),
-            backdrop: flat(rgb(0.95, 0.95, 0.9)),
+            over: flat(rgb(0.95, 0.95, 0.9)),
             floor: ThemeContrast.textFloor
         ))
     }
@@ -119,8 +135,8 @@ final class ThemeContrastGuardTests: XCTestCase {
     /// the path the stock look takes, and it must be incapable of drawing
     /// anything.
     func testAnEmptyBackdropGetsNoScrim() {
-        XCTAssertNil(ThemeContrast.scrim(
-            foreground: opaque(.white), backdrop: [], floor: ThemeContrast.iconFloor
+        XCTAssertNil(plan(
+            foreground: opaque(.white), over: [], floor: ThemeContrast.iconFloor
         ))
     }
 
@@ -134,8 +150,8 @@ final class ThemeContrastGuardTests: XCTestCase {
             ThemeContrast.harmfulRatio(foreground: opaque(.white), backdrop: clears),
             ThemeContrast.iconFloor
         )
-        XCTAssertNil(ThemeContrast.scrim(
-            foreground: opaque(.white), backdrop: clears, floor: ThemeContrast.iconFloor
+        XCTAssertNil(plan(
+            foreground: opaque(.white), over: clears, floor: ThemeContrast.iconFloor
         ))
 
         let under = srgb(forLuminance: 1.05 / 2.95 - 0.05)
@@ -144,8 +160,8 @@ final class ThemeContrastGuardTests: XCTestCase {
             ThemeContrast.harmfulRatio(foreground: opaque(.white), backdrop: fails),
             ThemeContrast.iconFloor
         )
-        XCTAssertNotNil(ThemeContrast.scrim(
-            foreground: opaque(.white), backdrop: fails, floor: ThemeContrast.iconFloor
+        XCTAssertNotNil(plan(
+            foreground: opaque(.white), over: fails, floor: ThemeContrast.iconFloor
         ))
     }
 
@@ -167,8 +183,8 @@ final class ThemeContrastGuardTests: XCTestCase {
                 let level = Double(step) / 20
                 let backdrop = flat(rgb(level, level, level))
                 let floor = ThemeContrast.iconFloor
-                guard let plan = ThemeContrast.scrim(
-                    foreground: foreground, backdrop: backdrop, floor: floor
+                guard let plan = plan(
+                    foreground: foreground, over: backdrop, floor: floor
                 ) else {
                     XCTAssertGreaterThanOrEqual(
                         ThemeContrast.harmfulRatio(foreground: foreground, backdrop: backdrop),
@@ -192,8 +208,8 @@ final class ThemeContrastGuardTests: XCTestCase {
             let level = Double(index % 17) / 16          // a repeating ramp, 0…1
             backdrop.append(rgb(level, level * 0.8, 1 - level))
         }
-        guard let plan = ThemeContrast.scrim(
-            foreground: opaque(.white), backdrop: backdrop, floor: ThemeContrast.iconFloor
+        guard let plan = plan(
+            foreground: opaque(.white), over: backdrop, floor: ThemeContrast.iconFloor
         ) else { return XCTFail("a ramp through white fails a white glyph and must be corrected") }
         XCTAssertGreaterThanOrEqual(plan.ratioAfter, ThemeContrast.iconFloor)
     }
@@ -205,8 +221,8 @@ final class ThemeContrastGuardTests: XCTestCase {
     /// scrim has to fail.
     func testTheOpacityIsTheLeastThatWorks() {
         let backdrop = flat(rgb(0.85, 0.8, 0.6))
-        let plan = ThemeContrast.scrim(
-            foreground: opaque(.white), backdrop: backdrop, floor: ThemeContrast.iconFloor
+        let plan = plan(
+            foreground: opaque(.white), over: backdrop, floor: ThemeContrast.iconFloor
         )
         guard let plan else { return XCTFail("a white glyph on bright artwork needs a scrim") }
 
@@ -230,8 +246,8 @@ final class ThemeContrastGuardTests: XCTestCase {
     func testANearMissCostsAlmostNothing() {
         // 2.95:1 — five hundredths under the 3:1 floor.
         let level = srgb(forLuminance: 1.05 / 2.95 - 0.05)
-        guard let plan = ThemeContrast.scrim(
-            foreground: opaque(.white), backdrop: flat(rgb(level, level, level)),
+        guard let plan = plan(
+            foreground: opaque(.white), over: flat(rgb(level, level, level)),
             floor: ThemeContrast.iconFloor
         ) else { return XCTFail("2.95:1 is under the floor and must be corrected") }
         XCTAssertLessThan(plan.opacity, 0.1, "a 0.05 shortfall bought \(plan.opacity) of scrim")
@@ -241,8 +257,8 @@ final class ThemeContrastGuardTests: XCTestCase {
 
     func testTheScrimMovesAwayFromTheGlyph() {
         // Light glyph on bright artwork -> darken.
-        let onBright = ThemeContrast.scrim(
-            foreground: opaque(.white), backdrop: flat(rgb(0.9, 0.9, 0.9)),
+        let onBright = plan(
+            foreground: opaque(.white), over: flat(rgb(0.9, 0.9, 0.9)),
             floor: ThemeContrast.iconFloor
         )
         XCTAssertEqual(onBright?.isDark, true)
@@ -255,15 +271,15 @@ final class ThemeContrastGuardTests: XCTestCase {
             ThemeContrast.relativeLuminance(rgb(0.145, 0.388, 0.922)),
             ThemeContrast.scrimCrossoverLuminance
         )
-        let onSimilar = ThemeContrast.scrim(
-            foreground: opaque(rgb(0.145, 0.388, 0.922)), backdrop: flat(rgb(0.35, 0.3, 0.32)),
+        let onSimilar = plan(
+            foreground: opaque(rgb(0.145, 0.388, 0.922)), over: flat(rgb(0.35, 0.3, 0.32)),
             floor: ThemeContrast.iconFloor
         )
         XCTAssertEqual(onSimilar?.isDark, false)
 
         // …and a plainly dark glyph on mid-grey, well clear of the crossover.
-        let ink = ThemeContrast.scrim(
-            foreground: opaque(rgb(0.05, 0.05, 0.05)), backdrop: flat(rgb(0.35, 0.35, 0.35)),
+        let ink = plan(
+            foreground: opaque(rgb(0.05, 0.05, 0.05)), over: flat(rgb(0.35, 0.35, 0.35)),
             floor: ThemeContrast.iconFloor
         )
         XCTAssertEqual(ink?.isDark, false)
@@ -306,8 +322,8 @@ final class ThemeContrastGuardTests: XCTestCase {
         )
 
         // …and the guard still corrects it, because a tenth of the region is not.
-        guard let plan = ThemeContrast.scrim(
-            foreground: opaque(.white), backdrop: backdrop, floor: ThemeContrast.iconFloor
+        guard let plan = plan(
+            foreground: opaque(.white), over: backdrop, floor: ThemeContrast.iconFloor
         ) else { return XCTFail("a highlight over 15% of the region must not be averaged away") }
         XCTAssertGreaterThanOrEqual(plan.ratioAfter, ThemeContrast.iconFloor)
     }
@@ -319,8 +335,157 @@ final class ThemeContrastGuardTests: XCTestCase {
     func testAHighlightInsideTheToleranceIsLeftAlone() {
         var backdrop = flat(rgb(0.05, 0.05, 0.08), count: 396)
         backdrop += flat(rgb(0.98, 0.98, 0.95), count: 4)        // 1% of the region
-        XCTAssertNil(ThemeContrast.scrim(
-            foreground: opaque(.white), backdrop: backdrop, floor: ThemeContrast.iconFloor
+        XCTAssertNil(plan(
+            foreground: opaque(.white), over: backdrop, floor: ThemeContrast.iconFloor
+        ))
+    }
+
+    // MARK: - One decision for a whole cluster
+
+    /// A cluster sample: `columns` wide, every column a flat colour taken from
+    /// `levels`, so a row of artwork can be described by what is under each
+    /// control.
+    private func strip(_ levels: [Double], columnsEach: Int, rows: Int = 18) -> ThemeBackdropSample {
+        var pixels: [ThemeContrast.RGB] = []
+        for _ in 0..<rows {
+            for level in levels {
+                pixels += Array(repeating: rgb(level, level, level), count: columnsEach)
+            }
+        }
+        let columns = levels.count * columnsEach
+        return ThemeBackdropSample(
+            pixels: pixels, columns: columns, rows: rows, pointWidth: CGFloat(columns)
+        )
+    }
+
+    /// A row that is legible end to end keeps every pixel of its artwork. This
+    /// is the answer the guard gives most of the time and the reason a theme
+    /// that works is untouched.
+    func testAClusterThatIsLegibleEndToEndGetsNoSurface() {
+        let sample = strip(Array(repeating: 0.06, count: 9), columnsEach: 28)
+        XCTAssertNil(ThemeContrast.plate(
+            foreground: opaque(.white), sample: sample,
+            floor: ThemeContrast.iconFloor, windowPoints: 28
+        ))
+    }
+
+    /// THE regression test for the defect this round exists to fix.
+    ///
+    /// Fourteen controls over comfortable artwork and ONE over a blown-out
+    /// highlight. The bad patch is 6.7% of the row — inside the 10% the
+    /// percentile is allowed to write off — so a percentile taken across the
+    /// WHOLE row shrugs at it, and the last assertion here proves that. The
+    /// guard has to size the surface for that one control, and then put the
+    /// same surface under all fifteen.
+    func testOneBadControlInALongRowStillSetsTheSurface() {
+        var levels = Array(repeating: 0.06, count: 14)
+        levels.insert(0.97, at: 9)
+        let sample = strip(levels, columnsEach: 28)
+
+        guard let plan = ThemeContrast.plate(
+            foreground: opaque(.white), sample: sample,
+            floor: ThemeContrast.iconFloor, windowPoints: 28
+        ) else { return XCTFail("one control on a blown-out highlight must set the surface") }
+
+        // Every window clears afterwards, not just on average.
+        for window in sample.windows(ofPoints: 28) {
+            let scrimmed = window.map {
+                ThemeContrast.composite(
+                    ThemeContrast.RGBA(rgb: plan.isDark ? .black : .white, alpha: plan.opacity),
+                    over: $0
+                )
+            }
+            XCTAssertGreaterThanOrEqual(
+                ThemeContrast.harmfulRatio(foreground: opaque(.white), backdrop: scrimmed),
+                ThemeContrast.iconFloor
+            )
+        }
+
+        // …and taking the percentile across the row instead would have called
+        // this row fine, which is exactly why the window exists.
+        let wholeRow = ThemeContrast.harmfulRatio(foreground: opaque(.white), backdrop: sample.pixels)
+        XCTAssertGreaterThanOrEqual(
+            wholeRow, ThemeContrast.iconFloor,
+            "a row-wide percentile is supposed to miss this — if it no longer does, the case is too easy to be a regression test"
+        )
+    }
+
+    /// The surface is the worst window's answer and no stronger: adding more
+    /// comfortable artwork beside a bad patch must not change what is drawn.
+    func testTheSurfaceIsTheWorstWindowAndNotAnAverageOfTheRow() {
+        let bad = strip([0.97], columnsEach: 28)
+        let mixed = strip([0.06, 0.06, 0.97, 0.06, 0.06], columnsEach: 28)
+
+        let alone = ThemeContrast.plate(
+            foreground: opaque(.white), sample: bad,
+            floor: ThemeContrast.iconFloor, windowPoints: 28
+        )
+        let inARow = ThemeContrast.plate(
+            foreground: opaque(.white), sample: mixed,
+            floor: ThemeContrast.iconFloor, windowPoints: 28
+        )
+        XCTAssertNotNil(alone)
+        XCTAssertNotNil(inARow)
+        XCTAssertEqual(alone?.opacity ?? 0, inARow?.opacity ?? -1, accuracy: 0.02)
+        XCTAssertEqual(alone?.isDark, inARow?.isDark)
+    }
+
+    /// One answer per cluster is the point: whatever the row is sitting on, the
+    /// guard returns a single colour and a single opacity, never a set of them.
+    func testAClusterOverWildlyVaryingArtworkStillGetsOneAnswer() {
+        let sample = strip([0.02, 0.95, 0.4, 0.8, 0.1, 0.99, 0.3], columnsEach: 28)
+        guard let plan = ThemeContrast.plate(
+            foreground: opaque(.white), sample: sample,
+            floor: ThemeContrast.iconFloor, windowPoints: 28
+        ) else { return XCTFail("artwork running to 0.99 fails a white glyph") }
+
+        XCTAssertGreaterThanOrEqual(plan.ratioAfter, ThemeContrast.iconFloor)
+        // A single opacity, applied everywhere — including where it was not
+        // needed, which is what makes the row look like one treatment.
+        XCTAssertGreaterThan(plan.opacity, 0)
+        XCTAssertLessThanOrEqual(plan.opacity, 1)
+    }
+
+    // MARK: - Walking a cluster a control at a time
+
+    func testWindowsCoverTheSampleAtControlWidth() {
+        let sample = strip(Array(repeating: 0.5, count: 4), columnsEach: 28)   // 112pt wide
+        let windows = sample.windows(ofPoints: 28)
+        // 28pt windows striding 14pt across 112pt: 0, 14, 28, 42, 56, 70, 84.
+        XCTAssertEqual(windows.count, 7)
+        for window in windows {
+            XCTAssertEqual(window.count, 28 * sample.rows)
+        }
+    }
+
+    /// A region narrower than one control is one window — a lone button must
+    /// not be sliced into pieces too small to mean anything.
+    func testARegionNarrowerThanOneControlIsASingleWindow() {
+        let sample = strip([0.5], columnsEach: 20)
+        XCTAssertEqual(sample.windows(ofPoints: 28).count, 1)
+        XCTAssertEqual(sample.windows(ofPoints: 28).first?.count, sample.pixels.count)
+    }
+
+    /// Windows overlap by half so a bad patch straddling a boundary is caught
+    /// whole by the window centred on it rather than halved by both neighbours.
+    func testAStraddlingHighlightIsCaughtByAnOverlappingWindow() {
+        // A highlight in the middle 28pt of a 56pt region, so it lands across
+        // the boundary of any non-overlapping pair of windows.
+        var levels = Array(repeating: 0.06, count: 14)
+        levels += Array(repeating: 0.97, count: 28)
+        levels += Array(repeating: 0.06, count: 14)
+        let sample = strip(levels, columnsEach: 1)
+
+        XCTAssertNotNil(ThemeContrast.plate(
+            foreground: opaque(.white), sample: sample,
+            floor: ThemeContrast.iconFloor, windowPoints: 28
+        ))
+    }
+
+    func testAnEmptySampleGetsNoSurface() {
+        XCTAssertNil(ThemeContrast.plate(
+            foreground: opaque(.white), sample: .empty,
+            floor: ThemeContrast.iconFloor, windowPoints: 28
         ))
     }
 

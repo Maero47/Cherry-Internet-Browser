@@ -60,15 +60,19 @@ struct TabItemView: View {
     /// An UNSELECTED tab is the bad case: it paints nothing of its own, so its
     /// title is a flat colour straight on the illustration.
     ///
+    /// Deliberately the STRIP's tone and no overlays, the same for every tab
+    /// including the selected one. The tabs are a cluster whose members happen
+    /// to be separate views, and a tab that solved its own patch of artwork —
+    /// its own tone, its own fill, its own opacity — would end up looking
+    /// unlike the tab beside it for no reason the user can see. Paired with
+    /// `decidedAcrossCluster`, every tab in the row reaches the same answer.
+    ///
     /// Nil for private tabs and when no theme is active, which leaves the stock
     /// strip untouched.
     private var titleLegibility: ThemeLegibility? {
         let manager = FirefoxThemeManager.shared
         guard !tab.isPrivate, manager.activeTheme != nil, manager.hasHeaderBackdrop else { return nil }
-        // A selected tab paints its own fill over the artwork first; an
-        // unselected one paints nothing.
-        let overlays = (isSelected ? [themedSelectedBackground] : []).compactMap(\.self)
-        return ThemeLegibility(foreground: themedTitleColor ?? Color.primary, overlays: overlays)
+        return ThemeLegibility(foreground: manager.tabStripText ?? Color.primary)
     }
 
     var body: some View {
@@ -91,18 +95,6 @@ struct TabItemView: View {
                                      : AnyShapeStyle(themedTitleColor ?? Color.primary))
                     .lineLimit(1)
                     .truncationMode(.tail)
-                    // Behind the TITLE, not behind the whole tab: a wash over
-                    // every cell would cover most of the strip's artwork to fix
-                    // a run of text that occupies a third of it. Applied before
-                    // the `.frame` below so it hugs the text's own width.
-                    .themeLegibilityScrim(
-                        titleLegibility,
-                        floor: ThemeContrast.textFloor,
-                        cornerRadius: 6,
-                        measureInset: 0,
-                        softness: 2,
-                        spread: 5
-                    )
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
 
@@ -169,7 +161,24 @@ struct TabItemView: View {
         .padding(.horizontal, tab.isPinned ? 8 : 12)
         .padding(.vertical, 6)
         .frame(width: fixedWidth ?? (tab.isPinned ? 40 : AppConstants.UI.maxTabWidth))
-        .background(tabBackground)
+        .background {
+            // The tab's own fill, over the strip's ONE measured surface. The
+            // surface is decided from the whole strip and is therefore the same
+            // colour and opacity on every tab; a tab is a surface in browser
+            // idiom, so a row of identical ones reads as tabs rather than as
+            // patches. The selected tab still looks different, because its own
+            // fill says it is selected — that is state, not backdrop.
+            tabBackground
+                .themeLegibilityPlate(
+                    titleLegibility,
+                    floor: ThemeContrast.textFloor,
+                    cornerRadius: AppConstants.UI.tabCornerRadius,
+                    measureInset: 4,
+                    windowPoints: 60,
+                    spread: 0,
+                    decidedAcrossCluster: true
+                )
+        }
         .overlay(alignment: .bottom) {
             // Tab group color indicator
             if let group = tab.group {

@@ -54,23 +54,41 @@ struct NavigationBarView: View {
         isPrivateMode ? nil : FirefoxThemeManager.shared.toolbarText
     }
 
-    /// The tone the bar's glyphs are ACTUALLY drawn in, which is what the
-    /// contrast guard has to measure — `toolbar_text` when the theme names one,
-    /// otherwise the system label colour the bar falls back to. That fallback
-    /// is the worst case, not a corner case: a theme is free to ship a header
-    /// illustration and no `toolbar_text` at all, and then the icons are a
-    /// system colour with no relationship to the artwork behind them.
+    /// Whether a theme is dressing this bar at all. Private windows never are.
+    private var isThemed: Bool {
+        !isPrivateMode && FirefoxThemeManager.shared.activeTheme != nil
+    }
+
+    /// The ONE tone every glyph on a themed bar is drawn in, and what the
+    /// contrast guard measures the cluster surfaces against.
     ///
-    /// Nil in a private window and when no theme is active, which switches the
-    /// guard off and leaves the stock look byte-for-byte as it was.
+    /// A themed toolbar has exactly one glyph colour, and that is not a
+    /// simplification for the guard's convenience — it is what a Firefox theme's
+    /// `toolbar_text` means, and it is what lets ONE surface serve a whole
+    /// cluster: a single scrim colour can only move the backdrop away from one
+    /// polarity of foreground, so a row mixing a white glyph with an accent-blue
+    /// one cannot be served uniformly by anything. The toggles say their state
+    /// with their symbol (`book` vs `book.fill`, `shield.checkered` vs
+    /// `shield.slash`), so none of it is lost.
+    ///
+    /// `toolbar_text` when the theme names one, else the system label colour the
+    /// bar already falls back to — a theme is free to ship a header illustration
+    /// and no `toolbar_text` at all.
     private var legibility: ThemeLegibility? {
-        guard !isPrivateMode, FirefoxThemeManager.shared.activeTheme != nil else { return nil }
+        guard isThemed else { return nil }
         let manager = FirefoxThemeManager.shared
         // Only the header-backdrop path layers `toolbar` over artwork; the
         // flat-fill path IS the toolbar colour and the sampler reads it as the
         // base, so listing it again would darken the measurement twice.
         let overlays = manager.hasHeaderBackdrop ? [manager.toolbarColor].compactMap(\.self) : []
         return ThemeLegibility(foreground: themedToolbarText ?? Color.primary, overlays: overlays)
+    }
+
+    /// `stock` unthemed, the theme's single glyph tone when themed. Every
+    /// accent- or state-tinted toolbar glyph goes through this, so a themed row
+    /// is one colour and an unthemed one is exactly what it always was.
+    private func themedGlyph(_ stock: Color) -> Color {
+        isThemed ? (themedToolbarText ?? Color.primary) : stock
     }
 
     @State private var addressText: String = ""
@@ -201,9 +219,11 @@ struct NavigationBarView: View {
 
     var body: some View {
         HStack(spacing: 4) {
-            // Navigation buttons
+            // Navigation buttons. One cluster, one surface — see
+            // `themeLegibilityPlate`.
             navigationButtons
                 .customizeToolbarContextMenu { onSettings?() }
+                .themeLegibilityPlate(legibility)
 
             // Omnibox. Note what is NOT here: the customise context menu. It
             // is attached to the button clusters and the bar's background, so
@@ -289,49 +309,12 @@ struct NavigationBarView: View {
             }
             .zIndex(1)
 
-            // Extension toolbar buttons — one per loaded extension, reflecting
-            // this tab. Extensions have no access to private/incognito
-            // windows at all (see ExtensionManager.extensionVisibleViewModels),
-            // so never show their buttons there, regardless of showExtensionButtons.
-            if showExtensionButtons && !isPrivateMode {
-                extensionButtons
-                    .customizeToolbarContextMenu { onSettings?() }
-            }
-
-            // Something outside Cherry is reading this browser right now.
-            //
-            // NOT a `ToolbarButtonID`, and not by omission: it is a security
-            // indicator, so it is not in the catalogue, not reorderable, not
-            // hideable, and it carries no customise context menu. An indicator
-            // the user can switch off would let them believe they were being
-            // told when they were not. Do not "complete" the toolbar
-            // customisation work by adding it — see MCPConnectionIndicator.
-            //
-            // Shown in private windows too. The MCP tools cannot see a private
-            // window, but the server can still be reading the user's other
-            // windows, and that is exactly when they need to know.
-            //
-            // Opted out of the contrast guard, and not by oversight: the glyph
-            // sits on an opaque accent badge and takes its tone from that
-            // badge, so it is already decoupled from whatever is behind the bar
-            // (see MCPConnectionIndicator). A scrim behind an opaque badge
-            // would darken artwork to fix a number that is already ≥4.60:1.
-            MCPConnectionIndicator { onSettings?() }
-                .themeLegibility(nil)
-
-            // Action buttons
-            actionButtons
-                .customizeToolbarContextMenu { onSettings?() }
+            trailingControls
         }
         // Hierarchical styles (.primary/.secondary) on the buttons resolve
         // against this, so the whole toolbar's icons/text follow the theme's
         // toolbar_text; Color.primary is the stock look when unthemed.
         .foregroundStyle(themedToolbarText ?? Color.primary)
-        // …and this tells every control in the bar what tone it was just given,
-        // so `ToolbarButtonStyle` can measure it against the header artwork
-        // behind it. Nil unthemed and in private windows, where the guard does
-        // nothing at all.
-        .themeLegibility(legibility)
         .padding(.leading, verticalTabsCollapsedPadding)
         .padding(.trailing, 12)
         .padding(.vertical, 8)
@@ -406,6 +389,52 @@ struct NavigationBarView: View {
             addressText = text
             onNavigate(text)
         }
+    }
+
+    /// Everything to the right of the omnibox, as ONE cluster under ONE
+    /// surface.
+    ///
+    /// Grouped rather than left as three siblings because the surface is
+    /// decided per cluster: three adjacent groups would each solve their own
+    /// backdrop and could come out at three different opacities, which is the
+    /// same "why does that one look different" defect at a coarser grain. The
+    /// run reads as one row on screen, so it is one row here.
+    @ViewBuilder
+    private var trailingControls: some View {
+        HStack(spacing: 4) {
+            // Extension toolbar buttons — one per loaded extension, reflecting
+            // this tab. Extensions have no access to private/incognito
+            // windows at all (see ExtensionManager.extensionVisibleViewModels),
+            // so never show their buttons there, regardless of showExtensionButtons.
+            if showExtensionButtons && !isPrivateMode {
+                extensionButtons
+                    .customizeToolbarContextMenu { onSettings?() }
+            }
+
+            // Something outside Cherry is reading this browser right now.
+            //
+            // NOT a `ToolbarButtonID`, and not by omission: it is a security
+            // indicator, so it is not in the catalogue, not reorderable, not
+            // hideable, and it carries no customise context menu. An indicator
+            // the user can switch off would let them believe they were being
+            // told when they were not. Do not "complete" the toolbar
+            // customisation work by adding it — see MCPConnectionIndicator.
+            //
+            // Shown in private windows too. The MCP tools cannot see a private
+            // window, but the server can still be reading the user's other
+            // windows, and that is exactly when they need to know.
+            //
+            // It sits ON the cluster surface like its neighbours and needs
+            // nothing of its own: the glyph is on an opaque accent badge and
+            // takes its tone from that badge, already decoupled from whatever
+            // is behind the bar at a measured ≥4.60:1.
+            MCPConnectionIndicator { onSettings?() }
+
+            // Action buttons
+            actionButtons
+                .customizeToolbarContextMenu { onSettings?() }
+        }
+        .themeLegibilityPlate(legibility)
     }
 
     @ViewBuilder
@@ -495,10 +524,9 @@ struct NavigationBarView: View {
             Button { invoke(.askThisPage) } label: {
                 Image(systemName: "sparkles")
                     .font(.system(size: AppConstants.UI.toolbarIconSize, weight: .medium))
-                    .foregroundStyle(SettingsManager.shared.accentColor)
+                    .foregroundStyle(themedGlyph(SettingsManager.shared.accentColor))
             }
             .buttonStyle(ToolbarButtonStyle())
-            .themeLegibilityTint(SettingsManager.shared.accentColor)
             .help("Ask Cherry AI (Cmd+Shift+K)")
 
         case .home:
@@ -513,40 +541,38 @@ struct NavigationBarView: View {
             Button { invoke(.bookmark) } label: {
                 Image(systemName: isBookmarked ? "star.fill" : "star")
                     .font(.system(size: AppConstants.UI.toolbarIconSize, weight: .medium))
-                    .foregroundStyle(isBookmarked ? Color.yellow : .primary)
+                    .foregroundStyle(themedGlyph(isBookmarked ? Color.yellow : Color.primary))
             }
             .buttonStyle(ToolbarButtonStyle())
-            .themeLegibilityTint(isBookmarked ? Color.yellow : Color.primary)
             .help("Add Bookmark (Cmd+D)")
 
         case .savePDF:
             Button { invoke(.savePDF) } label: {
                 Image(systemName: "arrow.down.doc")
                     .font(.system(size: AppConstants.UI.toolbarIconSize, weight: .medium))
-                    .foregroundStyle(SettingsManager.shared.accentColor)
+                    .foregroundStyle(themedGlyph(SettingsManager.shared.accentColor))
             }
             .buttonStyle(ToolbarButtonStyle())
-            .themeLegibilityTint(SettingsManager.shared.accentColor)
             .help("Save PDF")
 
         case .autoFill:
             Button { invoke(.autoFill) } label: {
                 Image(systemName: "key.fill")
                     .font(.system(size: AppConstants.UI.toolbarIconSize, weight: .medium))
-                    .foregroundStyle(SettingsManager.shared.accentColor)
+                    .foregroundStyle(themedGlyph(SettingsManager.shared.accentColor))
             }
             .buttonStyle(ToolbarButtonStyle())
-            .themeLegibilityTint(SettingsManager.shared.accentColor)
             .help("Auto-fill Password (Cmd+\\)")
 
         case .adBlock:
             Button { invoke(.adBlock) } label: {
                 Image(systemName: isAdBlockPaused ? "shield.slash" : "shield.checkered")
                     .font(.system(size: AppConstants.UI.toolbarIconSize, weight: .medium))
-                    .foregroundStyle(isAdBlockPaused ? .secondary : SettingsManager.shared.accentColor)
+                    .foregroundStyle(isAdBlockPaused
+                                     ? AnyShapeStyle(themedGlyph(Color.secondary).opacity(isThemed ? 0.6 : 1))
+                                     : AnyShapeStyle(themedGlyph(SettingsManager.shared.accentColor)))
             }
             .buttonStyle(ToolbarButtonStyle())
-            .themeLegibilityTint(isAdBlockPaused ? Color.secondary : SettingsManager.shared.accentColor)
             .help(isAdBlockPaused ? "Ad blocker paused for this site" : "Ad blocker active — click to pause for this site")
 
         case .focusMode:
@@ -554,31 +580,28 @@ struct NavigationBarView: View {
             Button { invoke(.focusMode) } label: {
                 Image(systemName: "brain.head.profile")
                     .font(.system(size: AppConstants.UI.toolbarIconSize, weight: .medium))
-                    .foregroundStyle(isFocusOn ? SettingsManager.shared.accentColor : .primary)
+                    .foregroundStyle(themedGlyph(isFocusOn ? SettingsManager.shared.accentColor : Color.primary))
                     .symbolVariant(isFocusOn ? .fill : .none)
             }
             .buttonStyle(ToolbarButtonStyle())
-            .themeLegibilityTint(isFocusOn ? SettingsManager.shared.accentColor : Color.primary)
             .help(isFocusOn ? "Focus Mode On — click to disable (Cmd+Shift+F)" : "Enable Focus Mode (Cmd+Shift+F)")
 
         case .readerMode:
             Button { invoke(.readerMode) } label: {
                 Image(systemName: showReaderMode ? "book.fill" : "book")
                     .font(.system(size: AppConstants.UI.toolbarIconSize, weight: .medium))
-                    .foregroundStyle(showReaderMode ? SettingsManager.shared.accentColor : .primary)
+                    .foregroundStyle(themedGlyph(showReaderMode ? SettingsManager.shared.accentColor : Color.primary))
             }
             .buttonStyle(ToolbarButtonStyle())
-            .themeLegibilityTint(showReaderMode ? SettingsManager.shared.accentColor : Color.primary)
             .help("Reader Mode (Cmd+Shift+R)")
 
         case .privateMode:
             Button { invoke(.privateMode) } label: {
                 Image(systemName: isPrivateMode ? "eye.slash.fill" : "eye.slash")
                     .font(.system(size: AppConstants.UI.toolbarIconSize, weight: .medium))
-                    .foregroundStyle(isPrivateMode ? Color.purple : .primary)
+                    .foregroundStyle(themedGlyph(isPrivateMode ? Color.purple : Color.primary))
             }
             .buttonStyle(ToolbarButtonStyle())
-            .themeLegibilityTint(Color.primary)
             .help(isPrivateMode ? "Exit Incognito Mode" : "Enter Incognito Mode")
         }
     }
@@ -685,7 +708,6 @@ struct NavigationBarView: View {
         .menuIndicator(.hidden)
         .frame(width: 28, height: 28)
         .themedMenuTint(legibility?.foreground)
-        .themeLegibilityScrim()
         .help("Menu")
     }
 }
@@ -740,10 +762,6 @@ struct ToolbarButtonStyle: ButtonStyle {
                 RoundedRectangle(cornerRadius: 6)
                     .fill(configuration.isPressed ? Color.gray.opacity(0.25) : Color.clear)
             )
-            // Behind the pressed fill, and behind nothing at all unless a
-            // themed surface has said what tone this button's glyph is and the
-            // artwork under it fails the floor. See ThemeContrastGuard.
-            .themeLegibilityScrim()
             .foregroundStyle(isEnabled ? .primary : .tertiary)
             .scaleEffect(configuration.isPressed ? 0.90 : 1.0)
             .animation(.easeOut(duration: 0.12), value: configuration.isPressed)

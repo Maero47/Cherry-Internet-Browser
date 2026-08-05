@@ -40,15 +40,6 @@ struct ExtensionToolbarButton: View {
 
     @State private var anchorBox = PopoverAnchorBox()
 
-    /// The action icon's dominant tone, or nil when the extension supplies no
-    /// icon and the puzzle-piece glyph is drawn instead.
-    private var iconTone: Color? {
-        guard let icon = action?.icon(
-            for: CGSize(width: AppConstants.UI.toolbarIconSize, height: AppConstants.UI.toolbarIconSize)
-        ) else { return nil }
-        return ThemeContrastGuard.shared.dominantTone(of: icon, id: loaded.id)
-    }
-
     private var action: WKWebExtension.Action? {
         // Reading `actionUpdateTick` (unused otherwise) makes this computed
         // property — and therefore the button's icon/badge — re-evaluate
@@ -87,12 +78,6 @@ struct ExtensionToolbarButton: View {
             }
         }
         .buttonStyle(ToolbarButtonStyle())
-        // The one toolbar glyph Cherry does not choose the colour of. Told to
-        // the contrast guard so the scrim behind it is solved for the icon's
-        // own tone rather than for the bar's `toolbar_text`, which this button
-        // never draws in. Nil (no action icon) leaves the inherited tone, which
-        // is right: the puzzle-piece fallback IS drawn in `toolbar_text`.
-        .themeLegibilityTint(iconTone)
         .background(PopoverAnchorView(box: anchorBox))
         .help(action?.label ?? loaded.displayName)
     }
