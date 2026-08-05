@@ -163,6 +163,16 @@ nonisolated enum ThemeContrast {
         return relativeLuminance(glyph) > scrimCrossoverLuminance
     }
 
+    /// Whether a glyph of this tone belongs in `appearance`.
+    ///
+    /// A light glyph belongs on a dark bar and a dark glyph on a light one.
+    /// This is the same crossover `scrimIsDark` uses, asked of the appearance
+    /// instead of the scrim, so the two can never disagree about which side of
+    /// the line a tone is on.
+    static func glyphSuits(_ foreground: RGBA, _ appearance: ColorScheme) -> Bool {
+        scrimIsDark(for: foreground) == (appearance == .dark)
+    }
+
     /// The least opacity of `scrimColor` that brings `backdrop` up to `floor`
     /// for `foreground`, or nil when it is already there.
     ///
@@ -451,6 +461,50 @@ enum ThemeBackdropSampler {
 }
 
 extension ThemeContrast {
+
+    /// The tone a themed toolbar actually draws its glyphs in, after the app's
+    /// appearance has had its say.
+    ///
+    /// ## The island
+    ///
+    /// A Firefox theme ships ONE `toolbar_text` and it does not vary by
+    /// appearance — the format has no way to say "and this in light mode". A
+    /// theme authored against a dark chrome therefore names a light glyph, and
+    /// that light glyph is still named when Cherry is running light. Everything
+    /// downstream then behaves exactly as designed and produces the wrong
+    /// answer: `scrimIsDark` sees a light glyph, asks for a dark plate, and the
+    /// action cluster becomes a dark island punched in a pale bar.
+    ///
+    /// The plate cannot be fixed on its own. Forcing it light under a light
+    /// glyph inverts the contrast rule and is worse than the island. The pair
+    /// has to move together, so the decision is made here, once, on the glyph —
+    /// the plate follows it for free because the plate is chosen FROM it.
+    ///
+    /// A theme's tone is kept whenever it suits the appearance, which is the
+    /// common case and the whole reason a theme names one. It is dropped for
+    /// the appearance's own label colour only when it is on the wrong side of
+    /// the crossover, where it could not have been legible anyway. The theme
+    /// keeps its artwork, its frame and its colours everywhere else.
+    /// The tone a themed bar falls back to when the theme's own will not do.
+    ///
+    /// Absolute rather than `Color.primary`, and that is load-bearing:
+    /// `resolve` reads `NSApplication.effectiveAppearance`, which is the app's
+    /// appearance and not necessarily this window's — Cherry sets a window's
+    /// appearance from its own preference, so the two genuinely diverge. A
+    /// dynamic colour handed to the guard would be measured in one appearance
+    /// and drawn in the other, and the plate would come out inverted. An
+    /// absolute tone resolves the same everywhere, which is the only way the
+    /// glyph and its plate can be guaranteed to agree.
+    static let barGlyphOnLight = Color(red: 0.10, green: 0.10, blue: 0.12)
+    static let barGlyphOnDark = Color(red: 0.98, green: 0.98, blue: 0.98)
+
+    @MainActor
+    static func toolbarGlyph(themeText: Color?, appearance: ColorScheme) -> Color {
+        let fallback = appearance == .dark ? barGlyphOnDark : barGlyphOnLight
+        guard let themeText else { return fallback }
+        return glyphSuits(resolve(themeText), appearance) ? themeText : fallback
+    }
+
     /// A SwiftUI `Color` as sRGB components, resolved against the app's
     /// effective appearance — `Color.primary` is a different colour in Aqua and
     /// Dark Aqua, and the guard must measure the one on screen.

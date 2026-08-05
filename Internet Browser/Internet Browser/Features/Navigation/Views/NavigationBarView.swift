@@ -50,8 +50,20 @@ struct NavigationBarView: View {
     private var themedToolbarBackground: Color? {
         isPrivateMode ? nil : FirefoxThemeManager.shared.toolbarBackground
     }
+    /// The tone every glyph on this bar is ACTUALLY drawn in.
+    ///
+    /// A Firefox theme names one `toolbar_text` for both appearances, so a
+    /// theme authored for dark chrome hands a light glyph to a light bar, and
+    /// the contrast guard then correctly asks for a dark plate under it — which
+    /// is where the dark island in a pale toolbar came from. `toolbarGlyph`
+    /// keeps the theme's tone whenever it suits the appearance and falls back
+    /// to the label colour when it does not, so the glyph and the plate it
+    /// implies move together instead of fighting.
     private var themedToolbarText: Color? {
-        isPrivateMode ? nil : FirefoxThemeManager.shared.toolbarText
+        guard !isPrivateMode, isThemed else { return nil }
+        return ThemeContrast.toolbarGlyph(
+            themeText: FirefoxThemeManager.shared.toolbarText, appearance: colorScheme
+        )
     }
 
     /// Whether a theme is dressing this bar at all. Private windows never are.
@@ -94,6 +106,11 @@ struct NavigationBarView: View {
     /// The whole toolbar row's frame, republished to the cluster surfaces so
     /// BOTH of them are decided from the same region and therefore come out
     /// the same weight. See the note on `navigationButtons` in `body`.
+    /// The appearance the bar is actually rendering in. A themed toolbar still
+    /// has one: a Firefox theme dresses the chrome, it does not opt the window
+    /// out of light and dark.
+    @Environment(\.colorScheme) private var colorScheme
+
     @State private var toolbarRowSpan: CGRect?
 
     @State private var addressText: String = ""
