@@ -245,7 +245,7 @@ struct TabItemView: View {
                     handleClick(from: value.startLocation, to: value.location)
                 }
         )
-        .contextMenu {
+        .cherryContextMenu {
             tabContextMenu
         }
         .onDisappear {
@@ -386,89 +386,45 @@ struct TabItemView: View {
         }
     }
 
-    @ViewBuilder
-    private var tabContextMenu: some View {
-        Button("New Tab") {
-            onNewTab?()
-        }
-        Divider()
-        Button("Reload") {
-            tab.reload()
-        }
-        Button("Duplicate Tab") {
-            onDuplicate?()
-        }
-        if tab.isPinned {
-            Button("Unpin Tab") {
-                onPin?()
-            }
-        } else {
-            Button("Pin Tab") {
-                onPin?()
-            }
-        }
-        Divider()
+    @CherryMenuBuilder
+    private var tabContextMenu: [CherryMenuItem] {
+        CherryMenuItem.action("New Tab") { onNewTab?() }
+        CherryMenuItem.separator
+        CherryMenuItem.action("Reload") { tab.reload() }
+        CherryMenuItem.action("Duplicate Tab") { onDuplicate?() }
+        CherryMenuItem.action(tab.isPinned ? "Unpin Tab" : "Pin Tab") { onPin?() }
+        CherryMenuItem.separator
 
-        // Tab group menu
-        Menu("Tab Group") {
-            Button("Add to New Group") {
-                onAddToNewGroup?()
-            }
+        CherryMenuItem.submenu("Tab Group") {
+            CherryMenuItem.action("Add to New Group") { onAddToNewGroup?() }
             if !availableGroups.isEmpty {
-                Divider()
-                ForEach(availableGroups) { group in
-                    Button {
-                        onAddToGroup?(group)
-                    } label: {
-                        HStack {
-                            Circle()
-                                .fill(group.swiftUIColor)
-                                .frame(width: 8, height: 8)
-                            Text(group.name)
-                        }
-                    }
+                CherryMenuItem.separator
+                for group in availableGroups {
+                    CherryMenuItem.action(group.name, swatch: group.swiftUIColor) { onAddToGroup?(group) }
                 }
             }
             if tab.group != nil {
-                Divider()
-                Button("Remove from Group") {
-                    onRemoveFromGroup?()
-                }
+                CherryMenuItem.separator
+                CherryMenuItem.action("Remove from Group") { onRemoveFromGroup?() }
             }
         }
 
-        Divider()
-        Button("Open in New Window") {
-            onDetachTab?()
-        }
+        CherryMenuItem.separator
+        CherryMenuItem.action("Open in New Window") { onDetachTab?() }
         if isSplitActive {
-            Button("Close Split View") {
-                onCloseSplitView?()
-            }
+            CherryMenuItem.action("Close Split View") { onCloseSplitView?() }
         } else {
-            Button("Open in Split View") {
-                onOpenInSplitView?()
-            }
+            CherryMenuItem.action("Open in Split View") { onOpenInSplitView?() }
         }
-        Divider()
+        CherryMenuItem.separator
         if tab.isMuted {
-            Button("Unmute Tab") {
-                tab.isMuted = false
-            }
+            CherryMenuItem.action("Unmute Tab") { tab.isMuted = false }
         } else {
-            Button("Mute Tab") {
-                tab.isMuted = true
-            }
+            CherryMenuItem.action("Mute Tab") { tab.isMuted = true }
         }
-        Divider()
-        Button("Close Tab") {
-            onClose()
-        }
-        Button("Close Other Tabs") {
-            onCloseOthers?()
-        }
-        Button("Close Tabs to the Right") {
-            onCloseRight?()
-        }
+        CherryMenuItem.separator
+        CherryMenuItem.action("Close Tab") { onClose() }
+        CherryMenuItem.action("Close Other Tabs") { onCloseOthers?() }
+        CherryMenuItem.action("Close Tabs to the Right") { onCloseRight?() }
     }
 }

@@ -2,12 +2,11 @@
 //  SystemAccentSurfacesTests.swift
 //  Internet BrowserTests
 //
-//  The accent caption in Settings is not decoration — it is the whole of
-//  Cherry's answer to "why is this menu red when my accent is blue?", because
-//  no runtime API can retint the surfaces it names. That makes its coverage
-//  behaviour, and behaviour gets a test: rewording the sentence must not be
-//  able to quietly drop a surface, least of all `menus`, which is the one the
-//  defect was reported against.
+//  The accent caption in Settings tells the user which surfaces follow the
+//  accent and which cannot. Menus have moved from the second group to the
+//  first — Cherry draws its own now — and that move is exactly the kind of
+//  thing a reworded sentence can silently undo. Both halves get a checklist and
+//  both checklists get a test.
 //
 
 import XCTest
@@ -26,11 +25,29 @@ final class SystemAccentSurfacesTests: XCTestCase {
         }
     }
 
-    /// Guards the list itself, not just the sentence: dropping `menus` from
-    /// `surveyed` would make the caption test pass while the caption stopped
-    /// mentioning the ⋯ menu and every context menu in the app.
-    func testMenusAreSurveyed() {
-        XCTAssertTrue(SystemAccentSurfaces.surveyed.contains("menus"))
+    /// The reported defect was red menus. A caption that stops saying menus now
+    /// follow leaves the user who remembers them red with no way to know.
+    func testCaptionSaysCherryDrawnSurfacesFollow() {
+        for surface in SystemAccentSurfaces.cherryDrawn {
+            XCTAssertNotNil(
+                SystemAccentSurfaces.caption.range(of: surface, options: .caseInsensitive),
+                "The accent caption no longer mentions \"\(surface)\", which does follow "
+                    + "the accent. The surfaces that changed are the ones worth naming."
+            )
+        }
+        XCTAssertNotNil(SystemAccentSurfaces.caption.range(of: "follow the accent you pick here"))
+    }
+
+    /// Guards the lists themselves, not just the sentence. `menus` sitting in
+    /// `surveyed` again would mean someone had reverted the conversion — or,
+    /// worse, described it as reverted while it still worked.
+    func testMenusAreNoLongerSurveyedAsSystemDrawn() {
+        XCTAssertFalse(
+            SystemAccentSurfaces.surveyed.contains("menus"),
+            "Cherry draws its own menus (CherryMenuController), so they follow the "
+                + "tint and do not belong on the list of surfaces that ignore it."
+        )
+        XCTAssertTrue(SystemAccentSurfaces.cherryDrawn.contains("menus"))
     }
 
     /// The caption is useless without the one lever the user actually has.
@@ -44,14 +61,17 @@ final class SystemAccentSurfacesTests: XCTestCase {
         XCTAssertTrue(SystemAccentSurfaces.caption.contains("Multicolour"))
     }
 
-    /// The menu bar is drawn outside Cherry's process and falls back to stock
-    /// macOS blue, not to Cherry's red asset. Without this clause the sentence
-    /// is simply wrong about one of the surfaces it covers.
-    func testCaptionCallsOutTheMenuBarException() {
-        XCTAssertTrue(SystemAccentSurfaces.caption.contains("menu bar"))
+    /// The old caption needed a "the menu bar stays macOS blue" exception,
+    /// because the app's red `AccentColor` asset made everything else red while
+    /// the out-of-process menu bar stayed blue. With the asset gone, every
+    /// system-drawn surface follows the one system accent and the exception
+    /// would now be false.
+    func testCaptionNoLongerClaimsCherryRedOrAMenuBarException() {
+        XCTAssertFalse(SystemAccentSurfaces.caption.contains("Cherry red"))
+        XCTAssertFalse(SystemAccentSurfaces.caption.contains("menu bar"))
     }
 
-    /// One line, because it sits under a swatch row in a settings pane.
+    /// One paragraph, because it sits under a swatch row in a settings pane.
     func testCaptionIsASingleParagraph() {
         XCTAssertFalse(SystemAccentSurfaces.caption.contains("\n"))
     }

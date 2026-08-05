@@ -863,23 +863,19 @@ struct AskThisPagePanel: View {
     /// downloaded is allowed: the panel then shows the normal
     /// "not downloaded" availability fallback, pointing at Settings.
     private var engineMenu: some View {
-        Menu {
-            ForEach(AIEngine.allCases) { engine in
-                Button {
+        CherryMenuButton(accessibilityTitle: "AI Engine") {
+            for engine in AIEngine.allCases {
+                CherryMenuItem.action(engine.rawValue, on: engine == SettingsManager.shared.aiEngine) {
                     SettingsManager.shared.aiEngine = engine
-                } label: {
-                    if engine == SettingsManager.shared.aiEngine {
-                        Label(engine.rawValue, systemImage: "checkmark")
-                    } else {
-                        Text(engine.rawValue)
-                    }
                 }
             }
             if !LLMModelManager.shared.isDownloaded {
-                Divider()
-                Text("Qwen model not downloaded — download it in Settings")
+                CherryMenuItem.separator
+                // A note, not a command: disabled is how a menu says
+                // "information", and it keeps ↑/↓ and Return off it.
+                CherryMenuItem.action("Qwen model not downloaded — download it in Settings", enabled: false) {}
             }
-        } label: {
+        } label: { _ in
             HStack(spacing: 3) {
                 Text(SettingsManager.shared.aiEngine.rawValue)
                 Image(systemName: "chevron.down")
@@ -888,8 +884,6 @@ struct AskThisPagePanel: View {
             .font(.system(size: 10))
             .foregroundStyle(.secondary)
         }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
         .fixedSize()
     }
 
@@ -1953,14 +1947,14 @@ private struct TabSelectorBar: View {
     }
 
     private var addTabMenu: some View {
-        Menu {
-            ForEach(eligibleTabs) { tab in
-                Toggle(isOn: membershipBinding(for: tab.id)) {
-                    Text(chipTitle(for: tab))
-                        .lineLimit(1)
+        CherryMenuButton(accessibilityTitle: "Add Tab") {
+            for tab in eligibleTabs {
+                CherryMenuItem.action(chipTitle(for: tab), on: selectedTabIDs.contains(tab.id)) {
+                    let binding = membershipBinding(for: tab.id)
+                    binding.wrappedValue.toggle()
                 }
             }
-        } label: {
+        } label: { _ in
             Image(systemName: "plus")
                 .font(.system(size: 10, weight: .semibold))
                 .foregroundStyle(.secondary)
@@ -1968,8 +1962,6 @@ private struct TabSelectorBar: View {
                 .background(Color.primary.opacity(0.06), in: Circle())
                 .contentShape(Circle())
         }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
         .fixedSize()
     }
 

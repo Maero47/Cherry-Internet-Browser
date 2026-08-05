@@ -21,14 +21,10 @@ struct GeneralSettingsView: View {
                     title: "Search Engine",
                     subtitle: "Used for searches from the address bar and homepage."
                 ) {
-                    Picker("", selection: $settings.searchEngine) {
-                        ForEach(SearchEngine.allCases) { engine in
-                            Text(engine.rawValue).tag(engine)
-                        }
-                    }
-                    .labelsHidden()
-                    .pickerStyle(.menu)
-                    .fixedSize()
+                    CherryPicker(
+                        selection: $settings.searchEngine,
+                        options: SearchEngine.allCases.map { .init($0, $0.rawValue) }
+                    )
                 }
 
                 Divider()
@@ -53,14 +49,10 @@ struct GeneralSettingsView: View {
                     title: "AI Engine",
                     subtitle: "Qwen runs entirely on this Mac and is much stronger than Apple's built-in model."
                 ) {
-                    Picker("", selection: $settings.aiEngine) {
-                        ForEach(AIEngine.allCases) { engine in
-                            Text(engine.rawValue).tag(engine)
-                        }
-                    }
-                    .labelsHidden()
-                    .pickerStyle(.menu)
-                    .fixedSize()
+                    CherryPicker(
+                        selection: $settings.aiEngine,
+                        options: AIEngine.allCases.map { .init($0, $0.rawValue) }
+                    )
                 }
 
                 if settings.aiEngine == .qwen {
@@ -215,15 +207,13 @@ struct GeneralSettingsView: View {
 
                 if settings.tabSleepEnabled {
                     SettingsLabeledRow(title: "Sleep After") {
-                        Picker("", selection: $settings.tabSleepTimeout) {
-                            Text("15 minutes").tag(15)
-                            Text("30 minutes").tag(30)
-                            Text("1 hour").tag(60)
-                            Text("2 hours").tag(120)
-                        }
-                        .labelsHidden()
-                        .pickerStyle(.menu)
-                        .fixedSize()
+                        CherryPicker(
+                            selection: $settings.tabSleepTimeout,
+                            options: [
+                                .init(15, "15 minutes"), .init(30, "30 minutes"),
+                                .init(60, "1 hour"), .init(120, "2 hours"),
+                            ]
+                        )
                     }
                 }
 

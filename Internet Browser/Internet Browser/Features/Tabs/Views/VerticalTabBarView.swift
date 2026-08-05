@@ -556,14 +556,14 @@ struct VerticalTabBarView: View {
         .onTapGesture {
             if !isRenaming { tabManager.toggleGroupCollapsed(group) }
         }
-        .contextMenu {
-            Button(group.isCollapsed ? "Expand Group" : "Collapse Group") {
+        .cherryContextMenu {
+            CherryMenuItem.action(group.isCollapsed ? "Expand Group" : "Collapse Group") {
                 tabManager.toggleGroupCollapsed(group)
             }
             if !group.isLocked {
-                Button("Rename Group") { beginRename(of: group) }
+                CherryMenuItem.action("Rename Group") { beginRename(of: group) }
             }
-            Button("Delete Group") {
+            CherryMenuItem.action("Delete Group") {
                 tabManager.deleteGroup(group)
             }
         }
@@ -811,72 +811,58 @@ private struct VerticalTabItemView: View {
             isHovering = hovering
         }
         .padding(.horizontal, 4)
-        .contextMenu {
+        .cherryContextMenu {
             // Same menu the horizontal bar offers (TabItemView), with the
             // vertical-specific "Below" wording for the positional action.
-            Button("New Tab") { onNewTab?() }
-            Divider()
-            Button("Reload") { tab.reload() }
-            Button("Duplicate Tab") {
+            CherryMenuItem.action("New Tab") { onNewTab?() }
+            CherryMenuItem.separator
+            CherryMenuItem.action("Reload") { tab.reload() }
+            CherryMenuItem.action("Duplicate Tab") {
                 let dup = tabManager.duplicateTab(tab)
                 if let url = tab.url { dup.loadURL(url) }
             }
-            if tab.isPinned {
-                Button("Unpin Tab") { tabManager.unpinTab(tab) }
-            } else {
-                Button("Pin Tab") { tabManager.pinTab(tab) }
+            CherryMenuItem.action(tab.isPinned ? "Unpin Tab" : "Pin Tab") {
+                if tab.isPinned { tabManager.unpinTab(tab) } else { tabManager.pinTab(tab) }
             }
-            Divider()
-            Menu("Tab Group") {
-                Button("Add to New Group") {
+            CherryMenuItem.separator
+            CherryMenuItem.submenu("Tab Group") {
+                CherryMenuItem.action("Add to New Group") {
                     _ = tabManager.addTabToNewGroup(tab)
                 }
                 if !tabManager.tabGroups.isEmpty {
-                    Divider()
-                    ForEach(tabManager.tabGroups) { group in
-                        Button {
+                    CherryMenuItem.separator
+                    for group in tabManager.tabGroups {
+                        CherryMenuItem.action(group.name, swatch: group.swiftUIColor) {
                             tabManager.addTabToGroup(tab, group: group)
-                        } label: {
-                            HStack {
-                                Circle()
-                                    .fill(group.swiftUIColor)
-                                    .frame(width: 8, height: 8)
-                                Text(group.name)
-                            }
                         }
                     }
                 }
                 if tab.group != nil {
-                    Divider()
-                    Button("Remove from Group") {
+                    CherryMenuItem.separator
+                    CherryMenuItem.action("Remove from Group") {
                         tabManager.removeTabFromGroup(tab)
                     }
                 }
             }
-            Divider()
-            Button("Open in New Window") {
+            CherryMenuItem.separator
+            CherryMenuItem.action("Open in New Window", enabled: tabManager.tabs.count > 1) {
                 onDetachTab?(tab)
             }
-            .disabled(tabManager.tabs.count <= 1)
             if tabManager.isSplitActive {
-                Button("Close Split View") {
-                    tabManager.closeSplit()
-                }
+                CherryMenuItem.action("Close Split View") { tabManager.closeSplit() }
             } else {
-                Button("Open in Split View") {
-                    tabManager.openSplit(with: tab.id)
-                }
+                CherryMenuItem.action("Open in Split View") { tabManager.openSplit(with: tab.id) }
             }
-            Divider()
+            CherryMenuItem.separator
             if tab.isMuted {
-                Button("Unmute Tab") { tab.isMuted = false }
+                CherryMenuItem.action("Unmute Tab") { tab.isMuted = false }
             } else {
-                Button("Mute Tab") { tab.isMuted = true }
+                CherryMenuItem.action("Mute Tab") { tab.isMuted = true }
             }
-            Divider()
-            Button("Close Tab") { tabManager.closeTab(tab) }
-            Button("Close Other Tabs") { tabManager.closeOtherTabs(tab) }
-            Button("Close Tabs Below") { tabManager.closeTabsToRight(of: tab) }
+            CherryMenuItem.separator
+            CherryMenuItem.action("Close Tab") { tabManager.closeTab(tab) }
+            CherryMenuItem.action("Close Other Tabs") { tabManager.closeOtherTabs(tab) }
+            CherryMenuItem.action("Close Tabs Below") { tabManager.closeTabsToRight(of: tab) }
         }
     }
 

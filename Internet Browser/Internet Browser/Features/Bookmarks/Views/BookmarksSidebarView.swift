@@ -110,32 +110,26 @@ struct BookmarksSidebarView: View {
                             action: { onBookmarkClick(bookmark) },
                             onOpenInNewTab: onOpenInNewTab.map { open in { open(bookmark) } }
                         )
-                        .contextMenu {
-                            Button("Open") { onBookmarkClick(bookmark) }
+                        .cherryContextMenu {
+                            CherryMenuItem.action("Open") { onBookmarkClick(bookmark) }
                             if let onOpenInNewTab {
-                                Button("Open in New Tab") { onOpenInNewTab(bookmark) }
+                                CherryMenuItem.action("Open in New Tab") { onOpenInNewTab(bookmark) }
                             }
-                            Divider()
-                            Button("Copy Link") {
+                            CherryMenuItem.separator
+                            CherryMenuItem.action("Copy Link") {
                                 NSPasteboard.general.clearContents()
                                 NSPasteboard.general.setString(bookmark.url.absoluteString, forType: .string)
                             }
-                            Divider()
-                            if bookmark.isInBookmarkBar {
-                                Button("Remove from Bookmark Bar") {
-                                    var updated = bookmark
-                                    updated.isInBookmarkBar = false
-                                    repository.updateBookmark(updated)
-                                }
-                            } else {
-                                Button("Add to Bookmark Bar") {
-                                    var updated = bookmark
-                                    updated.isInBookmarkBar = true
-                                    repository.updateBookmark(updated)
-                                }
+                            CherryMenuItem.separator
+                            CherryMenuItem.action(
+                                bookmark.isInBookmarkBar ? "Remove from Bookmark Bar" : "Add to Bookmark Bar"
+                            ) {
+                                var updated = bookmark
+                                updated.isInBookmarkBar.toggle()
+                                repository.updateBookmark(updated)
                             }
-                            Divider()
-                            Button("Delete", role: .destructive) {
+                            CherryMenuItem.separator
+                            CherryMenuItem.action("Delete", destructive: true) {
                                 repository.deleteBookmark(bookmark)
                             }
                         }

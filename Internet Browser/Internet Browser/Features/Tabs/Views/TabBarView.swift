@@ -478,14 +478,14 @@ struct TabBarView: View {
         .onTapGesture {
             if !isRenaming { tabManager.toggleGroupCollapsed(group) }
         }
-        .contextMenu {
-            Button(group.isCollapsed ? "Expand Group" : "Collapse Group") {
+        .cherryContextMenu {
+            CherryMenuItem.action(group.isCollapsed ? "Expand Group" : "Collapse Group") {
                 tabManager.toggleGroupCollapsed(group)
             }
             if !group.isLocked {
-                Button("Rename Group") { beginRename(of: group) }
+                CherryMenuItem.action("Rename Group") { beginRename(of: group) }
             }
-            Button("Delete Group") {
+            CherryMenuItem.action("Delete Group") {
                 tabManager.deleteGroup(group)
             }
         }

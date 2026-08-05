@@ -24,31 +24,30 @@ import AppKit
 ///
 /// What this CANNOT reach is anything macOS draws from
 /// `NSColor.controlAccentColor`: focus rings, `NSAlert` buttons,
-/// `NSOpenPanel`/`NSSavePanel`, menu highlights, and selection inside web page
-/// content. There is no runtime API to retint those — `controlAccentColor` is a
-/// read-only class property and `NSMenu` has no tint of any kind. That includes
-/// every menu SwiftUI opens for us, because macOS renders `Menu`,
-/// `.contextMenu` and `Picker` as real `NSMenu`s: the ⋯ menu, all of Cherry's
-/// context menus and WebKit's page menu are all on the asset colour, not on
-/// `.tint`. `SystemAccentSurfaces` is the list, and the sentence Settings shows
-/// the user.
+/// `NSOpenPanel`/`NSSavePanel`, and selection inside web page content. There is
+/// no runtime API to retint those — `controlAccentColor` is a read-only class
+/// property. `SystemAccentSurfaces` is the list, and the sentence Settings
+/// shows the user.
 ///
-/// The menu bar is the one exception in the other direction: its menus are
-/// drawn outside Cherry's process, so they never see the asset and fall back to
-/// stock macOS blue rather than to Cherry red.
+/// **Menus used to be on that list and no longer are.** macOS renders SwiftUI's
+/// `Menu`, `.contextMenu` and `Picker` as real `NSMenu`s, whose highlight comes
+/// from the `AccentColor` asset by way of a system material and has no tint of
+/// any kind — so every one of Cherry's own menus was cherry red whatever accent
+/// the user picked. Cherry now draws them itself (`CherryMenuController`), so
+/// they follow this `.tint` like every other Cherry-drawn surface. WebKit's
+/// page context menu and the menu bar are the two that remain native, because
+/// neither is Cherry's to draw.
 ///
-/// Selection and the insertion point in Cherry's OWN text fields are NOT in
-/// that list — `NSTextView` exposes both, and `AccentTextSelection` sets them
-/// on each window's field editor.
+/// Selection and the insertion point in Cherry's OWN text fields are likewise
+/// not on the list — `NSTextView` exposes both, and `AccentTextSelection` sets
+/// them on each window's field editor.
 ///
-/// They resolve to the accent the user picked in System Settings ▸ Appearance;
-/// only while that is "Multicolour" (the macOS default) do they fall back to
-/// the app's compile-time `AccentColor` asset. That asset is deliberately left
-/// at Cherry red `DB283C`: it can't change at runtime, and red is exactly
-/// right for the default accent — dropping the asset would make those surfaces
-/// the stock macOS blue for *every* user, including the majority who never
-/// leave the default. A user who wants them to match a non-default Cherry
-/// accent sets the macOS accent, which overrides the asset either way.
+/// The surfaces that ARE still on it resolve to the accent the user picked in
+/// System Settings ▸ Appearance; only while that is "Multicolour" (the macOS
+/// default) do they fall back to the app's compile-time `AccentColor` asset.
+/// That asset is deliberately neutral — see `Assets.xcassets/AccentColor` and
+/// `SystemAccentSurfaces` — so a save panel does not come up cherry red next to
+/// a blue Cherry accent.
 struct CherryWindowRoot: ViewModifier {
     private var settings: SettingsManager { .shared }
 

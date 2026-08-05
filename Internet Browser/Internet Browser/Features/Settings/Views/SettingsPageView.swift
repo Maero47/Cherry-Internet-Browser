@@ -163,14 +163,10 @@ struct SettingsPageView: View {
 
             Spacer()
 
-            Picker("", selection: $selectedSection) {
-                ForEach(SettingsSection.allCases) { section in
-                    Label(section.rawValue, systemImage: section.icon).tag(section)
-                }
-            }
-            .labelsHidden()
-            .pickerStyle(.menu)
-            .fixedSize()
+            CherryPicker(
+                selection: $selectedSection,
+                options: SettingsSection.allCases.map { .init($0, $0.rawValue, systemImage: $0.icon) }
+            )
             .padding(.trailing, 16)
         }
         .padding(.vertical, 10)

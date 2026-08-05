@@ -621,101 +621,54 @@ struct NavigationBarView: View {
     /// hiding a button is only ever a layout choice, never a loss of function.
     @ViewBuilder
     private func overflowMenu(hiddenItems: [ToolbarButtonID]) -> some View {
-        Menu {
+        CherryMenuButton(accessibilityTitle: "More") {
             if !hiddenItems.isEmpty {
-                ForEach(hiddenItems, id: \.self) { item in
-                    if let isOn = toggleState(item) {
-                        // A hidden toggle has to say which way it is set, or
-                        // the user can't tell whether clicking turns Focus Mode
-                        // on or off — the state the toolbar button shows with a
-                        // filled symbol and an accent tint. `Toggle` in a menu
-                        // is the macOS-native form of that: a checkmark when on.
-                        // The binding ignores the incoming value and just runs
-                        // the same closure the button would have; every one of
-                        // these actions is itself a toggle.
-                        Toggle(isOn: Binding(get: { isOn }, set: { _ in invoke(item) })) {
-                            Label(item.title, systemImage: item.systemImage)
-                        }
-                    } else {
-                        Button {
-                            invoke(item)
-                        } label: {
-                            Label(item.title, systemImage: item.systemImage)
-                        }
-                    }
+                for item in hiddenItems {
+                    // A hidden toggle has to say which way it is set, or the
+                    // user can't tell whether clicking turns Focus Mode on or
+                    // off — the state the toolbar button shows with a filled
+                    // symbol and an accent tint. A checkmark when on is the
+                    // macOS-native form of that, and what `Toggle` in a menu
+                    // used to produce.
+                    CherryMenuItem.action(
+                        item.title,
+                        systemImage: item.systemImage,
+                        on: toggleState(item) ?? false
+                    ) { invoke(item) }
                 }
 
-                Divider()
+                CherryMenuItem.separator
             }
 
-            Button {
-                onToggleBookmarks?()
-            } label: {
-                Label("Bookmarks", systemImage: "book")
-            }
+            CherryMenuItem.action("Bookmarks", systemImage: "book") { onToggleBookmarks?() }
+            CherryMenuItem.action("History", systemImage: "clock") { onToggleHistory?() }
+            CherryMenuItem.action("Downloads", systemImage: "arrow.down.circle") { onDownloads?() }
 
-            Button {
-                onToggleHistory?()
-            } label: {
-                Label("History", systemImage: "clock")
-            }
-
-            Button {
-                onDownloads?()
-            } label: {
-                Label("Downloads", systemImage: "arrow.down.circle")
-            }
-
-            Divider()
+            CherryMenuItem.separator
 
             // No standalone "Ask This Page" entry: it is a catalogue item, so
             // it is on the bar when visible, in the hidden-items section above
             // when hidden, and absent when its own condition doesn't hold —
             // the same rule as every other customisable button. The fixed entry
             // rendered a second, identical one whenever the user hid it.
-            Button {
-                onPrint?()
-            } label: {
-                Label("Print Page", systemImage: "printer")
-            }
+            CherryMenuItem.action("Print Page", systemImage: "printer") { onPrint?() }
+            CherryMenuItem.action("Picture in Picture", systemImage: "pip.fill") { onPictureInPicture?() }
+            CherryMenuItem.action("Take Screenshot", systemImage: "camera") { onScreenshot?() }
+            CherryMenuItem.action("QR Code", systemImage: "qrcode") { onQRCode?() }
 
-            Button {
-                onPictureInPicture?()
-            } label: {
-                Label("Picture in Picture", systemImage: "pip.fill")
-            }
+            CherryMenuItem.separator
 
-            Button {
-                onScreenshot?()
-            } label: {
-                Label("Take Screenshot", systemImage: "camera")
-            }
-
-            Button {
-                onQRCode?()
-            } label: {
-                Label("QR Code", systemImage: "qrcode")
-            }
-
-            Divider()
-
-            Button {
-                onSettings?()
-            } label: {
-                Label("Settings", systemImage: "gear")
-            }
-        } label: {
+            CherryMenuItem.action("Settings", systemImage: "gear") { onSettings?() }
+        } label: { isOpen in
             Image(systemName: "ellipsis")
                 .font(.system(size: AppConstants.UI.toolbarIconSize, weight: .medium))
                 .frame(width: 28, height: 28)
                 .background(
                     RoundedRectangle(cornerRadius: 6)
-                        .fill(Color.clear)
+                        .fill(isOpen ? Color.primary.opacity(0.12) : Color.clear)
                 )
                 .contentShape(Rectangle())
         }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
         .frame(width: 28, height: 28)
         .themedMenuTint(legibility?.foreground)
         .help("Menu")
@@ -754,10 +707,8 @@ private extension View {
     /// Keeping this modifier off the omnibox's ancestors is what guarantees
     /// the split, rather than whichever gesture happens to win.
     func customizeToolbarContextMenu(_ openSettings: @escaping () -> Void) -> some View {
-        contextMenu {
-            Button(action: openSettings) {
-                Label("Customise Toolbar…", systemImage: "slider.horizontal.3")
-            }
+        cherryContextMenu {
+            CherryMenuItem.action("Customise Toolbar…", systemImage: "slider.horizontal.3") { openSettings() }
         }
     }
 }
