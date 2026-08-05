@@ -95,14 +95,10 @@ struct PrivacySettingsView: View {
                 subtitle: "Cookies are stripped from network requests. A page's own scripts can still keep cookies for as long as that page is open. Open tabs are updated and reloaded when you change this."
             ) {
                 SettingsLabeledRow(title: "Cookie Policy") {
-                    Picker("", selection: $settings.blockCookies) {
-                        ForEach(CookieBlockingLevel.allCases) { level in
-                            Text(level.displayName).tag(level)
-                        }
-                    }
-                    .labelsHidden()
-                    .pickerStyle(.menu)
-                    .fixedSize()
+                    CherryPicker(
+                        selection: $settings.blockCookies,
+                        options: CookieBlockingLevel.allCases.map { .init($0, $0.displayName) }
+                    )
                 }
 
                 if let failure = cookiePolicy.compileFailure {

@@ -64,18 +64,15 @@ struct FocusModeSettingsView: View {
 
                 if manager.timerEnabled {
                     SettingsLabeledRow(title: "Duration") {
-                        Picker("", selection: $manager.timerDurationMinutes) {
-                            Text("15 minutes").tag(15)
-                            Text("25 minutes").tag(25)
-                            Text("30 minutes").tag(30)
-                            Text("45 minutes").tag(45)
-                            Text("60 minutes").tag(60)
-                            Text("90 minutes").tag(90)
-                            Text("2 hours").tag(120)
-                        }
-                        .labelsHidden()
-                        .pickerStyle(.menu)
-                        .fixedSize()
+                        CherryPicker(
+                            selection: $manager.timerDurationMinutes,
+                            options: [
+                                .init(15, "15 minutes"), .init(25, "25 minutes"),
+                                .init(30, "30 minutes"), .init(45, "45 minutes"),
+                                .init(60, "60 minutes"), .init(90, "90 minutes"),
+                                .init(120, "2 hours"),
+                            ]
+                        )
                     }
                 }
 

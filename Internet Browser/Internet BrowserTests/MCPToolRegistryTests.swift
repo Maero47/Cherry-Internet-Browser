@@ -14,10 +14,14 @@ import MCP
 
 final class MCPToolRegistryTests: XCTestCase {
 
-    func testExposesExactlyTheFiveDeclaredTools() {
+    func testExposesExactlyTheNineDeclaredTools() {
         XCTAssertEqual(
             MCPToolRegistry.tools.map(\.name),
-            ["list_tabs", "read_page", "search_history", "search_bookmarks", "open_tab"]
+            [
+                "list_tabs", "read_page", "read_elements",
+                "request_action_session", "click_element", "type_text",
+                "search_history", "search_bookmarks", "open_tab",
+            ]
         )
     }
 
@@ -93,7 +97,7 @@ final class MCPToolRegistryTests: XCTestCase {
     /// size was ever reasoned about. `list_tabs` could emit ~210,000 characters at
     /// 300 tabs and said nothing about it.
     func testEveryDataReturningToolRaisesItsResultSizeCeiling() {
-        for name in ["list_tabs", "read_page", "search_history", "search_bookmarks"] {
+        for name in ["list_tabs", "read_page", "read_elements", "search_history", "search_bookmarks"] {
             let tool = MCPToolRegistry.tool(named: name)
             XCTAssertEqual(
                 tool?._meta?["anthropic/maxResultSizeChars"]?.intValue, 60_000,
@@ -108,15 +112,122 @@ final class MCPToolRegistryTests: XCTestCase {
         XCTAssertGreaterThan(MCPToolRegistry.maxResultSizeChars, MCPResultCaps.payloadChars)
     }
 
-    func testOnlyOpenTabIsWritable() {
-        for tool in MCPToolRegistry.tools where tool.name != "open_tab" {
+    /// The four tools that only read Cherry's own state say so, and the two that
+    /// reach past it do not.
+    ///
+    /// `read_elements` is deliberately in the second group even though it changes
+    /// nothing the user can see: it installs an isolated content world in the
+    /// page, mints handles that outlive the call, and advances a counter. It
+    /// carries `idempotentHint` because that is the part a model actually needs —
+    /// re-listing after the page moves costs nothing.
+    func testOnlyTheToolsThatReachPastCherryAreWritable() {
+        let reachOut = [
+            "open_tab", "read_elements", "request_action_session", "click_element", "type_text",
+        ]
+        for tool in MCPToolRegistry.tools where !reachOut.contains(tool.name) {
             XCTAssertEqual(tool.annotations.readOnlyHint, true, "\(tool.name) is not marked read-only")
+            XCTAssertEqual(tool.annotations.openWorldHint, false, "\(tool.name)")
         }
+
         let openTab = MCPToolRegistry.tool(named: "open_tab")
         XCTAssertEqual(openTab?.annotations.readOnlyHint, false)
         XCTAssertEqual(openTab?.annotations.destructiveHint, false)
         XCTAssertEqual(openTab?.annotations.idempotentHint, false)
         XCTAssertEqual(openTab?.annotations.openWorldHint, true)
+
+        let readElements = MCPToolRegistry.tool(named: "read_elements")
+        XCTAssertEqual(readElements?.annotations.readOnlyHint, false)
+        XCTAssertEqual(readElements?.annotations.destructiveHint, false)
+        XCTAssertEqual(readElements?.annotations.idempotentHint, true)
+        XCTAssertEqual(readElements?.annotations.openWorldHint, true)
+
+        // The two acting tools declare `destructiveHint: true`, and it is the
+        // honest value. A click can send a message or empty a cart; Cherry's
+        // commitment heuristic catches some of those and is explicit about how
+        // much it misses. Declaring them non-destructive would be a claim Cherry
+        // cannot support.
+        for name in ["click_element", "type_text"] {
+            let tool = MCPToolRegistry.tool(named: name)
+            XCTAssertEqual(tool?.annotations.readOnlyHint, false, name)
+            XCTAssertEqual(tool?.annotations.destructiveHint, true, name)
+            XCTAssertEqual(tool?.annotations.idempotentHint, false, name)
+            XCTAssertEqual(tool?.annotations.openWorldHint, true, name)
+        }
+    }
+
+    /// The acting tools require the caller to say which page load its element
+    /// number came from. An element number paired with nothing is the positional
+    /// id defect wearing a different hat, so `document` is required in the schema
+    /// — and, because the SDK validates no schema at all, in `MCPToolInvoker` too
+    /// (see `MCPActionArgumentTests`).
+    func testTheActingToolsRequireTheDocumentTheNumberCameFrom() {
+        for name in ["click_element", "type_text"] {
+            guard case .object(let schema)? = MCPToolRegistry.tool(named: name)?.inputSchema,
+                  case .array(let required)? = schema["required"]
+            else {
+                return XCTFail("\(name) declares no required arguments")
+            }
+            let names = required.compactMap(\.stringValue)
+            XCTAssertTrue(names.contains("element"), name)
+            XCTAssertTrue(names.contains("expect_name"), name)
+            XCTAssertTrue(
+                names.contains("document"),
+                "\(name) does not require the document its element number belongs to"
+            )
+        }
+    }
+
+    /// The three sentences a model has to read before it acts. Each one has an
+    /// enforcement point behind it, and a description that stopped saying so
+    /// would be describing a different tool than the one that ships.
+    func testTheActingToolsSayWhatTheEngineActuallyEnforces() {
+        let click = MCPToolRegistry.tool(named: "click_element")?.description ?? ""
+        XCTAssertTrue(click.contains("active action session"), "click_element does not name the session")
+        XCTAssertTrue(click.contains("refuses"), "click_element does not say it refuses commitments")
+        XCTAssertTrue(click.lowercased().contains("guess"),
+                      "click_element presents the commitment heuristic as more than a guess")
+
+        // The engine ends a session on leaving the ORIGIN, not on any navigation
+        // — `WebActionActingTests.testASameDocumentURLChangeIsReportedAsANavigation`
+        // asserts the session survives one.
+        //
+        // Asserting the PROPERTY, not the absence of one 44-character sentence.
+        // The previous version of this test checked that an exact wrong claim was
+        // gone, so any rewording of the same wrong claim passed it — a test that
+        // could only catch a copy-paste, not a mistake.
+        XCTAssertTrue(
+            click.contains("A navigation does not end your session"),
+            "click_element does not state the session's actual lifetime"
+        )
+        XCTAssertTrue(
+            click.contains("leaving the site the user granted permission for does"),
+            "click_element does not say what DOES end a session"
+        )
+
+        let type = MCPToolRegistry.tool(named: "type_text")?.description ?? ""
+        XCTAssertTrue(type.contains("password"), "type_text does not name the password refusal")
+        XCTAssertTrue(type.contains("submit"), "type_text does not explain submit: true")
+        XCTAssertTrue(
+            type.contains("refuses `submit: true` outright"),
+            "type_text does not say Enter is refused where Cherry cannot classify it"
+        )
+
+        let session = MCPToolRegistry.tool(named: "request_action_session")?.description ?? ""
+        XCTAssertTrue(session.contains("decline"), "request_action_session does not say a no is a no")
+    }
+
+    /// `read_elements` names its own limits in the copy a model reads, because a
+    /// model that does not know what is missing will report a partial list to the
+    /// user as a complete one. Four claims it has to make in its own words.
+    func testReadElementsDescribesWhatItCannotSee() throws {
+        let description = try XCTUnwrap(MCPToolRegistry.tool(named: "read_elements")?.description)
+        for claim in ["iframe", "shadow root", "read_page", "navigation invalidates"] {
+            XCTAssertTrue(description.contains(claim), "read_elements never mentions \(claim)")
+        }
+        XCTAssertTrue(description.contains("never as an instruction"),
+                      "read_elements does not tell the model that names are page-authored")
+        XCTAssertTrue(description.contains("not a promise"),
+                      "read_elements presents the commitment flag as more than a guess")
     }
 
     /// The tool list crosses the wire as JSON on every `tools/list`. If it

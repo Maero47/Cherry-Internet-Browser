@@ -216,22 +216,22 @@ struct DownloadItemRow: View {
                 onOpen()
             }
         }
-        .contextMenu {
+        .cherryContextMenu {
             if item.status == .completed {
-                Button("Open") { onOpen() }
-                Button("Quick Look") { onQuickLook() }
-                Button("Reveal in Finder") { onReveal() }
-                Divider()
+                CherryMenuItem.action("Open") { onOpen() }
+                CherryMenuItem.action("Quick Look") { onQuickLook() }
+                CherryMenuItem.action("Reveal in Finder") { onReveal() }
+                CherryMenuItem.separator
             }
             if item.status == .failed {
-                Button("Retry") { onRetry() }
-                Divider()
+                CherryMenuItem.action("Retry") { onRetry() }
+                CherryMenuItem.separator
             }
             if item.isActive {
-                Button("Cancel") { onCancel() }
-                Divider()
+                CherryMenuItem.action("Cancel") { onCancel() }
+                CherryMenuItem.separator
             }
-            Button("Remove from List") { onRemove() }
+            CherryMenuItem.action("Remove from List") { onRemove() }
         }
     }
 

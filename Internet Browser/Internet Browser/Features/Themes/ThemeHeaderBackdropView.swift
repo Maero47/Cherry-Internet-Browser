@@ -178,111 +178,70 @@ final class ThemeHeaderCanvasNSView: NSView, ThemeAnimationTickReceiver {
     }
 }
 
-// MARK: - Per-layer renderer
+// MARK: - Layer placement
 
-/// Renders one header image layer. Static images draw the decoded `NSImage`
-/// directly; animated ones re-decode the current frame on demand from the
-/// original file data (cached until the frame advances), so a long GIF never
-/// holds all its frames in memory at once.
-private final class BackgroundLayerRenderer {
-    private enum HorizontalAnchor { case left, center, right }
-    private enum VerticalAnchor { case top, center, bottom }
-    private enum Tiling {
+/// Where one header image layer lands: its CSS anchor keywords and tiling,
+/// plus the tile rectangles that follow from them inside the window-wide
+/// virtual canvas.
+///
+/// Split out of the renderer because it has a SECOND caller —
+/// `ThemeBackdropSampler`, which re-composites this same backdrop offscreen to
+/// measure what a toolbar control is drawn against. Both go through this, so
+/// the pixels the contrast guard measures are placed by the arithmetic that
+/// paints them rather than by a second copy of it that could drift.
+struct ThemeHeaderLayerPlacement {
+    enum HorizontalAnchor { case left, center, right }
+    enum VerticalAnchor { case top, center, bottom }
+    enum Tiling {
         case none, both, horizontal, vertical
 
         var tilesHorizontally: Bool { self == .both || self == .horizontal }
         var tilesVertically: Bool { self == .both || self == .vertical }
     }
 
-    private let horizontal: HorizontalAnchor
-    private let vertical: VerticalAnchor
-    private let tiling: Tiling
-    private let staticImage: NSImage
-    private let frameSource: CGImageSource?
-    private let frameDelays: [TimeInterval]
-    private var cursor = ThemeAnimationFrameCursor()
-    private var currentFrameImage: NSImage?
+    let horizontal: HorizontalAnchor
+    let vertical: VerticalAnchor
+    let tiling: Tiling
 
-    /// Nil for static layers — the view only registers with the shared
-    /// redraw ticker when some layer returns a delay.
-    var minimumFrameDelay: TimeInterval? {
-        frameSource != nil ? frameDelays.min() : nil
+    init(alignment: String, tiling: String) {
+        (horizontal, vertical) = Self.parseAlignment(alignment)
+        self.tiling = Self.parseTiling(tiling)
     }
 
-    init(background: FirefoxThemeManager.ThemeBackground) {
-        (horizontal, vertical) = Self.parseAlignment(background.alignment)
-        tiling = Self.parseTiling(background.tiling)
-        staticImage = background.image
-        if background.isAnimated,
-           let source = CGImageSourceCreateWithData(background.data as CFData, nil),
-           CGImageSourceGetCount(source) > 1 {
-            frameSource = source
-            frameDelays = Self.frameDelays(of: source)
-        } else {
-            frameSource = nil
-            frameDelays = []
-        }
-    }
-
-    /// Adopts the frame this layer should be showing `elapsed` seconds into
-    /// the theme's shared animation clock — a function of the shared time
-    /// only, so two surfaces asking with the same `elapsed` land on the same
-    /// frame no matter when either was created. Returns true when the frame
-    /// changed, i.e. the layer needs redrawing.
-    func updateFrame(elapsed: TimeInterval) -> Bool {
-        guard frameSource != nil, !frameDelays.isEmpty else { return false }
-        guard cursor.update(elapsed: elapsed, delays: frameDelays) else { return false }
-        // Dropped, not replaced: `displayImage` re-decodes on demand, so only
-        // the one visible frame is ever held.
-        currentFrameImage = nil
-        return true
-    }
-
-    private var displayImage: NSImage {
-        guard let frameSource else { return staticImage }
-        if let cached = currentFrameImage { return cached }
-        guard let cgImage = CGImageSourceCreateImageAtIndex(
-            frameSource,
-            cursor.frameIndex,
-            [kCGImageSourceShouldCache: false] as CFDictionary
-        ) else { return staticImage }
-        let image = NSImage(cgImage: cgImage, size: staticImage.size)
-        currentFrameImage = image
-        return image
-    }
-
-    func draw(canvas: CGSize, origin: CGPoint, viewBounds: NSRect) {
-        let image = displayImage
-        let size = image.size
-        guard size.width >= 1, size.height >= 1 else { return }
+    /// Every tile of this layer that touches `viewBounds`, in the surface's own
+    /// (top-left origin) coordinates. `origin` is the surface's offset inside
+    /// the window-wide canvas the anchors are resolved against.
+    func tileRects(imageSize: CGSize, canvas: CGSize, origin: CGPoint, viewBounds: CGRect) -> [CGRect] {
+        guard imageSize.width >= 1, imageSize.height >= 1 else { return [] }
 
         let anchorX: CGFloat
         switch horizontal {
         case .left: anchorX = 0
-        case .center: anchorX = (canvas.width - size.width) / 2
-        case .right: anchorX = canvas.width - size.width
+        case .center: anchorX = (canvas.width - imageSize.width) / 2
+        case .right: anchorX = canvas.width - imageSize.width
         }
         let anchorY: CGFloat
         switch vertical {
         case .top: anchorY = 0
-        case .center: anchorY = (canvas.height - size.height) / 2
-        case .bottom: anchorY = canvas.height - size.height
+        case .center: anchorY = (canvas.height - imageSize.height) / 2
+        case .bottom: anchorY = canvas.height - imageSize.height
         }
 
         let xs = tiling.tilesHorizontally
-            ? Self.tilePositions(anchor: anchorX, length: size.width, from: origin.x, to: origin.x + viewBounds.width)
+            ? Self.tilePositions(anchor: anchorX, length: imageSize.width, from: origin.x, to: origin.x + viewBounds.width)
             : [anchorX]
         let ys = tiling.tilesVertically
-            ? Self.tilePositions(anchor: anchorY, length: size.height, from: origin.y, to: origin.y + viewBounds.height)
+            ? Self.tilePositions(anchor: anchorY, length: imageSize.height, from: origin.y, to: origin.y + viewBounds.height)
             : [anchorY]
 
+        var rects: [CGRect] = []
         for y in ys {
             for x in xs {
-                let rect = NSRect(x: x - origin.x, y: y - origin.y, width: size.width, height: size.height)
-                guard rect.intersects(viewBounds) else { continue }
-                image.draw(in: rect, from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
+                let rect = CGRect(x: x - origin.x, y: y - origin.y, width: imageSize.width, height: imageSize.height)
+                if rect.intersects(viewBounds) { rects.append(rect) }
             }
         }
+        return rects
     }
 
     /// Tile origins along one axis: the anchor position repeated by the
@@ -329,6 +288,104 @@ private final class BackgroundLayerRenderer {
         default: return .none
         }
     }
+}
+
+// MARK: - Per-layer renderer
+
+/// Renders one header image layer. Static images draw the decoded `NSImage`
+/// directly; animated ones re-decode the current frame on demand from the
+/// original file data (cached until the frame advances), so a long GIF never
+/// holds all its frames in memory at once.
+final class BackgroundLayerRenderer {
+    let placement: ThemeHeaderLayerPlacement
+    private let staticImage: NSImage
+    private let frameSource: CGImageSource?
+    private let frameDelays: [TimeInterval]
+    private var cursor = ThemeAnimationFrameCursor()
+    private var currentFrameImage: NSImage?
+
+    /// Nil for static layers — the view only registers with the shared
+    /// redraw ticker when some layer returns a delay.
+    var minimumFrameDelay: TimeInterval? {
+        frameSource != nil ? frameDelays.min() : nil
+    }
+
+    init(background: FirefoxThemeManager.ThemeBackground) {
+        placement = ThemeHeaderLayerPlacement(alignment: background.alignment, tiling: background.tiling)
+        staticImage = background.image
+        if background.isAnimated,
+           let source = CGImageSourceCreateWithData(background.data as CFData, nil),
+           CGImageSourceGetCount(source) > 1 {
+            frameSource = source
+            frameDelays = Self.frameDelays(of: source)
+        } else {
+            frameSource = nil
+            frameDelays = []
+        }
+    }
+
+    /// Adopts the frame this layer should be showing `elapsed` seconds into
+    /// the theme's shared animation clock — a function of the shared time
+    /// only, so two surfaces asking with the same `elapsed` land on the same
+    /// frame no matter when either was created. Returns true when the frame
+    /// changed, i.e. the layer needs redrawing.
+    func updateFrame(elapsed: TimeInterval) -> Bool {
+        guard frameSource != nil, !frameDelays.isEmpty else { return false }
+        guard cursor.update(elapsed: elapsed, delays: frameDelays) else { return false }
+        // Dropped, not replaced: `displayImage` re-decodes on demand, so only
+        // the one visible frame is ever held.
+        currentFrameImage = nil
+        return true
+    }
+
+    private var displayImage: NSImage {
+        guard let frameSource else { return staticImage }
+        if let cached = currentFrameImage { return cached }
+        guard let cgImage = CGImageSourceCreateImageAtIndex(
+            frameSource,
+            cursor.frameIndex,
+            [kCGImageSourceShouldCache: false] as CFDictionary
+        ) else { return staticImage }
+        let image = NSImage(cgImage: cgImage, size: staticImage.size)
+        currentFrameImage = image
+        return image
+    }
+
+    func draw(canvas: CGSize, origin: CGPoint, viewBounds: NSRect) {
+        let image = displayImage
+        for rect in placement.tileRects(
+            imageSize: image.size, canvas: canvas, origin: origin, viewBounds: viewBounds
+        ) {
+            image.draw(in: rect, from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
+        }
+    }
+
+    // MARK: - Offscreen sampling
+
+    /// How many distinct frames this layer can show. 1 for a static layer.
+    /// `ThemeBackdropSampler` walks these so a scrim measured on an animated
+    /// theme holds for the whole loop, not just for the frame that happened to
+    /// be up when the control was laid out.
+    var sampleFrameCount: Int {
+        frameSource.map { CGImageSourceGetCount($0) } ?? 1
+    }
+
+    /// One frame, decoded WITHOUT touching the animation cursor — sampling must
+    /// not move what the on-screen canvas is showing.
+    func sampleImage(frame index: Int) -> CGImage? {
+        guard let frameSource, sampleFrameCount > 1 else {
+            return staticImage.cgImage(forProposedRect: nil, context: nil, hints: nil)
+        }
+        return CGImageSourceCreateImageAtIndex(
+            frameSource,
+            min(max(index, 0), sampleFrameCount - 1),
+            [kCGImageSourceShouldCache: false] as CFDictionary
+        )
+    }
+
+    /// The layer's size in points, which is what the placement arithmetic works
+    /// in (a @2x asset decodes to half its pixel dimensions).
+    var pointSize: CGSize { staticImage.size }
 
     /// Per-frame delays via ImageIO, handling both GIF and APNG. Browsers
     /// treat near-zero delays as 100 ms — do the same.

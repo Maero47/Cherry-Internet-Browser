@@ -54,6 +54,48 @@ struct NavigationBarView: View {
         isPrivateMode ? nil : FirefoxThemeManager.shared.toolbarText
     }
 
+    /// Whether a theme is dressing this bar at all. Private windows never are.
+    private var isThemed: Bool {
+        !isPrivateMode && FirefoxThemeManager.shared.activeTheme != nil
+    }
+
+    /// The ONE tone every glyph on a themed bar is drawn in, and what the
+    /// contrast guard measures the cluster surfaces against.
+    ///
+    /// A themed toolbar has exactly one glyph colour, and that is not a
+    /// simplification for the guard's convenience — it is what a Firefox theme's
+    /// `toolbar_text` means, and it is what lets ONE surface serve a whole
+    /// cluster: a single scrim colour can only move the backdrop away from one
+    /// polarity of foreground, so a row mixing a white glyph with an accent-blue
+    /// one cannot be served uniformly by anything. The toggles say their state
+    /// with their symbol (`book` vs `book.fill`, `shield.checkered` vs
+    /// `shield.slash`), so none of it is lost.
+    ///
+    /// `toolbar_text` when the theme names one, else the system label colour the
+    /// bar already falls back to — a theme is free to ship a header illustration
+    /// and no `toolbar_text` at all.
+    private var legibility: ThemeLegibility? {
+        guard isThemed else { return nil }
+        let manager = FirefoxThemeManager.shared
+        // Only the header-backdrop path layers `toolbar` over artwork; the
+        // flat-fill path IS the toolbar colour and the sampler reads it as the
+        // base, so listing it again would darken the measurement twice.
+        let overlays = manager.hasHeaderBackdrop ? [manager.toolbarColor].compactMap(\.self) : []
+        return ThemeLegibility(foreground: themedToolbarText ?? Color.primary, overlays: overlays)
+    }
+
+    /// `stock` unthemed, the theme's single glyph tone when themed. Every
+    /// accent- or state-tinted toolbar glyph goes through this, so a themed row
+    /// is one colour and an unthemed one is exactly what it always was.
+    private func themedGlyph(_ stock: Color) -> Color {
+        isThemed ? (themedToolbarText ?? Color.primary) : stock
+    }
+
+    /// The whole toolbar row's frame, republished to the cluster surfaces so
+    /// BOTH of them are decided from the same region and therefore come out
+    /// the same weight. See the note on `navigationButtons` in `body`.
+    @State private var toolbarRowSpan: CGRect?
+
     @State private var addressText: String = ""
     @State private var isEditing: Bool = false
     @State private var suggestService = SearchSuggestService()
@@ -182,9 +224,11 @@ struct NavigationBarView: View {
 
     var body: some View {
         HStack(spacing: 4) {
-            // Navigation buttons
+            // Navigation buttons. One cluster, one surface — see
+            // `themeLegibilityPlate`.
             navigationButtons
                 .customizeToolbarContextMenu { onSettings?() }
+                .themeLegibilityPlate(legibility, decidedAcrossCluster: true)
 
             // Omnibox. Note what is NOT here: the customise context menu. It
             // is attached to the button clusters and the bar's background, so
@@ -270,33 +314,13 @@ struct NavigationBarView: View {
             }
             .zIndex(1)
 
-            // Extension toolbar buttons — one per loaded extension, reflecting
-            // this tab. Extensions have no access to private/incognito
-            // windows at all (see ExtensionManager.extensionVisibleViewModels),
-            // so never show their buttons there, regardless of showExtensionButtons.
-            if showExtensionButtons && !isPrivateMode {
-                extensionButtons
-                    .customizeToolbarContextMenu { onSettings?() }
-            }
-
-            // Something outside Cherry is reading this browser right now.
-            //
-            // NOT a `ToolbarButtonID`, and not by omission: it is a security
-            // indicator, so it is not in the catalogue, not reorderable, not
-            // hideable, and it carries no customise context menu. An indicator
-            // the user can switch off would let them believe they were being
-            // told when they were not. Do not "complete" the toolbar
-            // customisation work by adding it — see MCPConnectionIndicator.
-            //
-            // Shown in private windows too. The MCP tools cannot see a private
-            // window, but the server can still be reading the user's other
-            // windows, and that is exactly when they need to know.
-            MCPConnectionIndicator { onSettings?() }
-
-            // Action buttons
-            actionButtons
-                .customizeToolbarContextMenu { onSettings?() }
+            trailingControls
         }
+        // Both cluster surfaces are decided from the WHOLE row rather than each
+        // from its own patch of artwork, so the row carries one weight instead
+        // of a heavy surface at one end and a barely-there one at the other.
+        .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { toolbarRowSpan = $0 }
+        .themeClusterSpan(toolbarRowSpan)
         // Hierarchical styles (.primary/.secondary) on the buttons resolve
         // against this, so the whole toolbar's icons/text follow the theme's
         // toolbar_text; Color.primary is the stock look when unthemed.
@@ -375,6 +399,52 @@ struct NavigationBarView: View {
             addressText = text
             onNavigate(text)
         }
+    }
+
+    /// Everything to the right of the omnibox, as ONE cluster under ONE
+    /// surface.
+    ///
+    /// Grouped rather than left as three siblings because the surface is
+    /// decided per cluster: three adjacent groups would each solve their own
+    /// backdrop and could come out at three different opacities, which is the
+    /// same "why does that one look different" defect at a coarser grain. The
+    /// run reads as one row on screen, so it is one row here.
+    @ViewBuilder
+    private var trailingControls: some View {
+        HStack(spacing: 4) {
+            // Extension toolbar buttons — one per loaded extension, reflecting
+            // this tab. Extensions have no access to private/incognito
+            // windows at all (see ExtensionManager.extensionVisibleViewModels),
+            // so never show their buttons there, regardless of showExtensionButtons.
+            if showExtensionButtons && !isPrivateMode {
+                extensionButtons
+                    .customizeToolbarContextMenu { onSettings?() }
+            }
+
+            // Something outside Cherry is reading this browser right now.
+            //
+            // NOT a `ToolbarButtonID`, and not by omission: it is a security
+            // indicator, so it is not in the catalogue, not reorderable, not
+            // hideable, and it carries no customise context menu. An indicator
+            // the user can switch off would let them believe they were being
+            // told when they were not. Do not "complete" the toolbar
+            // customisation work by adding it — see MCPConnectionIndicator.
+            //
+            // Shown in private windows too. The MCP tools cannot see a private
+            // window, but the server can still be reading the user's other
+            // windows, and that is exactly when they need to know.
+            //
+            // It sits ON the cluster surface like its neighbours and needs
+            // nothing of its own: the glyph is on an opaque accent badge and
+            // takes its tone from that badge, already decoupled from whatever
+            // is behind the bar at a measured ≥4.60:1.
+            MCPConnectionIndicator { onSettings?() }
+
+            // Action buttons
+            actionButtons
+                .customizeToolbarContextMenu { onSettings?() }
+        }
+        .themeLegibilityPlate(legibility, decidedAcrossCluster: true)
     }
 
     @ViewBuilder
@@ -464,7 +534,7 @@ struct NavigationBarView: View {
             Button { invoke(.askThisPage) } label: {
                 Image(systemName: "sparkles")
                     .font(.system(size: AppConstants.UI.toolbarIconSize, weight: .medium))
-                    .foregroundStyle(SettingsManager.shared.accentColor)
+                    .foregroundStyle(themedGlyph(SettingsManager.shared.accentColor))
             }
             .buttonStyle(ToolbarButtonStyle())
             .help("Ask Cherry AI (Cmd+Shift+K)")
@@ -481,7 +551,7 @@ struct NavigationBarView: View {
             Button { invoke(.bookmark) } label: {
                 Image(systemName: isBookmarked ? "star.fill" : "star")
                     .font(.system(size: AppConstants.UI.toolbarIconSize, weight: .medium))
-                    .foregroundStyle(isBookmarked ? Color.yellow : .primary)
+                    .foregroundStyle(themedGlyph(isBookmarked ? Color.yellow : Color.primary))
             }
             .buttonStyle(ToolbarButtonStyle())
             .help("Add Bookmark (Cmd+D)")
@@ -490,7 +560,7 @@ struct NavigationBarView: View {
             Button { invoke(.savePDF) } label: {
                 Image(systemName: "arrow.down.doc")
                     .font(.system(size: AppConstants.UI.toolbarIconSize, weight: .medium))
-                    .foregroundStyle(SettingsManager.shared.accentColor)
+                    .foregroundStyle(themedGlyph(SettingsManager.shared.accentColor))
             }
             .buttonStyle(ToolbarButtonStyle())
             .help("Save PDF")
@@ -499,7 +569,7 @@ struct NavigationBarView: View {
             Button { invoke(.autoFill) } label: {
                 Image(systemName: "key.fill")
                     .font(.system(size: AppConstants.UI.toolbarIconSize, weight: .medium))
-                    .foregroundStyle(SettingsManager.shared.accentColor)
+                    .foregroundStyle(themedGlyph(SettingsManager.shared.accentColor))
             }
             .buttonStyle(ToolbarButtonStyle())
             .help("Auto-fill Password (Cmd+\\)")
@@ -508,7 +578,9 @@ struct NavigationBarView: View {
             Button { invoke(.adBlock) } label: {
                 Image(systemName: isAdBlockPaused ? "shield.slash" : "shield.checkered")
                     .font(.system(size: AppConstants.UI.toolbarIconSize, weight: .medium))
-                    .foregroundStyle(isAdBlockPaused ? .secondary : SettingsManager.shared.accentColor)
+                    .foregroundStyle(isAdBlockPaused
+                                     ? AnyShapeStyle(themedGlyph(Color.secondary).opacity(isThemed ? 0.6 : 1))
+                                     : AnyShapeStyle(themedGlyph(SettingsManager.shared.accentColor)))
             }
             .buttonStyle(ToolbarButtonStyle())
             .help(isAdBlockPaused ? "Ad blocker paused for this site" : "Ad blocker active — click to pause for this site")
@@ -518,7 +590,7 @@ struct NavigationBarView: View {
             Button { invoke(.focusMode) } label: {
                 Image(systemName: "brain.head.profile")
                     .font(.system(size: AppConstants.UI.toolbarIconSize, weight: .medium))
-                    .foregroundStyle(isFocusOn ? SettingsManager.shared.accentColor : .primary)
+                    .foregroundStyle(themedGlyph(isFocusOn ? SettingsManager.shared.accentColor : Color.primary))
                     .symbolVariant(isFocusOn ? .fill : .none)
             }
             .buttonStyle(ToolbarButtonStyle())
@@ -528,7 +600,7 @@ struct NavigationBarView: View {
             Button { invoke(.readerMode) } label: {
                 Image(systemName: showReaderMode ? "book.fill" : "book")
                     .font(.system(size: AppConstants.UI.toolbarIconSize, weight: .medium))
-                    .foregroundStyle(showReaderMode ? SettingsManager.shared.accentColor : .primary)
+                    .foregroundStyle(themedGlyph(showReaderMode ? SettingsManager.shared.accentColor : Color.primary))
             }
             .buttonStyle(ToolbarButtonStyle())
             .help("Reader Mode (Cmd+Shift+R)")
@@ -537,7 +609,7 @@ struct NavigationBarView: View {
             Button { invoke(.privateMode) } label: {
                 Image(systemName: isPrivateMode ? "eye.slash.fill" : "eye.slash")
                     .font(.system(size: AppConstants.UI.toolbarIconSize, weight: .medium))
-                    .foregroundStyle(isPrivateMode ? Color.purple : .primary)
+                    .foregroundStyle(themedGlyph(isPrivateMode ? Color.purple : Color.primary))
             }
             .buttonStyle(ToolbarButtonStyle())
             .help(isPrivateMode ? "Exit Incognito Mode" : "Enter Incognito Mode")
@@ -549,107 +621,82 @@ struct NavigationBarView: View {
     /// hiding a button is only ever a layout choice, never a loss of function.
     @ViewBuilder
     private func overflowMenu(hiddenItems: [ToolbarButtonID]) -> some View {
-        Menu {
+        CherryMenuButton(accessibilityTitle: "More") {
             if !hiddenItems.isEmpty {
-                ForEach(hiddenItems, id: \.self) { item in
-                    if let isOn = toggleState(item) {
-                        // A hidden toggle has to say which way it is set, or
-                        // the user can't tell whether clicking turns Focus Mode
-                        // on or off — the state the toolbar button shows with a
-                        // filled symbol and an accent tint. `Toggle` in a menu
-                        // is the macOS-native form of that: a checkmark when on.
-                        // The binding ignores the incoming value and just runs
-                        // the same closure the button would have; every one of
-                        // these actions is itself a toggle.
-                        Toggle(isOn: Binding(get: { isOn }, set: { _ in invoke(item) })) {
-                            Label(item.title, systemImage: item.systemImage)
-                        }
-                    } else {
-                        Button {
-                            invoke(item)
-                        } label: {
-                            Label(item.title, systemImage: item.systemImage)
-                        }
-                    }
+                for item in hiddenItems {
+                    // A hidden toggle has to say which way it is set, or the
+                    // user can't tell whether clicking turns Focus Mode on or
+                    // off — the state the toolbar button shows with a filled
+                    // symbol and an accent tint. A checkmark when on is the
+                    // macOS-native form of that, and what `Toggle` in a menu
+                    // used to produce.
+                    CherryMenuItem.action(
+                        item.title,
+                        systemImage: item.systemImage,
+                        on: toggleState(item) ?? false
+                    ) { invoke(item) }
                 }
 
-                Divider()
+                CherryMenuItem.separator
             }
 
-            Button {
-                onToggleBookmarks?()
-            } label: {
-                Label("Bookmarks", systemImage: "book")
-            }
+            CherryMenuItem.action("Bookmarks", systemImage: "book") { onToggleBookmarks?() }
+            CherryMenuItem.action("History", systemImage: "clock") { onToggleHistory?() }
+            CherryMenuItem.action("Downloads", systemImage: "arrow.down.circle") { onDownloads?() }
 
-            Button {
-                onToggleHistory?()
-            } label: {
-                Label("History", systemImage: "clock")
-            }
-
-            Button {
-                onDownloads?()
-            } label: {
-                Label("Downloads", systemImage: "arrow.down.circle")
-            }
-
-            Divider()
+            CherryMenuItem.separator
 
             // No standalone "Ask This Page" entry: it is a catalogue item, so
             // it is on the bar when visible, in the hidden-items section above
             // when hidden, and absent when its own condition doesn't hold —
             // the same rule as every other customisable button. The fixed entry
             // rendered a second, identical one whenever the user hid it.
-            Button {
-                onPrint?()
-            } label: {
-                Label("Print Page", systemImage: "printer")
-            }
+            CherryMenuItem.action("Print Page", systemImage: "printer") { onPrint?() }
+            CherryMenuItem.action("Picture in Picture", systemImage: "pip.fill") { onPictureInPicture?() }
+            CherryMenuItem.action("Take Screenshot", systemImage: "camera") { onScreenshot?() }
+            CherryMenuItem.action("QR Code", systemImage: "qrcode") { onQRCode?() }
 
-            Button {
-                onPictureInPicture?()
-            } label: {
-                Label("Picture in Picture", systemImage: "pip.fill")
-            }
+            CherryMenuItem.separator
 
-            Button {
-                onScreenshot?()
-            } label: {
-                Label("Take Screenshot", systemImage: "camera")
-            }
-
-            Button {
-                onQRCode?()
-            } label: {
-                Label("QR Code", systemImage: "qrcode")
-            }
-
-            Divider()
-
-            Button {
-                onSettings?()
-            } label: {
-                Label("Settings", systemImage: "gear")
-            }
-        } label: {
+            CherryMenuItem.action("Settings", systemImage: "gear") { onSettings?() }
+        } label: { isOpen in
             Image(systemName: "ellipsis")
                 .font(.system(size: AppConstants.UI.toolbarIconSize, weight: .medium))
                 .frame(width: 28, height: 28)
                 .background(
                     RoundedRectangle(cornerRadius: 6)
-                        .fill(Color.clear)
+                        .fill(isOpen ? Color.primary.opacity(0.12) : Color.clear)
                 )
                 .contentShape(Rectangle())
         }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
         .frame(width: 28, height: 28)
+        .themedMenuTint(legibility?.foreground)
         .help("Menu")
     }
 }
 
 private extension View {
+    /// Puts the ⋯ menu's glyph in the tone the rest of the bar is drawn in.
+    ///
+    /// A borderless `Menu` does not take the bar's `.foregroundStyle` for its
+    /// label — it renders the glyph in the app tint, which is why the ⋯ came
+    /// out accent-blue on a themed bar while every button beside it was in
+    /// `toolbar_text`. `.tint` is the knob that does reach it.
+    ///
+    /// Applied ONLY when a theme is supplying the bar, and by an `if` rather
+    /// than by passing a fallback colour: unthemed, the ⋯ has always been the
+    /// app tint, and naming any colour here — even the one it currently
+    /// resolves to — would be this change reaching into the stock look. Not
+    /// applying the modifier at all cannot.
+    @ViewBuilder
+    func themedMenuTint(_ tone: Color?) -> some View {
+        if let tone {
+            tint(tone)
+        } else {
+            self
+        }
+    }
+
     /// The nav bar's "Customise Toolbar…" secondary-click menu.
     ///
     /// Applied to the bar's background and to each button cluster — and
@@ -660,10 +707,8 @@ private extension View {
     /// Keeping this modifier off the omnibox's ancestors is what guarantees
     /// the split, rather than whichever gesture happens to win.
     func customizeToolbarContextMenu(_ openSettings: @escaping () -> Void) -> some View {
-        contextMenu {
-            Button(action: openSettings) {
-                Label("Customise Toolbar…", systemImage: "slider.horizontal.3")
-            }
+        cherryContextMenu {
+            CherryMenuItem.action("Customise Toolbar…", systemImage: "slider.horizontal.3") { openSettings() }
         }
     }
 }

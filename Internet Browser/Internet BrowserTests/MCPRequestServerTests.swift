@@ -158,8 +158,14 @@ final class MCPRequestServerTests: XCTestCase {
 
         let result = body(of: response)["result"] as? [String: Any]
         let tools = result?["tools"] as? [[String: Any]] ?? []
-        XCTAssertEqual(tools.compactMap { $0["name"] as? String },
-                       ["list_tabs", "read_page", "search_history", "search_bookmarks", "open_tab"])
+        XCTAssertEqual(
+            tools.compactMap { $0["name"] as? String },
+            [
+                "list_tabs", "read_page", "read_elements",
+                "request_action_session", "click_element", "type_text",
+                "search_history", "search_bookmarks", "open_tab",
+            ]
+        )
     }
 
     func testToolsListSurvivesAcrossSeparateRequests() async {
@@ -167,7 +173,7 @@ final class MCPRequestServerTests: XCTestCase {
         _ = await server.serve(request(json: initializeBody))
         let response = await server.serve(request(json: #"{"jsonrpc":"2.0","id":9,"method":"tools/list"}"#))
         let tools = (body(of: response)["result"] as? [String: Any])?["tools"] as? [[String: Any]] ?? []
-        XCTAssertEqual(tools.count, 5)
+        XCTAssertEqual(tools.count, MCPToolRegistry.tools.count)
     }
 
     /// Every declared tool is dispatched to the invoker by name, and the

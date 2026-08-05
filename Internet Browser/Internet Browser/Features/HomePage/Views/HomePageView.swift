@@ -471,67 +471,70 @@ private struct ShortcutItemView: View {
     @State private var isHovering = false
 
     var body: some View {
-        Button(action: onClick) {
-            VStack(spacing: 10) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 15, style: .continuous)
-                        .fill(foreground.opacity(isHovering ? 0.13 : 0.09))
+        // The ⋯ menu is a SIBLING of the tile's button, not something inside its
+        // label. SwiftUI's `Menu` used to work nested in there because a menu
+        // intercepts the press before the enclosing button sees it; an ordinary
+        // button in a button's label never gets the click at all, so nesting it
+        // would silently turn "open this tile's menu" into "open this tile".
+        ZStack(alignment: .topTrailing) {
+            Button(action: onClick) {
+                VStack(spacing: 10) {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 15, style: .continuous)
+                            .fill(foreground.opacity(isHovering ? 0.13 : 0.09))
 
-                    if let favicon = shortcut.favicon {
-                        Image(nsImage: favicon)
-                            .resizable()
-                            .scaledToFit()
-                            .frame(width: 30, height: 30)
-                    } else {
-                        Text(shortcut.title.prefix(1).uppercased())
-                            .font(.system(size: 22, weight: .semibold, design: .rounded))
-                            .foregroundStyle(accent)
+                        if let favicon = shortcut.favicon {
+                            Image(nsImage: favicon)
+                                .resizable()
+                                .scaledToFit()
+                                .frame(width: 30, height: 30)
+                        } else {
+                            Text(shortcut.title.prefix(1).uppercased())
+                                .font(.system(size: 22, weight: .semibold, design: .rounded))
+                                .foregroundStyle(accent)
+                        }
                     }
-                }
-                .frame(width: 52, height: 52)
+                    .frame(width: 52, height: 52)
 
-                Text(shortcut.title)
-                    .font(.system(size: 12, weight: .medium))
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                    .frame(maxWidth: .infinity)
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 14)
-            .frame(maxWidth: .infinity, minHeight: 104)
-            .background(foreground.opacity(isHovering ? 0.09 : 0.045), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .stroke(foreground.opacity(isHovering ? 0.16 : 0.07))
-            }
-            .overlay(alignment: .topTrailing) {
-                Menu {
-                    Button("Edit", systemImage: "pencil", action: onEdit)
-                    Divider()
-                    Button("Remove", systemImage: "trash", role: .destructive, action: onDelete)
-                } label: {
-                    Image(systemName: "ellipsis")
-                        .font(.system(size: 12, weight: .bold))
-                        .frame(width: 27, height: 25)
-                        .background(.regularMaterial, in: Capsule())
+                    Text(shortcut.title)
+                        .font(.system(size: 12, weight: .medium))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .frame(maxWidth: .infinity)
                 }
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
-                .fixedSize()
-                .padding(7)
-                .opacity(isHovering ? 1 : 0)
-                .accessibilityLabel("Actions for \(shortcut.title)")
+                .padding(.horizontal, 10)
+                .padding(.vertical, 14)
+                .frame(maxWidth: .infinity, minHeight: 104)
+                .background(foreground.opacity(isHovering ? 0.09 : 0.045), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .stroke(foreground.opacity(isHovering ? 0.16 : 0.07))
+                }
             }
-            .scaleEffect(isHovering && !reduceMotion ? 1.025 : 1)
-            .shadow(color: .black.opacity(isHovering ? 0.1 : 0), radius: 12, y: 6)
+            .buttonStyle(.plain)
+
+            CherryMenuButton(accessibilityTitle: "Actions for \(shortcut.title)") {
+                CherryMenuItem.action("Edit", systemImage: "pencil") { onEdit() }
+                CherryMenuItem.separator
+                CherryMenuItem.action("Remove", systemImage: "trash", destructive: true) { onDelete() }
+            } label: { _ in
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 12, weight: .bold))
+                    .frame(width: 27, height: 25)
+                    .background(.regularMaterial, in: Capsule())
+            }
+            .fixedSize()
+            .padding(7)
+            .opacity(isHovering ? 1 : 0)
         }
-        .buttonStyle(.plain)
+        .scaleEffect(isHovering && !reduceMotion ? 1.025 : 1)
+        .shadow(color: .black.opacity(isHovering ? 0.1 : 0), radius: 12, y: 6)
         .onHover { isHovering = $0 }
         .animation(.easeOut(duration: 0.16), value: isHovering)
-        .contextMenu {
-            Button("Edit", action: onEdit)
-            Divider()
-            Button("Remove", role: .destructive, action: onDelete)
+        .cherryContextMenu {
+            CherryMenuItem.action("Edit") { onEdit() }
+            CherryMenuItem.separator
+            CherryMenuItem.action("Remove", destructive: true) { onDelete() }
         }
         .help(shortcut.url.host ?? shortcut.url.absoluteString)
         .accessibilityLabel(shortcut.title)

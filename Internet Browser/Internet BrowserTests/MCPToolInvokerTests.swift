@@ -48,7 +48,19 @@ final class MCPToolInvokerTests: XCTestCase {
             bookmarks: bookmarks ?? MCPRepositoryFixture.emptyBookmarks,
             openTabLimiter: limiter ?? MCPRateLimiter(limit: 5, window: 60)
         )
-        return MCPToolInvoker(bridge: { bridge })
+        // The action bridge is built over the SAME browser bridge, so
+        // `read_elements` sees exactly the windows this test built — and inherits
+        // the same privacy gate rather than a test-only copy of it.
+        //
+        // Its session store and audit log are this test's own: a shared store
+        // would let one test's grant leak into another's, and a shared log would
+        // write test rows into the developer's real action history.
+        let store = WebActionSessionStore()
+        let audit = WebActionAuditLog(directory: nil)
+        let actions = WebActionBridge(
+            browser: { bridge }, sessions: { store }, auditLog: { audit }
+        )
+        return MCPToolInvoker(bridge: { bridge }, actions: { actions })
     }
 
     private func window(tabs urls: [String]) -> BrowserViewModel {
@@ -140,6 +152,78 @@ final class MCPToolInvokerTests: XCTestCase {
         // as displayed. The hidden-DOM counterpart is in MCPBrowserBridgeTests.
         XCTAssertEqual(body["source_displayed"] as? Bool, true)
         XCTAssertEqual(body["text_source"] as? String, PageTextSource.renderedClone.rawValue)
+    }
+
+    func testReadElementsSuccessKeys() async throws {
+        let viewModel = window(tabs: ["https://controls.example"])
+        let tab = viewModel.tabManager.tabs[0]
+        let webView = tab.createWebView()
+        webView.frame = CGRect(x: 0, y: 0, width: 1_000, height: 800)
+        try await MCPPageFixture.load(
+            "<html><head><title>Controls</title></head><body>"
+                + "<a href=\"/home\">Home</a><button>SORREL-GO</button></body></html>",
+            into: webView
+        )
+
+        let result = await call(makeInvoker(windows: [viewModel]), "read_elements")
+        XCTAssertNil(result.isError)
+
+        let body = try object(of: result)
+        XCTAssertEqual(body["status"] as? String, "ok")
+        for key in ["tab_id", "window_id", "title", "url", "snapshot", "document", "scope",
+                    "elements", "listed", "offscreen_not_listed", "frames",
+                    "closed_shadow_hosts", "page_visible", "truncated", "note"] {
+            XCTAssertNotNil(body[key], "read_elements is missing \(key)")
+        }
+        XCTAssertEqual(body["scope"] as? String, "viewport")
+        XCTAssertEqual(body["listed"] as? Int, 2)
+        XCTAssertEqual(body["frames"] as? Int, 1)
+
+        // One string, one line per element — not an array of objects. That shape
+        // is a third of the tokens AND the thing that stops a page forging a row.
+        let elements = try XCTUnwrap(body["elements"] as? String)
+        XCTAssertEqual(elements.split(separator: "\n").count, 2, elements)
+        XCTAssertTrue(elements.contains("link \"Home\""), elements)
+        XCTAssertTrue(elements.contains("button \"SORREL-GO\""), elements)
+    }
+
+    func testReadElementsRefusalKeys() async throws {
+        let viewModel = BrowserViewModel(withDefaultTab: false)
+        viewModel.tabManager.newTab(switchTo: true)
+        let result = await call(makeInvoker(windows: [viewModel]), "read_elements")
+
+        XCTAssertNil(result.isError, "a refusal is a successful call, not an error")
+        let body = try object(of: result)
+        XCTAssertEqual(body["status"] as? String, "unreadable")
+        XCTAssertEqual(body["reason"] as? String, "home_page")
+
+        // Same reasons and the same shape as read_page's, because it is the same
+        // ladder — a client that handles one handles both.
+        XCTAssertTrue((body["detail"] as? String)?.contains("new-tab page") == true,
+                      body["detail"] as? String ?? "")
+        XCTAssertTrue((body["detail"] as? String)?.contains("list its elements") == true,
+                      "the refusal is worded for read_page rather than for this tool")
+    }
+
+    /// `scope` is one of two values that differ by an order of magnitude in what
+    /// they return. A typo must be an error, not a silent viewport.
+    func testAnUnknownScopeIsRejectedRatherThanDefaulted() async {
+        let result = await call(makeInvoker(), "read_elements", ["scope": .string("everything")])
+        XCTAssertEqual(result.isError, true)
+        XCTAssertTrue(text(of: result).contains("viewport"), text(of: result))
+        XCTAssertTrue(text(of: result).contains("page"), text(of: result))
+    }
+
+    func testScopePageIsAcceptedAndReportedBack() async throws {
+        let viewModel = window(tabs: ["https://controls.example"])
+        let tab = viewModel.tabManager.tabs[0]
+        let webView = tab.createWebView()
+        webView.frame = CGRect(x: 0, y: 0, width: 1_000, height: 800)
+        try await MCPPageFixture.load("<html><body><button>Only</button></body></html>", into: webView)
+
+        let result = await call(makeInvoker(windows: [viewModel]), "read_elements",
+                                ["scope": .string("page")])
+        XCTAssertEqual(try object(of: result)["scope"] as? String, "page")
     }
 
     func testSearchHistoryKeys() async throws {
@@ -248,9 +332,29 @@ final class MCPToolInvokerTests: XCTestCase {
         let arguments: [String: [String: Value]] = [
             "list_tabs": [:],
             "read_page": [:],
+            "read_elements": [:],
             "search_history": ["query": .string("x")],
             "search_bookmarks": ["query": .string("x")],
             "open_tab": ["url": .string("https://example.com")],
+            // A tab id nothing owns, so the wiring is proved by a `no_such_tab`
+            // refusal rather than by a consent sheet nobody is here to answer.
+            "request_action_session": [
+                "tab_id": .string(UUID().uuidString),
+                "purpose": .string("Check that this tool is wired up at all"),
+            ],
+            // No session, so these refuse — which is a successful call, and the
+            // wiring is what is under test.
+            "click_element": [
+                "element": .int(1),
+                "expect_name": .string("Show more"),
+                "document": .string("0123456789abcdef0123456789abcdef"),
+            ],
+            "type_text": [
+                "element": .int(1),
+                "expect_name": .string("Search"),
+                "document": .string("0123456789abcdef0123456789abcdef"),
+                "text": .string("hello"),
+            ],
         ]
         for tool in MCPToolRegistry.tools {
             let result = await call(invoker, tool.name, arguments[tool.name] ?? [:])

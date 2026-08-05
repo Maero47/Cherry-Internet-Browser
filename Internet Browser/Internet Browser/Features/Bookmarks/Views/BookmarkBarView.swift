@@ -134,22 +134,22 @@ struct BookmarkBarItemView: View {
                 AuxClickCatcher(onMiddleClick: onOpenInNewTab)
             }
         }
-        .contextMenu {
-            Button("Open") { action() }
+        .cherryContextMenu {
+            CherryMenuItem.action("Open") { action() }
             if let onOpenInNewTab {
-                Button("Open in New Tab") { onOpenInNewTab() }
+                CherryMenuItem.action("Open in New Tab") { onOpenInNewTab() }
             }
-            Divider()
-            Button("Copy Link") {
+            CherryMenuItem.separator
+            CherryMenuItem.action("Copy Link") {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(bookmark.url.absoluteString, forType: .string)
             }
-            Divider()
+            CherryMenuItem.separator
             if let onEdit {
-                Button("Edit…") { onEdit() }
+                CherryMenuItem.action("Edit…") { onEdit() }
             }
             if let onDelete {
-                Button("Delete", role: .destructive) { onDelete() }
+                CherryMenuItem.action("Delete", destructive: true) { onDelete() }
             }
         }
     }
@@ -220,13 +220,10 @@ struct EditBookmarkView: View {
                     Text("Folder")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
-                    Picker("", selection: $selectedFolder) {
-                        Text("None").tag(nil as String?)
-                        ForEach(repository.folders, id: \.self) { folder in
-                            Text(folder).tag(folder as String?)
-                        }
-                    }
-                    .labelsHidden()
+                    CherryPicker(
+                        selection: $selectedFolder,
+                        options: [.init(nil, "None")] + repository.folders.map { .init($0, $0) }
+                    )
                 }
 
                 Toggle("Show in Bookmark Bar", isOn: $isInBookmarkBar)

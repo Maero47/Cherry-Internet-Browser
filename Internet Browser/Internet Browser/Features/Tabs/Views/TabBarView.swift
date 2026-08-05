@@ -49,6 +49,19 @@ struct TabBarView: View {
     /// estimate that keeps tabs shrinking instead of pushing "+" off-screen.
     private let groupPillEstimatedWidth: CGFloat = 84
 
+    /// The horizontal run the tabs themselves can occupy: past the traffic
+    /// lights, up to the "+" button.
+    private func tabClusterSpan(in geometry: GeometryProxy, leading: CGFloat) -> CGRect {
+        let frame = geometry.frame(in: .global)
+        let trailing = newTabButtonWidth + 16
+        return CGRect(
+            x: frame.minX + leading,
+            y: frame.minY,
+            width: max(1, frame.width - leading - trailing),
+            height: frame.height
+        )
+    }
+
     private var pinnedTabs: [Tab] {
         tabManager.tabs.filter { tab in
             tab.isPinned && (tab.group == nil || !tab.group!.isCollapsed)
@@ -122,6 +135,13 @@ struct TabBarView: View {
                 WindowDragAreaView()
                     .frame(maxWidth: .infinity)
             }
+            // The tabs are one cluster of separate views, so they are told the
+            // span to measure across rather than each solving the artwork under
+            // itself — see `themeLegibilityPlate(decidedAcrossCluster:)`. It is
+            // the run the tabs can occupy, NOT the whole window: including the
+            // empty strip past the "+" would let artwork no tab ever sits on
+            // decide how dark every tab is.
+            .themeClusterSpan(tabClusterSpan(in: geometry, leading: leading))
         }
         .frame(height: AppConstants.UI.tabBarHeight)
         .background(tabBarBackground)
@@ -458,14 +478,14 @@ struct TabBarView: View {
         .onTapGesture {
             if !isRenaming { tabManager.toggleGroupCollapsed(group) }
         }
-        .contextMenu {
-            Button(group.isCollapsed ? "Expand Group" : "Collapse Group") {
+        .cherryContextMenu {
+            CherryMenuItem.action(group.isCollapsed ? "Expand Group" : "Collapse Group") {
                 tabManager.toggleGroupCollapsed(group)
             }
             if !group.isLocked {
-                Button("Rename Group") { beginRename(of: group) }
+                CherryMenuItem.action("Rename Group") { beginRename(of: group) }
             }
-            Button("Delete Group") {
+            CherryMenuItem.action("Delete Group") {
                 tabManager.deleteGroup(group)
             }
         }

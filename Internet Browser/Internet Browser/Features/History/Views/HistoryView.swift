@@ -91,18 +91,18 @@ struct HistoryView: View {
                                     action: { onItemClick(item) },
                                     onOpenInNewTab: onOpenInNewTab.map { open in { open(item) } }
                                 )
-                                .contextMenu {
-                                    Button("Open") { onItemClick(item) }
+                                .cherryContextMenu {
+                                    CherryMenuItem.action("Open") { onItemClick(item) }
                                     if let onOpenInNewTab {
-                                        Button("Open in New Tab") { onOpenInNewTab(item) }
+                                        CherryMenuItem.action("Open in New Tab") { onOpenInNewTab(item) }
                                     }
-                                    Divider()
-                                    Button("Copy Link") {
+                                    CherryMenuItem.separator
+                                    CherryMenuItem.action("Copy Link") {
                                         NSPasteboard.general.clearContents()
                                         NSPasteboard.general.setString(item.url.absoluteString, forType: .string)
                                     }
-                                    Divider()
-                                    Button("Delete") {
+                                    CherryMenuItem.separator
+                                    CherryMenuItem.action("Delete") {
                                         repository.deleteHistoryItem(item)
                                     }
                                 }

@@ -55,6 +55,26 @@ struct TabItemView: View {
         return isSelected ? manager.tabText : manager.tabStripText
     }
 
+    /// The tab strip is the SAME theme header backdrop the toolbar sits on —
+    /// one continuous canvas — so a title has exactly the toolbar's problem.
+    /// An UNSELECTED tab is the bad case: it paints nothing of its own, so its
+    /// title is a flat colour straight on the illustration.
+    ///
+    /// Deliberately the STRIP's tone and no overlays, the same for every tab
+    /// including the selected one. The tabs are a cluster whose members happen
+    /// to be separate views, and a tab that solved its own patch of artwork —
+    /// its own tone, its own fill, its own opacity — would end up looking
+    /// unlike the tab beside it for no reason the user can see. Paired with
+    /// `decidedAcrossCluster`, every tab in the row reaches the same answer.
+    ///
+    /// Nil for private tabs and when no theme is active, which leaves the stock
+    /// strip untouched.
+    private var titleLegibility: ThemeLegibility? {
+        let manager = FirefoxThemeManager.shared
+        guard !tab.isPrivate, manager.activeTheme != nil, manager.hasHeaderBackdrop else { return nil }
+        return ThemeLegibility(foreground: manager.tabStripText ?? Color.primary)
+    }
+
     var body: some View {
         HStack(spacing: 8) {
             // Favicon
@@ -141,7 +161,28 @@ struct TabItemView: View {
         .padding(.horizontal, tab.isPinned ? 8 : 12)
         .padding(.vertical, 6)
         .frame(width: fixedWidth ?? (tab.isPinned ? 40 : AppConstants.UI.maxTabWidth))
-        .background(tabBackground)
+        .background {
+            // The tab's own fill, over the strip's ONE measured surface. The
+            // surface is decided from the whole strip and is therefore the same
+            // colour and opacity on every tab; a tab is a surface in browser
+            // idiom, so a row of identical ones reads as tabs rather than as
+            // patches. The selected tab still looks different, because its own
+            // fill says it is selected — that is state, not backdrop.
+            tabBackground
+                .themeLegibilityPlate(
+                    titleLegibility,
+                    floor: ThemeContrast.textFloor,
+                    // A tab is its own shape in its own row, so it takes the
+                    // tab corner and its own height rather than the toolbar
+                    // row's; what it shares with the toolbar is the rule, not
+                    // the geometry.
+                    shape: RoundedRectangle(cornerRadius: AppConstants.UI.tabCornerRadius),
+                    height: nil,
+                    measureInset: 4,
+                    windowPoints: 60,
+                    decidedAcrossCluster: true
+                )
+        }
         .overlay(alignment: .bottom) {
             // Tab group color indicator
             if let group = tab.group {
@@ -204,7 +245,7 @@ struct TabItemView: View {
                     handleClick(from: value.startLocation, to: value.location)
                 }
         )
-        .contextMenu {
+        .cherryContextMenu {
             tabContextMenu
         }
         .onDisappear {
@@ -345,89 +386,45 @@ struct TabItemView: View {
         }
     }
 
-    @ViewBuilder
-    private var tabContextMenu: some View {
-        Button("New Tab") {
-            onNewTab?()
-        }
-        Divider()
-        Button("Reload") {
-            tab.reload()
-        }
-        Button("Duplicate Tab") {
-            onDuplicate?()
-        }
-        if tab.isPinned {
-            Button("Unpin Tab") {
-                onPin?()
-            }
-        } else {
-            Button("Pin Tab") {
-                onPin?()
-            }
-        }
-        Divider()
+    @CherryMenuBuilder
+    private var tabContextMenu: [CherryMenuItem] {
+        CherryMenuItem.action("New Tab") { onNewTab?() }
+        CherryMenuItem.separator
+        CherryMenuItem.action("Reload") { tab.reload() }
+        CherryMenuItem.action("Duplicate Tab") { onDuplicate?() }
+        CherryMenuItem.action(tab.isPinned ? "Unpin Tab" : "Pin Tab") { onPin?() }
+        CherryMenuItem.separator
 
-        // Tab group menu
-        Menu("Tab Group") {
-            Button("Add to New Group") {
-                onAddToNewGroup?()
-            }
+        CherryMenuItem.submenu("Tab Group") {
+            CherryMenuItem.action("Add to New Group") { onAddToNewGroup?() }
             if !availableGroups.isEmpty {
-                Divider()
-                ForEach(availableGroups) { group in
-                    Button {
-                        onAddToGroup?(group)
-                    } label: {
-                        HStack {
-                            Circle()
-                                .fill(group.swiftUIColor)
-                                .frame(width: 8, height: 8)
-                            Text(group.name)
-                        }
-                    }
+                CherryMenuItem.separator
+                for group in availableGroups {
+                    CherryMenuItem.action(group.name, swatch: group.swiftUIColor) { onAddToGroup?(group) }
                 }
             }
             if tab.group != nil {
-                Divider()
-                Button("Remove from Group") {
-                    onRemoveFromGroup?()
-                }
+                CherryMenuItem.separator
+                CherryMenuItem.action("Remove from Group") { onRemoveFromGroup?() }
             }
         }
 
-        Divider()
-        Button("Open in New Window") {
-            onDetachTab?()
-        }
+        CherryMenuItem.separator
+        CherryMenuItem.action("Open in New Window") { onDetachTab?() }
         if isSplitActive {
-            Button("Close Split View") {
-                onCloseSplitView?()
-            }
+            CherryMenuItem.action("Close Split View") { onCloseSplitView?() }
         } else {
-            Button("Open in Split View") {
-                onOpenInSplitView?()
-            }
+            CherryMenuItem.action("Open in Split View") { onOpenInSplitView?() }
         }
-        Divider()
+        CherryMenuItem.separator
         if tab.isMuted {
-            Button("Unmute Tab") {
-                tab.isMuted = false
-            }
+            CherryMenuItem.action("Unmute Tab") { tab.isMuted = false }
         } else {
-            Button("Mute Tab") {
-                tab.isMuted = true
-            }
+            CherryMenuItem.action("Mute Tab") { tab.isMuted = true }
         }
-        Divider()
-        Button("Close Tab") {
-            onClose()
-        }
-        Button("Close Other Tabs") {
-            onCloseOthers?()
-        }
-        Button("Close Tabs to the Right") {
-            onCloseRight?()
-        }
+        CherryMenuItem.separator
+        CherryMenuItem.action("Close Tab") { onClose() }
+        CherryMenuItem.action("Close Other Tabs") { onCloseOthers?() }
+        CherryMenuItem.action("Close Tabs to the Right") { onCloseRight?() }
     }
 }

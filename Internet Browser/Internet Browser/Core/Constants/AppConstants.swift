@@ -20,6 +20,42 @@ enum AppConstants {
         static let tabCornerRadius: CGFloat = 8
         static let toolbarIconSize: CGFloat = 16
     }
+
+    /// The one shape every surface in the navigation bar's row is drawn as.
+    ///
+    /// The omnibox pill and the themed cluster surfaces are siblings on one
+    /// line, and they only read as siblings if they share a height, a vertical
+    /// centre and a corner. They did not: the omnibox was 28pt tall with a
+    /// circular 8pt corner (its height falling out of its own vertical
+    /// padding), while the cluster surface was 34pt with a CONTINUOUS 8pt
+    /// corner (its height falling out of its own 3pt spread). Same centre,
+    /// different everything else — which is why the row read as two surfaces
+    /// that had been designed apart.
+    ///
+    /// So the numbers live here rather than in either view, and a surface that
+    /// joins the row later inherits them instead of inventing its own.
+    ///
+    /// The values are the OMNIBOX's, deliberately: the pill is the oldest and
+    /// most load-bearing surface in the row, it is the one the unthemed look
+    /// shows, and adopting its geometry means this alignment costs the stock
+    /// appearance nothing.
+    ///
+    /// The corner style is stated rather than left to default. It has to be:
+    /// writing `.circular` here — which is what the documented default for
+    /// `RoundedRectangle(cornerRadius:)` is — moved 120 pixels of the stock
+    /// omnibox's antialiased rim, so the bare initialiser this row has always
+    /// used is evidently resolving to `.continuous` on this SDK. Naming it
+    /// pins the row to the curve it actually draws instead of to whichever one
+    /// the default happens to mean.
+    enum ToolbarSurface {
+        static let height: CGFloat = 28
+        static let cornerRadius: CGFloat = 8
+        static let cornerStyle: RoundedCornerStyle = .continuous
+
+        static var shape: RoundedRectangle {
+            RoundedRectangle(cornerRadius: cornerRadius, style: cornerStyle)
+        }
+    }
 }
 
 enum SearchEngine: String, CaseIterable, Identifiable {

@@ -67,13 +67,10 @@ struct AddBookmarkView: View {
                         .foregroundStyle(.secondary)
 
                     HStack {
-                        Picker("", selection: $selectedFolder) {
-                            Text("None").tag(nil as String?)
-                            ForEach(repository.folders, id: \.self) { folder in
-                                Text(folder).tag(folder as String?)
-                            }
-                        }
-                        .labelsHidden()
+                        CherryPicker(
+                            selection: $selectedFolder,
+                            options: [.init(nil, "None")] + repository.folders.map { .init($0, $0) }
+                        )
 
                         Button(action: { showingNewFolder = true }) {
                             Image(systemName: "folder.badge.plus")

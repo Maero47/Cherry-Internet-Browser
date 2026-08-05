@@ -307,6 +307,15 @@ final class TabManager {
         return tab
     }
 
+    /// The ids of the tabs this window holds RIGHT NOW.
+    ///
+    /// For the things that must follow a tab between windows rather than trust a
+    /// window id frozen when they were created — the action-session bar and its
+    /// consent sheet. `removeTab` moves a tab out of one manager and
+    /// `addExistingTab` moves it into another, so this changes underneath them,
+    /// which is the point.
+    var tabIDs: Set<UUID> { Set(tabs.map(\.id)) }
+
     /// Add an existing tab (transferred from another window)
     func addExistingTab(_ tab: Tab, switchTo: Bool = true) {
         let previous = selectedTab
@@ -451,6 +460,12 @@ final class TabManager {
 
     func closeTab(_ tab: Tab) {
         guard let index = tabs.firstIndex(of: tab) else { return }
+
+        // A grant is for one tab, and this one is going. The bridge would refuse
+        // anyway — `resolveTab` cannot find a closed tab — but ending it here is
+        // what makes the session bar disappear with the tab instead of lingering
+        // in whatever pane inherits the selection.
+        WebActionSessionStore.shared.endSessions(forTab: tab.id, reason: .tabUnavailable)
 
         // Save to recently closed
         let closedTab = ClosedTab(url: tab.url, title: tab.title)

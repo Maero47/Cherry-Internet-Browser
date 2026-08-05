@@ -137,6 +137,19 @@ nonisolated enum MCPResultCaps {
     /// this size, and the payload says when it clamped.
     static let readPageTotalChars = 400_000
 
+    /// Hard ceiling on elements in one `read_elements` answer.
+    ///
+    /// The binding limit is almost always `payloadChars` rather than this — a
+    /// whole Wikipedia article's control list is 961 elements and ~36,000
+    /// characters, so the size budget bites first. This is here for the page that
+    /// is all short buttons, and it is paired with a `note` that says what was
+    /// cut and what to do instead, like every other cap in this file.
+    static let elementsListed = 500
+
+    /// The most text one `type_text` call will carry, matching the tool's input
+    /// schema. The SDK validates no schema at all, so this is what enforces it.
+    static let typedTextChars = 10_000
+
     /// `search_history`'s `limit`, matching the tool's input schema.
     static let historyLimitDefault = 25
     static let historyLimitMaximum = 100
@@ -323,6 +336,66 @@ nonisolated enum MCPUnreadableReason: String, Encodable, Sendable {
     case noContent = "no_content"
 }
 
+/// What a tool wanted the web view FOR.
+///
+/// The refusal ladder is one ladder — `MCPBrowserBridge.readableWebView(for:_:)`
+/// — because two would drift, and the `cherry://` trap this codebase has already
+/// been bitten by twice is exactly what drift reintroduces. But three of its
+/// rungs end in a sentence about what did not happen, and "nothing was read" is
+/// the wrong sentence for a tool that lists controls. So the CONDITIONS and
+/// their ORDER live in one place and only the closing clause varies, chosen from
+/// here rather than written twice.
+nonisolated enum MCPWebViewPurpose: Sendable {
+    case readingText
+    case listingElements
+
+    /// Why an internal page has nothing to offer this caller.
+    var internalPageClause: String {
+        switch self {
+        case .readingText: "which has no readable page text. Nothing was read."
+        case .listingElements: "which has no web page under it to list controls from. Nothing was listed."
+        }
+    }
+
+    /// The same, for the new-tab page, which also says what to do instead.
+    var homePageClause: String {
+        switch self {
+        case .readingText: "which has no article text. Use open_tab to load a page, then read it."
+        case .listingElements: "which has no page controls to list. Use open_tab to load a page, then list its elements."
+        }
+    }
+
+    /// The same, for WebKit's PDF viewer.
+    var pdfClause: String {
+        switch self {
+        case .readingText:
+            "Cherry's text extraction does not apply to WebKit's PDF viewer, so nothing was read."
+        case .listingElements:
+            "WebKit's PDF viewer is not a web page with controls Cherry can list, so nothing was listed."
+        }
+    }
+}
+
+/// One rung's answer: there is no live page here, and why.
+///
+/// Deliberately NOT a payload. The payload types below carry a tab id, a window
+/// id and a URL, which the caller knows and the ladder does not; the ladder's
+/// whole job is the reason and the sentence. `urlOverride` is the one exception,
+/// and it exists because of the trap: on a `cherry://` tab the tab's `displayURL`
+/// is the address of the page the user is NOT looking at, so that rung supplies
+/// the internal page's own address and the caller must use it.
+nonisolated struct MCPUnreadableRefusal: Error, Sendable {
+    let reason: MCPUnreadableReason
+    let detail: String
+    let urlOverride: String?
+
+    init(_ reason: MCPUnreadableReason, _ detail: String, urlOverride: String? = nil) {
+        self.reason = reason
+        self.detail = detail
+        self.urlOverride = urlOverride
+    }
+}
+
 nonisolated struct MCPUnreadablePayload: Encodable, Sendable {
     let status = "unreadable"
     let reason: MCPUnreadableReason
@@ -432,6 +505,332 @@ nonisolated enum MCPReadPageOutcome: Encodable, Sendable {
         switch self {
         case .page(let payload): payload.text
         case .unreadable: nil
+        }
+    }
+}
+
+// MARK: - read_elements
+
+/// One `read_elements` answer.
+///
+/// The projection of a `WebActionSnapshot` — which is the consumer-agnostic
+/// value the action layer actually produces — into MCP's wire shape. The split
+/// is the seam local agent mode attaches at: `WebActionBridge` answers in Swift
+/// values, and each consumer decides how to say them.
+nonisolated struct MCPReadElementsPayload: Encodable, Sendable {
+    let status = "ok"
+    let tabID: String
+    let windowID: String
+    let url: String
+    let title: String
+
+    /// Which snapshot this is, counted within `document`.
+    let snapshot: Int
+
+    /// An opaque name for the document these element numbers were minted in.
+    ///
+    /// Not a counter, and deliberately not one. The counters live in the page's
+    /// isolated world and a navigation destroys it, so a reload — which Cherry
+    /// performs on every tab when ad blocking is toggled — restarted them and
+    /// made two listings of the same URL indistinguishable while their numbers
+    /// meant different elements. A model should treat a change here as every
+    /// number becoming invalid at once.
+    let document: String
+
+    let scope: String
+
+    /// One pre-rendered string, newline separated, NOT an array of objects.
+    ///
+    /// Two reasons, and the second is the important one. A model reads
+    /// `[9] searchbox "Search Amazon"` more reliably than the equivalent JSON and
+    /// at roughly a third the tokens. And a closed one-line-per-element format is
+    /// what makes a page unable to forge a ROW: see
+    /// `WebActionScripts.sanitiseName`, which is the half of that property that
+    /// can actually be tested.
+    let elements: String
+
+    let listed: Int
+
+    /// Laid out, but not on screen, and so not listed. `scope: "page"` returns
+    /// them.
+    let offscreenNotListed: Int
+
+    /// Including the main frame. v1 lists the main frame only, so anything above
+    /// 1 means there are controls this list does not contain — said out loud,
+    /// because the alternative is a model inferring an empty page.
+    let frames: Int
+
+    /// Elements that look like they hide a closed shadow root. Counted, not
+    /// shown, because no browser can show them.
+    let closedShadowHosts: Int
+
+    /// False when the tab has no viewport at all, in which case `scope` fell back
+    /// to `"page"`.
+    let pageVisible: Bool
+
+    let truncated: Bool
+    let note: String?
+
+    init(_ snapshot: WebActionSnapshot) {
+        self.tabID = snapshot.tabID
+        self.windowID = snapshot.windowID
+        self.url = snapshot.url
+        self.title = snapshot.title
+        self.snapshot = snapshot.generation
+        self.document = snapshot.document
+        self.scope = snapshot.scope.rawValue
+        self.elements = snapshot.elements.map(\.listingLine).joined(separator: "\n")
+        self.listed = snapshot.elements.count
+        self.offscreenNotListed = snapshot.offscreenNotListed
+        self.frames = snapshot.frames
+        self.closedShadowHosts = snapshot.closedShadowHosts
+        self.pageVisible = snapshot.pageVisible
+        self.truncated = snapshot.truncated
+        self.note = snapshot.note
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case status, url, title, snapshot, document, scope, elements, listed, frames, truncated, note
+        case tabID = "tab_id"
+        case windowID = "window_id"
+        case offscreenNotListed = "offscreen_not_listed"
+        case closedShadowHosts = "closed_shadow_hosts"
+        case pageVisible = "page_visible"
+    }
+
+    /// Hand-written only so `note` encodes as an explicit `null` rather than
+    /// vanishing — "nothing was cut" and "this key is absent" are not the same
+    /// statement to a model.
+    func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(status, forKey: .status)
+        try container.encode(tabID, forKey: .tabID)
+        try container.encode(windowID, forKey: .windowID)
+        try container.encode(url, forKey: .url)
+        try container.encode(title, forKey: .title)
+        try container.encode(snapshot, forKey: .snapshot)
+        try container.encode(document, forKey: .document)
+        try container.encode(scope, forKey: .scope)
+        try container.encode(elements, forKey: .elements)
+        try container.encode(listed, forKey: .listed)
+        try container.encode(offscreenNotListed, forKey: .offscreenNotListed)
+        try container.encode(frames, forKey: .frames)
+        try container.encode(closedShadowHosts, forKey: .closedShadowHosts)
+        try container.encode(pageVisible, forKey: .pageVisible)
+        try container.encode(truncated, forKey: .truncated)
+        try container.encode(note, forKey: .note)
+    }
+}
+
+/// The encodable face of `WebActionSnapshotOutcome`.
+///
+/// `.failed` is deliberately absent: a failure is not a payload. It leaves
+/// through `MCPPayloadEncoding.failure` with `isError: true`, which is the
+/// distinction `MCPToolInvoker`'s header describes and the reason a refusal here
+/// and a breakage here do not look alike to a model.
+nonisolated enum MCPReadElementsOutcome: Encodable, Sendable {
+    case elements(MCPReadElementsPayload)
+    case unreadable(MCPUnreadablePayload)
+
+    func encode(to encoder: any Encoder) throws {
+        switch self {
+        case .elements(let payload): try payload.encode(to: encoder)
+        case .unreadable(let payload): try payload.encode(to: encoder)
+        }
+    }
+
+    var reason: MCPUnreadableReason? {
+        switch self {
+        case .elements: nil
+        case .unreadable(let payload): payload.reason
+        }
+    }
+}
+
+// MARK: - click_element / type_text / request_action_session
+
+/// One acted-on element, as a client reads it.
+///
+/// The projection of `WebActionActed`, which is the consumer-agnostic value the
+/// action layer produces. Same split as `read_elements`, same reason: the bridge
+/// answers in Swift values and each consumer decides how to say them.
+nonisolated struct MCPActionResultPayload: Encodable, Sendable {
+    let status = "acted"
+    let action: String
+    let outcome: String
+    let tabID: String
+    let windowID: String
+
+    /// True when every element number the caller holds is now meaningless. Said
+    /// out loud rather than left to be inferred from `outcome`, because "the page
+    /// navigated" and "your numbers are void" are the same fact and a model that
+    /// reads only one of them keeps using the numbers.
+    let snapshotInvalidated: Bool
+
+    /// The document these numbers belonged to. After a navigation this names the
+    /// page load that has GONE, which is why the flag above sits beside it.
+    let document: String
+
+    let element: Int
+    let role: String
+    let name: String
+
+    let urlBefore: String
+    let urlAfter: String
+    let mutations: Int
+    let waitedMS: Int
+    let obscuredBy: String?
+
+    let valueAfter: String?
+    let valueTruncated: Bool?
+    let frameworkObserved: Bool?
+    let submitted: Bool?
+
+    let note: String?
+
+    init(_ acted: WebActionActed) {
+        self.action = acted.action
+        self.outcome = acted.outcome.rawValue
+        self.tabID = acted.tabID
+        self.windowID = acted.windowID
+        self.snapshotInvalidated = acted.snapshotInvalidated
+        self.document = acted.document
+        self.element = acted.element
+        self.role = acted.role
+        self.name = acted.name
+        self.urlBefore = acted.urlBefore
+        self.urlAfter = acted.urlAfter
+        self.mutations = acted.mutations
+        self.waitedMS = acted.waitedMS
+        self.obscuredBy = acted.obscuredBy
+        self.valueAfter = acted.valueAfter
+        self.valueTruncated = acted.valueTruncated
+        self.frameworkObserved = acted.frameworkObserved
+        self.submitted = acted.submitted
+        self.note = acted.note
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case status, action, outcome, document, element, role, name, mutations, submitted, note
+        case tabID = "tab_id"
+        case windowID = "window_id"
+        case snapshotInvalidated = "snapshot_invalidated"
+        case urlBefore = "url_before"
+        case urlAfter = "url_after"
+        case waitedMS = "waited_ms"
+        case obscuredBy = "obscured_by"
+        case valueAfter = "value_after"
+        case valueTruncated = "value_truncated"
+        case frameworkObserved = "framework_observed"
+    }
+
+    /// Hand-written so `obscured_by` and `note` encode as explicit nulls. "The
+    /// element was not covered" and "this key is absent" are not the same
+    /// statement to a model.
+    func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(status, forKey: .status)
+        try container.encode(action, forKey: .action)
+        try container.encode(outcome, forKey: .outcome)
+        try container.encode(tabID, forKey: .tabID)
+        try container.encode(windowID, forKey: .windowID)
+        try container.encode(snapshotInvalidated, forKey: .snapshotInvalidated)
+        try container.encode(document, forKey: .document)
+        try container.encode(element, forKey: .element)
+        try container.encode(role, forKey: .role)
+        try container.encode(name, forKey: .name)
+        try container.encode(urlBefore, forKey: .urlBefore)
+        try container.encode(urlAfter, forKey: .urlAfter)
+        try container.encode(mutations, forKey: .mutations)
+        try container.encode(waitedMS, forKey: .waitedMS)
+        try container.encode(obscuredBy, forKey: .obscuredBy)
+        try container.encodeIfPresent(valueAfter, forKey: .valueAfter)
+        try container.encodeIfPresent(valueTruncated, forKey: .valueTruncated)
+        try container.encodeIfPresent(frameworkObserved, forKey: .frameworkObserved)
+        try container.encodeIfPresent(submitted, forKey: .submitted)
+        try container.encode(note, forKey: .note)
+    }
+}
+
+/// One refusal. `isError: false` on the way out — the call was well-formed and
+/// the answer is "no", so a model should pick a different move rather than retry.
+nonisolated struct MCPActionRefusalPayload: Encodable, Sendable {
+    let status = "refused"
+    let reason: WebActionRefusalReason
+    let detail: String
+    let element: Int?
+    let name: String?
+
+    /// The document the tab is ACTUALLY on, when the caller's was stale. Given so
+    /// a model can tell "I am one listing behind" from "I invented a number"
+    /// without a second round trip.
+    let document: String?
+
+    init(_ refusal: WebActionRefusal) {
+        self.reason = refusal.reason
+        self.detail = refusal.detail
+        self.element = refusal.element
+        self.name = refusal.name
+        self.document = refusal.document
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case status, reason, detail, element, name, document
+    }
+}
+
+nonisolated enum MCPActionOutcome: Encodable, Sendable {
+    case acted(MCPActionResultPayload)
+    case refused(MCPActionRefusalPayload)
+
+    func encode(to encoder: any Encoder) throws {
+        switch self {
+        case .acted(let payload): try payload.encode(to: encoder)
+        case .refused(let payload): try payload.encode(to: encoder)
+        }
+    }
+}
+
+nonisolated struct MCPActionSessionPayload: Encodable, Sendable {
+    let status = "granted"
+    let sessionID: String
+    let tabID: String
+    let windowID: String
+    let origin: String
+    let purpose: String
+    let expiresAt: Date
+    let grantedMinutes: Int
+    let note: String
+
+    init(_ grant: WebActionSessionGrant) {
+        self.sessionID = grant.sessionID
+        self.tabID = grant.tabID
+        self.windowID = grant.windowID
+        self.origin = grant.origin
+        self.purpose = grant.purpose
+        self.expiresAt = grant.expiresAt
+        self.grantedMinutes = grant.grantedMinutes
+        self.note = grant.note
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case status, origin, purpose, note
+        case sessionID = "session_id"
+        case tabID = "tab_id"
+        case windowID = "window_id"
+        case expiresAt = "expires_at"
+        case grantedMinutes = "granted_minutes"
+    }
+}
+
+nonisolated enum MCPActionSessionOutcome: Encodable, Sendable {
+    case granted(MCPActionSessionPayload)
+    case refused(MCPActionRefusalPayload)
+
+    func encode(to encoder: any Encoder) throws {
+        switch self {
+        case .granted(let payload): try payload.encode(to: encoder)
+        case .refused(let payload): try payload.encode(to: encoder)
         }
     }
 }

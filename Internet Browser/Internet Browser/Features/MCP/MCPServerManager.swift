@@ -298,6 +298,11 @@ final class MCPServerManager {
 
     /// Close the socket. Idempotent; safe at termination.
     func stop() {
+        // Switching the server off ends every action grant with it. A permission
+        // the user gave to a program they have just disconnected is a permission
+        // they no longer mean to have given, and leaving it standing would let
+        // it come back live the moment the server was switched on again.
+        WebActionSessionStore.shared.endAll(reason: .serverStopped)
         listener?.stop()
         listener = nil
         activeRequestCount = 0

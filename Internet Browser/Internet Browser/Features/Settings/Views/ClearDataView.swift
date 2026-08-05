@@ -36,12 +36,12 @@ struct ClearDataView: View {
                 .font(.headline)
 
             Form {
-                Picker("Time Range", selection: $timeRange) {
-                    ForEach(TimeRange.allCases) { range in
-                        Text(range.rawValue).tag(range)
-                    }
+                LabeledContent("Time Range") {
+                    CherryPicker(
+                        selection: $timeRange,
+                        options: TimeRange.allCases.map { .init($0, $0.rawValue) }
+                    )
                 }
-                .pickerStyle(.menu)
 
                 Toggle("Browsing History", isOn: $clearHistory)
                 Toggle("Cookies & Site Data", isOn: $clearCookies)

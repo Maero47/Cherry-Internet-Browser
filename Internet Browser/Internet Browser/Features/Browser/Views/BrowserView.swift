@@ -12,6 +12,10 @@ struct BrowserView: View {
     /// so the drop indicator bar can be shown/hidden during the drag.
     @State private var dragHoverEdge: Edge? = nil
 
+    /// The action-permission authority, observed so this window raises the
+    /// consent sheet the moment a request for one of its tabs arrives.
+    @State private var actionSessions = WebActionSessionStore.shared
+
     init(initialURL: URL? = nil, isPrivate: Bool = false) {
         let vm = BrowserViewModel()
         vm.isPrivateMode = isPrivate
@@ -48,6 +52,30 @@ struct BrowserView: View {
                         viewModel.addBookmark(title: title, folder: folder, isInBookmarkBar: isInBar)
                     }
                 }
+            }
+            // The action-session prompt, on the tab's OWN window rather than as a
+            // global alert: the sheet names a tab, and a permission dialog that
+            // appears over a different window than the one it is about is a
+            // dialog the user answers about the wrong thing.
+            //
+            // Dismissing it any other way — Escape, clicking away — is a decline.
+            // The safe answer has to be the reflexive one.
+            .sheet(item: Binding(
+                get: { actionSessions.pendingRequest(forTabIn: viewModel.tabManager.tabIDs) },
+                set: { newValue in
+                    guard newValue == nil,
+                          let request = actionSessions.pendingRequest(
+                              forTabIn: viewModel.tabManager.tabIDs
+                          )
+                    else { return }
+                    actionSessions.decline(request.id)
+                }
+            )) { request in
+                WebActionConsentSheet(
+                    request: request,
+                    onAllow: { actionSessions.allow(request.id) },
+                    onDecline: { actionSessions.decline(request.id) }
+                )
             }
             .alert(
                 viewModel.isPrivateMode ? "Exit Incognito Mode?" : "Enter Incognito Mode?",
@@ -333,6 +361,17 @@ struct BrowserView: View {
                             .frame(height: 0.5)
                     }
                 }
+
+                // "Something outside Cherry is clicking in this window right
+                // now", and the one click that stops it.
+                //
+                // Window level, above the panes, and OUTSIDE the
+                // `!isVideoFullscreen` guards the rest of the chrome sits behind.
+                // A grant survives tab switching, so a bar that only existed
+                // while the acted-on tab was displayed left an agent working in
+                // one tab with no sign anywhere while the user read another —
+                // and no way to end it without guessing which tab to switch to.
+                WebActionSessionBar(viewModel: viewModel)
 
                 if viewModel.tabManager.isSplitActive,
                    let primaryTab = viewModel.tabManager.selectedTab,

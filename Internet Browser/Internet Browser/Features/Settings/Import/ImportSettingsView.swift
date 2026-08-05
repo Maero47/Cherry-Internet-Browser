@@ -130,14 +130,10 @@ struct ImportSettingsView: View {
         ) {
             if let source = selectedSource, source.profiles.count > 1 {
                 SettingsLabeledRow(title: "Profile") {
-                    Picker("", selection: profileBinding) {
-                        ForEach(source.profiles) { profile in
-                            Text(profile.displayName).tag(profile.id)
-                        }
-                    }
-                    .labelsHidden()
-                    .pickerStyle(.menu)
-                    .fixedSize()
+                    CherryPicker(
+                        selection: profileBinding,
+                        options: source.profiles.map { .init($0.id, $0.displayName) }
+                    )
                     .disabled(service.isImporting)
                 }
                 Divider()
