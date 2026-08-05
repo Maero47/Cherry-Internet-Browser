@@ -6,10 +6,14 @@
 import SwiftUI
 
 /// Renders an internal `cherry://` page full-screen in a tab's content slot
-/// (shown instead of the WKWebView while `tab.internalPage` is set). Reuses
-/// the existing settings/sidebar views; history, bookmarks and downloads are
-/// laid out as a centered readable column instead of a 300pt sidebar, keeping
-/// all their existing actions (open/delete/search/clear/context menus).
+/// (shown instead of the WKWebView while `tab.internalPage` is set).
+///
+/// History, bookmarks and downloads are handed the whole tab and told they are
+/// a page. They used to be handed a `maxWidth: 760` box in the middle of a
+/// 1500pt window, which is where the empty half of those screens came from:
+/// a 300pt sidebar view widened to 760 knew nothing to do with the extra room,
+/// and nothing at all to do with the extra height. `LibraryLayout` reads the
+/// width it is actually given and spends it on a scope rail and more columns.
 struct CherryPageView: View {
     let page: CherryPage
     @Bindable var viewModel: BrowserViewModel
@@ -23,47 +27,30 @@ struct CherryPageView: View {
             case .extensions:
                 ExtensionsPageView()
             case .history:
-                fullPageColumn {
-                    HistoryView(
-                        repository: viewModel.historyRepository,
-                        onItemClick: { viewModel.openHistoryItem($0, in: tab) },
-                        onOpenInNewTab: { viewModel.openHistoryItemInNewTab($0) },
-                        onClose: { viewModel.goBack(for: tab) }
-                    )
-                }
+                HistoryView(
+                    repository: viewModel.historyRepository,
+                    onItemClick: { viewModel.openHistoryItem($0, in: tab) },
+                    onOpenInNewTab: { viewModel.openHistoryItemInNewTab($0) },
+                    presentation: .page
+                )
             case .bookmarks:
-                fullPageColumn {
-                    BookmarksSidebarView(
-                        repository: viewModel.bookmarkRepository,
-                        onBookmarkClick: { viewModel.openBookmark($0, in: tab) },
-                        onOpenInNewTab: { viewModel.openBookmarkInNewTab($0) },
-                        onClose: { viewModel.goBack(for: tab) },
-                        isPrivateMode: viewModel.isPrivateMode
-                    )
-                }
+                BookmarksSidebarView(
+                    repository: viewModel.bookmarkRepository,
+                    onBookmarkClick: { viewModel.openBookmark($0, in: tab) },
+                    onOpenInNewTab: { viewModel.openBookmarkInNewTab($0) },
+                    presentation: .page,
+                    isPrivateMode: viewModel.isPrivateMode
+                )
             case .downloads:
-                fullPageColumn {
-                    DownloadsSidebarView(
-                        repository: viewModel.downloadRepository,
-                        downloadManager: viewModel.downloadManager,
-                        onClose: { viewModel.goBack(for: tab) },
-                        isPrivateMode: viewModel.isPrivateMode
-                    )
-                }
+                DownloadsSidebarView(
+                    repository: viewModel.downloadRepository,
+                    downloadManager: viewModel.downloadManager,
+                    presentation: .page,
+                    isPrivateMode: viewModel.isPrivateMode
+                )
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-
-    /// Centers a reused sidebar view as a full-page column. Its close (X)
-    /// button acts as Back — the same "return to the site" step the nav
-    /// bar's Back button performs while an internal page is open.
-    @ViewBuilder
-    private func fullPageColumn(@ViewBuilder content: () -> some View) -> some View {
-        content()
-            .frame(maxWidth: 760)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(Color(nsColor: .windowBackgroundColor))
     }
 }
 

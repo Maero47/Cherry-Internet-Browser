@@ -529,6 +529,7 @@ struct BrowserView: View {
                 repository: viewModel.historyRepository,
                 onItemClick: { viewModel.openHistoryItem($0) },
                 onOpenInNewTab: { viewModel.openHistoryItemInNewTab($0) },
+                presentation: .sidebar,
                 onClose: { viewModel.closeSidebar() }
             )
             .frame(minWidth: 300, maxWidth: 300)
@@ -537,6 +538,7 @@ struct BrowserView: View {
                 repository: viewModel.bookmarkRepository,
                 onBookmarkClick: { viewModel.openBookmark($0) },
                 onOpenInNewTab: { viewModel.openBookmarkInNewTab($0) },
+                presentation: .sidebar,
                 onClose: { viewModel.closeSidebar() },
                 isPrivateMode: viewModel.isPrivateMode
             )
@@ -545,6 +547,7 @@ struct BrowserView: View {
             DownloadsSidebarView(
                 repository: viewModel.downloadRepository,
                 downloadManager: viewModel.downloadManager,
+                presentation: .sidebar,
                 onClose: { viewModel.closeSidebar() },
                 isPrivateMode: viewModel.isPrivateMode
             )

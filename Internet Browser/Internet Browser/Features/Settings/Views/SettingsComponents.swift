@@ -315,7 +315,14 @@ struct HomepageSwatch: View {
             Image(assetName)
                 .resizable()
                 .scaledToFill()
-                .overlay { HomepageWallpaperScrim(startRadius: 8, endRadius: 72) }
+                // The tile previews the whole page, so it takes the flat veil
+                // at full strength and only a fraction of the centre pool.
+                // At tile scale the pool covers everything, and showing the
+                // page's centre across the entire swatch would make the
+                // preview far heavier than the page it stands for.
+                .overlay {
+                    HomepageWallpaperScrim(startRadius: 8, endRadius: 72, centreStrength: 0.45)
+                }
         case .flat(let color):
             color
         }

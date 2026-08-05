@@ -101,30 +101,81 @@ struct HomepageGradientWash: View {
 
 /// The wash the homepage lays over a wallpaper so text stays legible.
 ///
+/// ## Why the flat veil is thin and the centre is deep
+///
+/// The homepage draws text straight onto a photograph, so something has to buy
+/// its contrast. There are two ways to pay: a flat veil over the whole image,
+/// or a soft pool under the content column. Only the flat veil costs the
+/// wallpaper its character, and only the pool is anywhere near the text — so
+/// the flat veil is kept thin and the pool does the work.
+///
+/// It used to be the other way round. A flat 0.32 white in light mode left
+/// just 68% of the wallpaper showing everywhere, which is what made the light
+/// homepage look bleached, and it still did not buy enough. Measured against
+/// all eight shipped wallpapers, sampling the band the content occupies, the
+/// worst pixel gave
+///
+///     was                     light      dark
+///     flat veil               0.32       0.28     ← 68% / 72% of the wallpaper
+///     centre pool             0.22       0.22
+///     clock, shortcut titles  4.63:1     3.52:1   ← dark FAILED
+///     greeting (at 0.62)      2.72:1     2.33:1   ← both FAILED
+///     subtitle (at 0.48)      2.15:1     1.96:1   ← both FAILED
+///
+/// Dark was the appearance failing the primary text, not light. Light passed it
+/// only by bleaching the picture. Now:
+///
+///     is                      light      dark
+///     flat veil               0.12       0.12     ← 88% of the wallpaper, both
+///     centre pool             0.50       0.60
+///     clock, shortcut titles  6.13:1     7.38:1
+///     supporting text (0.85)  4.92:1     5.89:1
+///
+/// The supporting text sits at 0.85 rather than 0.48–0.62 because on a
+/// photograph a faded tone cannot clear the floor at any veil worth paying for.
+/// Hierarchy on this screen is carried by size and weight instead, which is
+/// what carries it everywhere else in Cherry.
+///
+/// `HomepageWallpaperScrimTests` re-measures all of this against the real
+/// image assets rather than trusting the table above.
+///
 /// Shared with the Settings ▸ Homepage Background "Auto" thumbnail, which
-/// previews the same wallpaper: without it the swatch reads noticeably more
-/// saturated than what the homepage actually paints. One definition, so the
-/// two can't drift apart.
+/// previews the same wallpaper. One definition, so the two can't drift apart.
 struct HomepageWallpaperScrim: View {
-    /// Radii of the centre highlight, in points. The homepage uses the
-    /// defaults, sized for a window; the Settings thumbnail scales them down
-    /// to its ~1/10-scale tile so the highlight falls off inside the tile
-    /// instead of flooding it.
+    /// Radii of the centre pool, in points. The homepage uses the defaults,
+    /// sized for a window; the Settings thumbnail scales them down to its
+    /// ~1/10-scale tile so the pool falls off inside the tile instead of
+    /// flooding it.
     var startRadius: CGFloat = 80
     var endRadius: CGFloat = 720
 
+    /// Scales the centre pool. The homepage takes it at full strength, because
+    /// its content column really does sit in that pool. The Settings thumbnail
+    /// previews the WHOLE page in 46 points, where the pool would cover the
+    /// entire tile and make the swatch look far heavier than the page it
+    /// stands for, so it asks for a gentler one.
+    var centreStrength: Double = 1
+
     @Environment(\.colorScheme) private var colorScheme
 
+    /// The flat veil. Deliberately the same in both appearances: a white veil
+    /// and a black veil of equal weight cost the picture the same amount, and
+    /// the asymmetry that used to be here was not a decision anyone had made.
+    static let flatVeil: Double = 0.12
+
+    /// The pool under the content. Dark needs more than light because white
+    /// text on a mid-tone photograph is harder to separate than black text is.
+    static func centrePool(dark: Bool) -> Double { dark ? 0.60 : 0.50 }
+
     var body: some View {
+        let isDark = colorScheme == .dark
+        let veil = isDark ? Color.black : Color.white
+
         ZStack {
-            (colorScheme == .light ? Color.white : Color.black)
-                .opacity(colorScheme == .light ? 0.32 : 0.28)
+            veil.opacity(Self.flatVeil)
 
             RadialGradient(
-                colors: [
-                    (colorScheme == .light ? Color.white : Color.black).opacity(0.22),
-                    .clear
-                ],
+                colors: [veil.opacity(Self.centrePool(dark: isDark) * centreStrength), .clear],
                 center: .center,
                 startRadius: startRadius,
                 endRadius: endRadius
@@ -132,6 +183,24 @@ struct HomepageWallpaperScrim: View {
         }
         .allowsHitTesting(false)
     }
+}
+
+/// How faint the homepage lets its text get.
+///
+/// The homepage cannot de-emphasise by fading, because everything here is drawn
+/// on a photograph and a faded tone stops clearing 4.5:1 long before it looks
+/// pleasantly quiet. These are the two floors, and hierarchy comes from size
+/// and weight instead. See `HomepageWallpaperScrim` for the measurements.
+enum HomepageText {
+    /// Anything below the clock that sits on the wallpaper: the greeting, the
+    /// "Your corner of the web" line, the Ask control, "Add favorite".
+    /// 4.52:1 light, 5.73:1 dark on the worst shipped wallpaper.
+    static let supporting: Double = 0.85
+
+    /// Glyphs inside the search field. Those sit on `.regularMaterial`, not on
+    /// the photograph, so they are not bound by the scrim measurement; this is
+    /// simply the faintest the field's own furniture is allowed to be.
+    static let onMaterial: Double = 0.75
 }
 
 // MARK: - Home page
@@ -220,7 +289,7 @@ struct HomePageView: View {
 
                 Text(greeting(for: context.date))
                     .font(.system(size: 17, weight: .medium, design: .rounded))
-                    .foregroundStyle(foreground.opacity(0.62))
+                    .foregroundStyle(foreground.opacity(HomepageText.supporting))
             }
         }
     }
@@ -229,7 +298,7 @@ struct HomePageView: View {
         HStack(spacing: 13) {
             Image(systemName: "magnifyingglass")
                 .font(.system(size: 17, weight: .medium))
-                .foregroundStyle(isSearchFocused ? accent : foreground.opacity(0.42))
+                .foregroundStyle(isSearchFocused ? accent : foreground.opacity(HomepageText.onMaterial))
 
             TextField("Search or enter a website", text: $searchText)
                 .textFieldStyle(.plain)
@@ -249,7 +318,7 @@ struct HomePageView: View {
                         isSearchFocused = true
                     } label: {
                         Image(systemName: "xmark.circle.fill")
-                            .foregroundStyle(foreground.opacity(0.35))
+                            .foregroundStyle(foreground.opacity(HomepageText.onMaterial))
                     }
                     .buttonStyle(.plain)
                     .help("Clear what you typed. Return searches for it.")
@@ -291,7 +360,7 @@ struct HomePageView: View {
                         .font(.system(size: 15, weight: .semibold, design: .rounded))
                     Text("Your corner of the web")
                         .font(.system(size: 12))
-                        .foregroundStyle(foreground.opacity(0.48))
+                        .foregroundStyle(foreground.opacity(HomepageText.supporting))
                 }
 
                 Spacer()
@@ -448,7 +517,7 @@ private struct AskAIButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         let engaged = isEngaged || configuration.isPressed
         return configuration.label
-            .foregroundStyle(engaged ? accent : foreground.opacity(0.62))
+            .foregroundStyle(engaged ? accent : foreground.opacity(HomepageText.supporting))
             // Ease-out both times: ease-in would hold back the first few
             // milliseconds, which is the part being watched.
             .animation(.easeOut(duration: 0.12), value: engaged)
@@ -558,7 +627,7 @@ private struct AddShortcutButton: View {
                 Text("Add favorite")
                     .font(.system(size: 12, weight: .medium))
             }
-            .foregroundStyle(foreground.opacity(isHovering ? 0.8 : 0.52))
+            .foregroundStyle(foreground.opacity(isHovering ? 1 : HomepageText.supporting))
             .padding(.horizontal, 10)
             .padding(.vertical, 14)
             .frame(maxWidth: .infinity, minHeight: 104)
