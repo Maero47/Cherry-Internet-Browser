@@ -108,12 +108,12 @@ struct GeneralSettingsView: View {
                         }
                     }
 
-                    // Said plainly rather than left as a mystery — and BOTH
-                    // cases, because the default one is the surprising one:
-                    // while the system accent is "Multicolour" these surfaces
-                    // fall back to Cherry's built-in red, which is exactly the
-                    // configuration that makes them look stuck.
-                    Text("Focus rings, alerts, save panels and selection inside web pages are drawn by macOS: they follow the accent colour you pick in System Settings ▸ Appearance, and stay Cherry red while that is set to Multicolour.")
+                    // Said plainly rather than left as a mystery — and every
+                    // surface, because a caption that names four of five is
+                    // worse than none: the user can't tell whether the one it
+                    // omits is meant to follow the accent. See
+                    // `SystemAccentSurfaces` for why none of them can.
+                    Text(SystemAccentSurfaces.caption)
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)

@@ -25,7 +25,17 @@ import AppKit
 /// What this CANNOT reach is anything macOS draws from
 /// `NSColor.controlAccentColor`: focus rings, `NSAlert` buttons,
 /// `NSOpenPanel`/`NSSavePanel`, menu highlights, and selection inside web page
-/// content. There is no runtime API to retint those.
+/// content. There is no runtime API to retint those — `controlAccentColor` is a
+/// read-only class property and `NSMenu` has no tint of any kind. That includes
+/// every menu SwiftUI opens for us, because macOS renders `Menu`,
+/// `.contextMenu` and `Picker` as real `NSMenu`s: the ⋯ menu, all of Cherry's
+/// context menus and WebKit's page menu are all on the asset colour, not on
+/// `.tint`. `SystemAccentSurfaces` is the list, and the sentence Settings shows
+/// the user.
+///
+/// The menu bar is the one exception in the other direction: its menus are
+/// drawn outside Cherry's process, so they never see the asset and fall back to
+/// stock macOS blue rather than to Cherry red.
 ///
 /// Selection and the insertion point in Cherry's OWN text fields are NOT in
 /// that list — `NSTextView` exposes both, and `AccentTextSelection` sets them
