@@ -158,8 +158,18 @@ struct BrowserView: View {
 
     // Split from body to keep the modifier chain short enough for the Swift type-checker
     private var configuredLayout: some View {
+        // No `.frame(minWidth:)` here on purpose. A minimum expressed on the
+        // CONTENT is invisible to the hand-built windows (⌘N, incognito,
+        // detached tabs), so those windows could be dragged narrower than it —
+        // and the content then pinned at the minimum inside a narrower window,
+        // laying out the whole chrome (homepage included) against a width the
+        // window didn't have: the search field ran off the right edge and the
+        // clock sat off-centre. The minimum lives on the WINDOW instead
+        // (`BrowserWindowMinimum`, applied by `configureBrowserWindow` and
+        // kept in step with split view below), where AppKit can actually
+        // enforce it, and the content always lays out at the width the window
+        // really has.
         menuRoutedLayout
-            .frame(minWidth: viewModel.tabManager.isSplitActive ? 1300 : 1000, minHeight: 600)
             .ignoresSafeArea(.all, edges: .top)
             .background(Color(nsColor: .windowBackgroundColor))
             .background { WindowConfigurator() }
@@ -205,6 +215,24 @@ struct BrowserView: View {
             .onAppear {
                 viewModel.restoreSessionIfNeeded()
             }
+            .onChange(of: viewModel.tabManager.isSplitActive) { _, isSplit in
+                applyWindowMinimum(splitActive: isSplit)
+            }
+    }
+
+    /// Split view needs two 400pt panes plus chrome, so its window floor is
+    /// wider. Raised when the split opens — growing the window if it is
+    /// currently narrower, so the panes are laid out inside the window rather
+    /// than past its edge — and lowered again when it closes.
+    private func applyWindowMinimum(splitActive: Bool) {
+        guard let window = viewModel.associatedWindow else { return }
+        let minimum = BrowserWindowMinimum.contentSize(splitActive: splitActive)
+        window.contentMinSize = minimum
+        if window.frame.width < minimum.width {
+            var frame = window.frame
+            frame.size.width = minimum.width
+            window.setFrame(frame, display: true, animate: true)
+        }
     }
 
     // MARK: - Extracted Sub-Views

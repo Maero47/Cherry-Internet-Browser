@@ -36,9 +36,24 @@ private struct HomepageBackground: View {
             if let wallpaperName {
                 // Nothing over it. The wallpaper is the wallpaper; legibility
                 // is paid for at the glyph by `HomepageGlyphHalo`.
-                Image(wallpaperName)
-                    .resizable()
-                    .scaledToFill()
+                //
+                // The image hangs in an overlay rather than standing in the
+                // stack itself: `scaledToFill` makes the image WIDER (or
+                // taller) than what it was offered whenever its aspect and the
+                // window's disagree, and a ZStack reports its largest child as
+                // its own size — so a bare image here made the background
+                // hundreds of points wider than the homepage, and `.clipped()`
+                // below clipped at those oversized bounds, i.e. not at all.
+                // `Color.clear` keeps the layout size at exactly what was
+                // proposed; the overflow exists only inside the overlay and is
+                // cut at the homepage's real edge.
+                Color.clear
+                    .overlay {
+                        Image(wallpaperName)
+                            .resizable()
+                            .scaledToFill()
+                    }
+                    .clipped()
                     .id(wallpaperName)
                     .transition(.opacity)
             } else {

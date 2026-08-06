@@ -254,10 +254,35 @@ func openBrowserWindow(isPrivate: Bool) {
     window.makeKeyAndOrderFront(nil)
 }
 
+/// The smallest content a browser window may be resized to. On the WINDOW
+/// (`contentMinSize`), not as a `.frame(minWidth:)` on the SwiftUI content:
+/// a content-side minimum is unknown to the windows Cherry builds by hand, so
+/// they could be dragged narrower than it — at which point the content pinned
+/// at the minimum inside a narrower window and the whole chrome laid out
+/// against a width the window didn't have (`BrowserView.configuredLayout`
+/// tells the homepage half of that story).
+enum BrowserWindowMinimum {
+    static let single = NSSize(width: 1000, height: 600)
+    static let split = NSSize(width: 1300, height: 600)
+
+    static func contentSize(splitActive: Bool) -> NSSize {
+        splitActive ? split : single
+    }
+}
+
 /// Applies Cherry's chrome-less window look. Shared by `AppDelegate` (for the
 /// `WindowGroup` windows) and `openBrowserWindow(isPrivate:)`.
 @MainActor
 func configureBrowserWindow(_ window: NSWindow) {
+    // `max`, not assignment: this pass re-runs on every app activation, and a
+    // window holding split view's wider floor must not be quietly lowered
+    // back to the single-pane one (BrowserView owns that transition).
+    let floor = BrowserWindowMinimum.single
+    window.contentMinSize = NSSize(
+        width: max(window.contentMinSize.width, floor.width),
+        height: max(window.contentMinSize.height, floor.height)
+    )
+
     window.titlebarAppearsTransparent = true
     window.titleVisibility = .hidden
     window.isMovableByWindowBackground = false
