@@ -75,13 +75,17 @@ final class Fix1ShotTests: XCTestCase {
                 : Color(red: 0.13, green: 0.16, blue: 0.22)
 
             let before = ToolbarPairSample(
-                caption: "was: theme tone, whatever the appearance",
-                bar: bar, glyph: themeText
+                caption: "was: the tone the appearance called for",
+                bar: bar,
+                glyph: scheme == .dark
+                    ? ThemeContrast.barGlyphOnDark : ThemeContrast.barGlyphOnLight
             )
             let after = ToolbarPairSample(
-                caption: "now: the tone the appearance calls for",
+                caption: "now: the theme's own tone, in both appearances",
                 bar: bar,
-                glyph: ThemeContrast.toolbarGlyph(themeText: themeText, appearance: scheme)
+                glyph: ThemeContrast.toolbarGlyph(
+                    themeText: themeText, themePaintsBackdrop: true, appearance: scheme
+                )
             )
 
             try shoot(

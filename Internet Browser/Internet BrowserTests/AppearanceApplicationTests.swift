@@ -161,11 +161,11 @@ final class AppearanceApplicationTests: XCTestCase {
 
     /// The owner's complaint in one sentence: the same control in the same
     /// appearance with the same theme must come out the same colour every
-    /// time. The glyph tone is a function of the theme and the appearance
-    /// alone (`toolbarGlyph` takes nothing else), and the plate's COLOUR is
-    /// chosen from the glyph alone — the artwork under a control may still
-    /// set the plate's opacity, never its polarity. Measured here across
-    /// backdrops that differ wildly.
+    /// time. The glyph tone is a function of what the theme names and paints
+    /// (plus, only in the gaps, the appearance — `toolbarGlyph` takes nothing
+    /// else), and the plate's COLOUR is chosen from the glyph alone — the
+    /// artwork under a control may still set the plate's opacity, never its
+    /// polarity. Measured here across backdrops that differ wildly.
     func testThePlateColourDependsOnTheGlyphAloneAcrossBackdrops() {
         let glyph = ThemeContrast.resolve(ThemeContrast.barGlyphOnDark)
         let backdrops: [[ThemeContrast.RGB]] = [

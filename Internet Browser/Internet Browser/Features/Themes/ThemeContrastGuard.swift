@@ -462,30 +462,34 @@ enum ThemeBackdropSampler {
 
 extension ThemeContrast {
 
-    /// The tone a themed toolbar actually draws its glyphs in, after the app's
-    /// appearance has had its say.
+    /// The tone a themed toolbar actually draws its glyphs in.
     ///
-    /// ## The island
+    /// ## Who owns the tone
     ///
     /// A Firefox theme ships ONE `toolbar_text` and it does not vary by
-    /// appearance — the format has no way to say "and this in light mode". A
-    /// theme authored against a dark chrome therefore names a light glyph, and
-    /// that light glyph is still named when Cherry is running light. Everything
-    /// downstream then behaves exactly as designed and produces the wrong
-    /// answer: `scrimIsDark` sees a light glyph, asks for a dark plate, and the
-    /// action cluster becomes a dark island punched in a pale bar.
+    /// appearance — the format has no way to say "and this in light mode".
+    /// For chrome the theme PAINTS, that is not a defect to be corrected: the
+    /// theme's backdrop does not vary by appearance either, so the tone it
+    /// was authored against is there in both. The appearance has no opinion
+    /// about chrome the theme owns — the tone the theme names is the tone
+    /// that gets drawn, in Light and in Dark alike, the way Firefox draws it.
     ///
-    /// The plate cannot be fixed on its own. Forcing it light under a light
-    /// glyph inverts the contrast rule and is worse than the island. The pair
-    /// has to move together, so the decision is made here, once, on the glyph —
-    /// the plate follows it for free because the plate is chosen FROM it.
+    /// That pairing is also what keeps the island shut. Judging the theme's
+    /// tone by the APPEARANCE put dark ink on the theme's dark bar in Light
+    /// mode, and the guard — correctly serving the ink it was given — laid a
+    /// pale plate under it: a light island punched into dark themed chrome.
+    /// With the tone and the backdrop both the theme's, they are on the same
+    /// side of the crossover by construction, the plate (chosen FROM the
+    /// glyph, see `scrimIsDark`) lands on the theme's side too, and the same
+    /// theme produces the same chrome colours in both appearances.
     ///
-    /// A theme's tone is kept whenever it suits the appearance, which is the
-    /// common case and the whole reason a theme names one. It is dropped for
-    /// the appearance's own label colour only when it is on the wrong side of
-    /// the crossover, where it could not have been legible anyway. The theme
-    /// keeps its artwork, its frame and its colours everywhere else.
-    /// The tone a themed bar falls back to when the theme's own will not do.
+    /// The appearance still speaks twice, and only twice:
+    /// - a theme that paints chrome but names NO tone gets the absolute
+    ///   fallback for the current appearance;
+    /// - a tone named for chrome the theme does NOT paint sits on a stock
+    ///   surface, which DOES vary by appearance — there the old rule stands:
+    ///   kept when it suits the appearance, dropped when it cannot be.
+    /// The tone a themed bar falls back to when the theme names none.
     ///
     /// Absolute rather than `Color.primary`, and that is load-bearing: an
     /// absolute tone resolves the same in every appearance, so the glyph and
@@ -500,10 +504,15 @@ extension ThemeContrast {
     static let barGlyphOnDark = Color(red: 0.98, green: 0.98, blue: 0.98)
 
     @MainActor
-    static func toolbarGlyph(themeText: Color?, appearance: ColorScheme) -> Color {
+    static func toolbarGlyph(
+        themeText: Color?, themePaintsBackdrop: Bool, appearance: ColorScheme
+    ) -> Color {
         let fallback = appearance == .dark ? barGlyphOnDark : barGlyphOnLight
         guard let themeText else { return fallback }
-        return glyphSuits(resolve(themeText), appearance) ? themeText : fallback
+        guard themePaintsBackdrop else {
+            return glyphSuits(resolve(themeText), appearance) ? themeText : fallback
+        }
+        return themeText
     }
 
     /// A SwiftUI `Color` as sRGB components, resolved against the app's

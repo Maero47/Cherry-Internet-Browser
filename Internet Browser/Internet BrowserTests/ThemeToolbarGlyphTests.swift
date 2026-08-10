@@ -3,13 +3,15 @@
 //  Internet BrowserTests
 //
 //  A Firefox theme names ONE `toolbar_text` and the format has no way to vary
-//  it by appearance. A theme authored against dark chrome therefore hands a
-//  light glyph to a light toolbar, and the contrast guard — behaving exactly as
-//  designed — asks for a dark plate under it. The result was an action cluster
-//  that read as a dark island punched in a pale bar.
+//  it by appearance. For chrome the theme PAINTS that is the whole answer: the
+//  backdrop does not vary by appearance either, so the theme's tone is drawn
+//  in both appearances and the plate — chosen FROM the glyph — lands on the
+//  theme's side with it. The appearance only speaks where the theme left it a
+//  say: the fallback when no tone is named, and the suitability judgment for
+//  a tone named for chrome the theme does NOT paint (a stock surface).
 //
-//  The fix decides the pair at the glyph, because the plate is chosen FROM the
-//  glyph. These pin that decision, and pin that the plate follows.
+//  These pin the pure decision; `ThemeOwnsChromeTests` pins the same decision
+//  at the view entry points.
 //
 
 import AppKit
@@ -23,45 +25,67 @@ final class ThemeToolbarGlyphTests: XCTestCase {
     private let lightGlyph = Color(red: 0.98, green: 0.98, blue: 0.96)  // a dark-chrome theme
     private let darkGlyph = Color(red: 0.11, green: 0.10, blue: 0.13)   // a light-chrome theme
 
-    // MARK: - The island
+    // MARK: - Chrome the theme paints is the theme's to tone
 
-    /// The reported bug: a light glyph on a light bar. The theme's tone is
-    /// dropped rather than kept, because keeping it is what produced the island.
-    func testALightThemeGlyphIsNotUsedInLightAppearance() {
-        let resolved = ThemeContrast.toolbarGlyph(themeText: lightGlyph, appearance: .light)
-        XCTAssertEqual(resolved, ThemeContrast.barGlyphOnLight)
+    /// The owner's call: a theme paints the chrome in both appearances, and
+    /// the tone it names for that chrome is the tone that gets drawn — in
+    /// both. No polarity of theme, no appearance, drops it.
+    func testAPaintedBarKeepsTheThemesToneInBothAppearances() {
+        for appearance in [ColorScheme.light, .dark] {
+            for tone in [lightGlyph, darkGlyph] {
+                XCTAssertEqual(
+                    ThemeContrast.toolbarGlyph(
+                        themeText: tone, themePaintsBackdrop: true, appearance: appearance
+                    ),
+                    tone,
+                    "the appearance has no opinion about chrome the theme owns"
+                )
+            }
+        }
     }
 
-    /// The mirror of the same bug, which the old code had too: a dark-chrome
-    /// theme's opposite number would have put a light plate in a dark bar.
-    func testADarkThemeGlyphIsNotUsedInDarkAppearance() {
-        let resolved = ThemeContrast.toolbarGlyph(themeText: darkGlyph, appearance: .dark)
-        XCTAssertEqual(resolved, ThemeContrast.barGlyphOnDark)
-    }
-
-    // MARK: - The theme keeps what it can
-
-    /// A theme's tone is not thrown away for its own sake. Whenever it suits
-    /// the appearance it is exactly what gets drawn, which is the common case
-    /// and the reason a theme names one at all.
-    func testAThemeToneIsKeptWhenItSuitsTheAppearance() {
-        XCTAssertEqual(
-            ThemeContrast.toolbarGlyph(themeText: lightGlyph, appearance: .dark), lightGlyph
-        )
-        XCTAssertEqual(
-            ThemeContrast.toolbarGlyph(themeText: darkGlyph, appearance: .light), darkGlyph
-        )
-    }
+    // MARK: - Where the appearance still has its say
 
     /// A theme that ships artwork and no `toolbar_text` at all still gets a
     /// tone, and it is the one that adapts.
     func testNoThemeToneFallsBackToTheAppearancesOwnTone() {
         XCTAssertEqual(
-            ThemeContrast.toolbarGlyph(themeText: nil, appearance: .light),
+            ThemeContrast.toolbarGlyph(themeText: nil, themePaintsBackdrop: true, appearance: .light),
             ThemeContrast.barGlyphOnLight
         )
         XCTAssertEqual(
-            ThemeContrast.toolbarGlyph(themeText: nil, appearance: .dark),
+            ThemeContrast.toolbarGlyph(themeText: nil, themePaintsBackdrop: true, appearance: .dark),
+            ThemeContrast.barGlyphOnDark
+        )
+    }
+
+    /// A tone named for chrome the theme does NOT paint sits on a stock
+    /// surface, and stock surfaces vary by appearance — so there the old rule
+    /// stands: kept when it suits the appearance, dropped for the absolute
+    /// fallback when it cannot have been legible.
+    func testAToneForUnpaintedChromeStillDefersToTheAppearance() {
+        XCTAssertEqual(
+            ThemeContrast.toolbarGlyph(
+                themeText: lightGlyph, themePaintsBackdrop: false, appearance: .dark
+            ),
+            lightGlyph
+        )
+        XCTAssertEqual(
+            ThemeContrast.toolbarGlyph(
+                themeText: lightGlyph, themePaintsBackdrop: false, appearance: .light
+            ),
+            ThemeContrast.barGlyphOnLight
+        )
+        XCTAssertEqual(
+            ThemeContrast.toolbarGlyph(
+                themeText: darkGlyph, themePaintsBackdrop: false, appearance: .light
+            ),
+            darkGlyph
+        )
+        XCTAssertEqual(
+            ThemeContrast.toolbarGlyph(
+                themeText: darkGlyph, themePaintsBackdrop: false, appearance: .dark
+            ),
             ThemeContrast.barGlyphOnDark
         )
     }
@@ -83,21 +107,32 @@ final class ThemeToolbarGlyphTests: XCTestCase {
 
     // MARK: - The plate follows
 
-    /// The pair has to move together. Whatever tone comes out, the plate the
-    /// guard picks from it must be the opposite polarity — that is what stops
-    /// the island, and it is why the fix could not be made on the plate alone.
-    func testThePlateIsAlwaysTheOppositePolarityToTheResolvedGlyph() {
+    /// The pair moves together, so the plate's polarity is decided by the
+    /// glyph that actually comes out. For a theme-owned tone that is the
+    /// THEME's polarity, identical in both appearances — the island's pale
+    /// plate in dark chrome cannot be asked for. For the no-tone fallback it
+    /// is the appearance's, because the fallback is the appearance's tone.
+    func testThePlatePolarityFollowsTheGlyphThatComesOut() {
         for appearance in [ColorScheme.light, .dark] {
-            for theme in [lightGlyph, darkGlyph, Color?.none] {
-                let glyph = ThemeContrast.toolbarGlyph(themeText: theme, appearance: appearance)
-                let resolved = resolve(glyph, in: appearance)
-                let plateIsDark = ThemeContrast.scrimIsDark(for: resolved)
+            for theme in [lightGlyph, darkGlyph] {
+                let glyph = ThemeContrast.toolbarGlyph(
+                    themeText: theme, themePaintsBackdrop: true, appearance: appearance
+                )
                 XCTAssertEqual(
-                    plateIsDark, appearance == .dark,
-                    "a \(appearance == .dark ? "dark" : "light") bar got a "
-                        + "\(plateIsDark ? "dark" : "light") plate"
+                    ThemeContrast.scrimIsDark(for: resolve(glyph, in: appearance)),
+                    ThemeContrast.scrimIsDark(for: resolve(theme, in: appearance)),
+                    "the plate's polarity must be the theme tone's own, in every appearance"
                 )
             }
+
+            let fallback = ThemeContrast.toolbarGlyph(
+                themeText: nil, themePaintsBackdrop: true, appearance: appearance
+            )
+            XCTAssertEqual(
+                ThemeContrast.scrimIsDark(for: resolve(fallback, in: appearance)),
+                appearance == .dark,
+                "the no-tone fallback stays the appearance's tone, plate opposite it"
+            )
         }
     }
 
@@ -127,7 +162,9 @@ final class ThemeToolbarGlyphTests: XCTestCase {
     /// so one window of the cluster is bright and another is not.
     func testEveryControlStillClearsTheIconFloorOnARealBackdrop() {
         for appearance in [ColorScheme.light, .dark] {
-            let glyph = ThemeContrast.toolbarGlyph(themeText: lightGlyph, appearance: appearance)
+            let glyph = ThemeContrast.toolbarGlyph(
+                themeText: lightGlyph, themePaintsBackdrop: true, appearance: appearance
+            )
             let foreground = resolve(glyph, in: appearance)
             let sample = mixedBar(appearance: appearance)
 

@@ -107,7 +107,11 @@ final class FirefoxThemeManager {
         let isAnimated: Bool
     }
 
-    private(set) var activeTheme: FirefoxTheme?
+    /// Settable within the module so tests can install an ephemeral,
+    /// never-persisted theme and restore the real one afterwards. Production
+    /// code activates themes only through `importTheme`/`removeActiveTheme`,
+    /// which also keep the persisted record in step.
+    var activeTheme: FirefoxTheme?
 
     private init() {
         loadPersistedTheme()
@@ -148,6 +152,14 @@ final class FirefoxThemeManager {
 
     /// Toolbar icon/text color — `toolbar_text` (alias `bookmark_text`), else `icons`.
     var toolbarText: Color? { activeTheme?.color("toolbar_text", "bookmark_text", "icons") }
+
+    /// True when the theme paints the toolbar rows at all — a header backdrop
+    /// (frame colour and/or images) or a flat `toolbar`/`frame` fill. Chrome
+    /// behind this answer belongs to the theme, so its glyph tone comes from
+    /// the theme too (`ThemeContrast.toolbarGlyph(themePaintsBackdrop:)`);
+    /// when false the bars keep their stock surfaces and the app appearance
+    /// keeps its say over what is drawn on them.
+    var paintsToolbar: Bool { hasHeaderBackdrop || toolbarBackground != nil }
 
     /// Tab strip (area behind the tabs) — the window `frame`, else `toolbar`.
     var tabStripBackground: Color? { activeTheme?.color("frame", "toolbar") }

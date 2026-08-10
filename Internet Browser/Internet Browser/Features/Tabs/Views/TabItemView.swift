@@ -49,7 +49,7 @@ struct TabItemView: View {
     private var themedSelectedBackground: Color? {
         tab.isPrivate ? nil : FirefoxThemeManager.shared.selectedTabBackground
     }
-    private var themedTitleColor: Color? {
+    var themedTitleColor: Color? {
         guard !tab.isPrivate else { return nil }
         let manager = FirefoxThemeManager.shared
         return isSelected ? manager.tabText : manager.tabStripText

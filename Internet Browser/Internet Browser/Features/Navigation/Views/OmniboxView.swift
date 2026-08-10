@@ -32,7 +32,7 @@ struct OmniboxView: View {
         let manager = FirefoxThemeManager.shared
         return isFocused ? manager.fieldFocusBackground : manager.fieldBackground
     }
-    private var themedFieldText: Color? {
+    var themedFieldText: Color? {
         isPrivateMode ? nil : FirefoxThemeManager.shared.fieldText
     }
     private var themedFocusBorder: Color? {

@@ -52,22 +52,25 @@ struct NavigationBarView: View {
     }
     /// The tone every glyph on this bar is ACTUALLY drawn in.
     ///
-    /// A Firefox theme names one `toolbar_text` for both appearances, so a
-    /// theme authored for dark chrome hands a light glyph to a light bar, and
-    /// the contrast guard then correctly asks for a dark plate under it — which
-    /// is where the dark island in a pale toolbar came from. `toolbarGlyph`
-    /// keeps the theme's tone whenever it suits the appearance and falls back
-    /// to the label colour when it does not, so the glyph and the plate it
-    /// implies move together instead of fighting.
-    private var themedToolbarText: Color? {
+    /// A Firefox theme names one `toolbar_text` for both appearances, and for
+    /// a bar the theme PAINTS that one tone is what gets drawn in both — the
+    /// backdrop it was authored against does not vary by appearance either,
+    /// so tone and backdrop stay on the same side by construction and the
+    /// plate the guard picks from the tone lands on the theme's side too.
+    /// The appearance keeps its say only where the theme left it one: the
+    /// fallback for a theme that names no tone, and a tone named for a bar
+    /// the theme does not paint (a stock surface, which does vary).
+    var themedToolbarText: Color? {
         guard !isPrivateMode, isThemed else { return nil }
         return ThemeContrast.toolbarGlyph(
-            themeText: FirefoxThemeManager.shared.toolbarText, appearance: colorScheme
+            themeText: FirefoxThemeManager.shared.toolbarText,
+            themePaintsBackdrop: FirefoxThemeManager.shared.paintsToolbar,
+            appearance: colorScheme
         )
     }
 
     /// Whether a theme is dressing this bar at all. Private windows never are.
-    private var isThemed: Bool {
+    var isThemed: Bool {
         !isPrivateMode && FirefoxThemeManager.shared.activeTheme != nil
     }
 
@@ -86,7 +89,7 @@ struct NavigationBarView: View {
     /// `toolbar_text` when the theme names one, else the system label colour the
     /// bar already falls back to — a theme is free to ship a header illustration
     /// and no `toolbar_text` at all.
-    private var legibility: ThemeLegibility? {
+    var legibility: ThemeLegibility? {
         guard isThemed else { return nil }
         let manager = FirefoxThemeManager.shared
         // Only the header-backdrop path layers `toolbar` over artwork; the
@@ -99,7 +102,7 @@ struct NavigationBarView: View {
     /// `stock` unthemed, the theme's single glyph tone when themed. Every
     /// accent- or state-tinted toolbar glyph goes through this, so a themed row
     /// is one colour and an unthemed one is exactly what it always was.
-    private func themedGlyph(_ stock: Color) -> Color {
+    func themedGlyph(_ stock: Color) -> Color {
         isThemed ? (themedToolbarText ?? Color.primary) : stock
     }
 
