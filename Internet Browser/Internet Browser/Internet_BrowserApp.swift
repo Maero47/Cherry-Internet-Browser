@@ -15,11 +15,22 @@ struct Internet_BrowserApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
 
     var body: some Scene {
+        // The scene never presents this window. Every browser window — the one
+        // at launch included — is built by `openBrowserWindow`, so all of them
+        // take the SAME bring-up: final frame first, configuration next, shown
+        // last. The scene-presented window took a different one — created,
+        // measured and shown around a frame that was still being restored —
+        // and layout run against that in-between geometry left views behind at
+        // it permanently (the homepage's stranded glyphs). `AppDelegate` opens
+        // the launch window in `applicationDidFinishLaunching`, restoring the
+        // frame Cherry persists itself (`BrowserWindowFrameStore`).
         WindowGroup {
             BrowserView()
                 .cherryWindowRoot()
         }
         .windowStyle(.hiddenTitleBar)
+        .defaultLaunchBehavior(.suppressed)
+        .restorationBehavior(.disabled)
         .commands {
             // ONE command system: every shortcut in Cherry is declared here and
             // nowhere else. `CommandItem` posts a `BrowserCommand` that the KEY
@@ -227,12 +238,22 @@ private struct CommandItem: View {
 
 // MARK: - Opening Windows
 
-/// The single implementation of "open another browser window". Used by File ▸
-/// New Window / New Incognito Window (⌘N / ⌘⇧N), the Dock menu, and
-/// `BrowserViewModel.openPrivateWindow()` — previously three near-identical
-/// copies, one of which (the ⌘N menu item) was an empty closure.
+/// The single implementation of "open a browser window" — every browser
+/// window there is: the launch window (`AppDelegate`, with the frame Cherry
+/// last persisted), File ▸ New Window / New Incognito Window (⌘N / ⌘⇧N), the
+/// Dock menu, and `BrowserViewModel.openPrivateWindow()`.
+///
+/// The ordering in here is the point, not a convenience: frame, then
+/// configuration, then showing, with the frame never touched again once the
+/// window is on screen. A geometry change that lands on a freshly shown
+/// window strands the hosted content's individually-positioned pieces (focus
+/// proxies, platform view hosts, promoted glyph layers) at the layout they
+/// were born in — permanently, surviving later resizes. That is what the
+/// scene-presented launch window used to do, and why its homepage drew its
+/// magnifier and plus glyphs at another layout's coordinates while ⌘N windows
+/// never did.
 @MainActor
-func openBrowserWindow(isPrivate: Bool) {
+func openBrowserWindow(isPrivate: Bool, frame: NSRect? = nil) {
     let hostingView = cherryHostingView(BrowserView(isPrivate: isPrivate))
 
     let window = DetachedWindow(
@@ -241,6 +262,11 @@ func openBrowserWindow(isPrivate: Bool) {
         backing: .buffered,
         defer: false
     )
+    // The final frame goes on BEFORE the content view, so the hosting view
+    // never lays out against any other geometry.
+    if let frame {
+        window.setFrame(frame, display: false)
+    }
     window.contentView = hostingView
     configureBrowserWindow(window)
     window.title = isPrivate ? "Incognito" : "Cherry"
@@ -250,8 +276,35 @@ func openBrowserWindow(isPrivate: Bool) {
     BrowserViewModel.detachedWindows.append(window)
     BrowserViewModel.detachedWindowDelegates.append(delegate)
 
-    window.center()
+    if frame == nil {
+        window.center()
+    }
     window.makeKeyAndOrderFront(nil)
+}
+
+/// Cherry's own persistence for the launch window's frame.
+///
+/// The system's frame autosave cannot be used for this: it restores by
+/// resizing the scene window around content that is already laid out and
+/// showing — the stranding ordering described on `openBrowserWindow`. Saved
+/// from every non-private browser window as it moves and resizes (last writer
+/// wins, so a relaunch brings back the frame of the window the user last
+/// arranged), applied by `AppDelegate` at launch, before the window is shown.
+enum BrowserWindowFrameStore {
+    private static let key = "cherryBrowserWindowFrame"
+
+    static func save(_ frame: NSRect) {
+        UserDefaults.standard.set(NSStringFromRect(frame), forKey: key)
+    }
+
+    /// The saved frame, if it still lands on a connected screen.
+    static func restore() -> NSRect? {
+        guard let string = UserDefaults.standard.string(forKey: key) else { return nil }
+        let frame = NSRectFromString(string)
+        guard frame.width >= 400, frame.height >= 300 else { return nil }
+        guard NSScreen.screens.contains(where: { $0.visibleFrame.intersects(frame) }) else { return nil }
+        return frame
+    }
 }
 
 /// The smallest content a browser window may be resized to. On the WINDOW
@@ -402,6 +455,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             configureWindow(window)
         }
 
+        // The launch window, through the same path as every other browser
+        // window (see `openBrowserWindow` for why the scene must not present
+        // one), at the frame Cherry itself persisted — applied before the
+        // window is shown.
+        openBrowserWindow(isPrivate: false, frame: BrowserWindowFrameStore.restore())
+
         // AppKit hands the shared field editor from control to control and
         // reconfigures it on the way (`NSCell.setUpFieldEditorAttributes`), so
         // re-assert the accent caret/selection each time editing starts rather
@@ -458,6 +517,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             guard window.contentView != nil else { continue }
             configureWindow(window)
         }
+    }
+
+    /// The scene never presents a window, so a Dock-icon click with every
+    /// browser window closed must bring one back itself — at the persisted
+    /// frame, through the one window path.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if !flag && BrowserViewModel.windowViewModels.isEmpty {
+            MainActor.assumeIsolated {
+                openBrowserWindow(isPrivate: false, frame: BrowserWindowFrameStore.restore())
+            }
+            return false
+        }
+        return true
     }
 
     // MARK: - Dock Menu

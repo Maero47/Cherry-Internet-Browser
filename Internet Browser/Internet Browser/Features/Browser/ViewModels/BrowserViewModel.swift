@@ -1621,5 +1621,26 @@ class DetachedWindowDelegate: NSObject, NSWindowDelegate {
             BrowserViewModel.detachedWindowDelegates.removeAll { $0 === closedWindow.delegate as? DetachedWindowDelegate }
         }
     }
+
+    func windowDidMove(_ notification: Notification) {
+        persistFrame(of: notification.object as? NSWindow)
+    }
+
+    func windowDidResize(_ notification: Notification) {
+        persistFrame(of: notification.object as? NSWindow)
+    }
+
+    /// Remembers where the user keeps their browser window, for the next
+    /// launch (`BrowserWindowFrameStore`). Not for private windows — an
+    /// incognito window should leave no trace, its geometry included.
+    private func persistFrame(of window: NSWindow?) {
+        guard let window else { return }
+        MainActor.assumeIsolated {
+            let isPrivate = BrowserViewModel.windowViewModels.values
+                .first { $0.associatedWindow === window }?.isPrivateMode ?? false
+            guard !isPrivate else { return }
+            BrowserWindowFrameStore.save(window.frame)
+        }
+    }
 }
 
