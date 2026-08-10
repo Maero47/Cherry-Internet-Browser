@@ -316,6 +316,15 @@ final class SettingsManager {
         didSet { UserDefaults.standard.set(homepageUsesThemeBackground, forKey: Keys.homepageUsesThemeBackground) }
     }
 
+    /// Whether the picture the user chose themselves is allowed to take over
+    /// the homepage. Set when they pick one in Settings, cleared the moment
+    /// they pick any other background swatch — the same contract as
+    /// `homepageUsesThemeBackground`, so no source can ever lock the others
+    /// out. The picture itself lives in `HomepageCustomImageStore`.
+    var homepageUsesCustomImage: Bool {
+        didSet { UserDefaults.standard.set(homepageUsesCustomImage, forKey: Keys.homepageUsesCustomImage) }
+    }
+
     var accentColor: Color {
         Color(hex: accentColorHex)
     }
@@ -332,6 +341,8 @@ final class SettingsManager {
     func homepageBackgroundSource(isPrivate: Bool) -> HomepageBackgroundSource {
         HomepageBackgroundResolver.resolve(
             matchesAccent: homepageMatchesAccent,
+            prefersCustomImage: homepageUsesCustomImage,
+            customImageIsAvailable: HomepageCustomImageStore.shared.isAvailable,
             prefersThemeBackground: homepageUsesThemeBackground,
             themeHasBackground: FirefoxThemeManager.shared.homepageBackground != nil,
             isPrivate: isPrivate,
@@ -346,7 +357,7 @@ final class SettingsManager {
             // Flat, matching how Firefox renders its new-tab page.
             let themeBackground = FirefoxThemeManager.shared.homepageBackground ?? .clear
             return Array(repeating: themeBackground, count: 9)
-        case .accentWallpaper, .accentGradient:
+        case .customImage, .accentWallpaper, .accentGradient:
             return AccentDerivedPalette.gradientColors(fromHex: accentColorHex)
         case .curatedTheme(let theme):
             return theme.gradientColors
@@ -360,6 +371,14 @@ final class SettingsManager {
     /// private tab.
     var homepageThemeBackgroundIsActive: Bool {
         homepageBackgroundSource(isPrivate: false) == .themeBackground
+    }
+
+    /// True while the user's own picture is what the homepage shows. Same
+    /// contract as `homepageThemeBackgroundIsActive`: derived from the
+    /// resolved source, so Settings' selection ring can never disagree with
+    /// what is actually painted.
+    var homepageCustomImageIsActive: Bool {
+        homepageBackgroundSource(isPrivate: false) == .customImage
     }
 
     var resolvedColorScheme: ColorScheme? {
@@ -619,6 +638,9 @@ final class SettingsManager {
         // Defaults to true so an already-imported theme keeps the homepage
         // background it has been painting across the upgrade.
         self.homepageUsesThemeBackground = defaults.object(forKey: Keys.homepageUsesThemeBackground) as? Bool ?? true
+        // No picture is stored until the user picks one, so there is nothing
+        // to keep showing across an upgrade — false is the honest default.
+        self.homepageUsesCustomImage = defaults.object(forKey: Keys.homepageUsesCustomImage) as? Bool ?? false
 
         // Downloads
         let defaultDownloadsPath = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first!.path
@@ -803,6 +825,7 @@ final class SettingsManager {
         static let appearanceMode = "appearanceMode"
         static let accentColorHex = "accentColorHex"
         static let homepageTheme = "homepageTheme"
+        static let homepageUsesCustomImage = "homepageUsesCustomImage"
         static let homepageMatchesAccent = "homepageMatchesAccent"
         static let homepageUsesThemeBackground = "homepageUsesThemeBackground"
         static let downloadDirectory = "downloadDirectory"

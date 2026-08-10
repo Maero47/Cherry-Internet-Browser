@@ -33,6 +33,17 @@ final class HomepageGlyphHaloTests: XCTestCase {
     /// rather than the design.
     private let harmfulPercentile = 0.10
 
+    /// The homepage's three type roles, with the real sizes, weights and
+    /// opacities they are drawn at.
+    private var roles: [(label: String, font: Font, text: String, opacity: Double)] {
+        [
+            ("clock", .system(size: 68, weight: .light, design: .rounded), "22:17", 1.0),
+            ("shortcut title", .system(size: 12, weight: .medium), "Computer Scie", 1.0),
+            ("greeting", .system(size: 17, weight: .medium, design: .rounded), "Good evening",
+             HomepageText.supporting),
+        ]
+    }
+
     // MARK: - The bar
 
     func testTheClockClearsTheFloorOnEveryWallpaperInBothAppearances() throws {
@@ -62,6 +73,49 @@ final class HomepageGlyphHaloTests: XCTestCase {
         )
     }
 
+    // MARK: - The user's own picture
+
+    /// The eight shipped wallpapers were vetted; a user's photo is not, and
+    /// the brightest thing it can hold is pure white — the worst backdrop
+    /// that can exist for white type. Text on a user-chosen picture is drawn
+    /// with the reinforced halo (`HomepageGlyphHalo.treatment(for:)` maps
+    /// `.customImage` to `.reinforced`), and every role must clear the same
+    /// floor there that it clears on the shipped wallpapers.
+    func testEveryRoleClearsTheFloorOnAWorstCaseWhitePictureWithTheReinforcedHalo() throws {
+        for role in roles {
+            try assertClears(
+                label: role.label,
+                font: role.font,
+                text: role.text,
+                opacity: role.opacity,
+                halo: .reinforced,
+                backdrops: [("pure white", .white)]
+            )
+        }
+    }
+
+    /// Why the reinforced stack exists at all: over pure white the standard
+    /// stack leaves the faded greeting under the floor (measured 3.76:1
+    /// against 4.5). If this test ever starts failing the standard halo has
+    /// grown materially stronger, and the custom-image fork deserves a fresh
+    /// measurement — do not silently point custom images back at `.standard`.
+    func testTheStandardHaloAloneIsNotEnoughOnAWorstCaseWhitePicture() throws {
+        let image = try render(
+            backdrop: .white, text: "Good evening",
+            font: .system(size: 17, weight: .medium, design: .rounded),
+            opacity: HomepageText.supporting, halo: .standard, appearance: .aqua
+        )
+        let mask = try render(
+            backdrop: .mask, text: "Good evening",
+            font: .system(size: 17, weight: .medium, design: .rounded),
+            opacity: 1.0, halo: .none, appearance: .aqua
+        )
+        XCTAssertLessThan(
+            try harmfulRatio(image: image, mask: mask), floor,
+            "the standard halo now clears pure white — remeasure whether the reinforced fork is still needed"
+        )
+    }
+
     // MARK: - The picture
 
     /// The point of the whole change: outside the glyphs, the wallpaper is the
@@ -70,13 +124,13 @@ final class HomepageGlyphHaloTests: XCTestCase {
     func testTheWallpaperIsUntouchedAwayFromTheGlyphs() throws {
         let asset = try XCTUnwrap(wallpaperNames.first)
         let withText = try render(
-            wallpaper: asset, text: "22:17",
+            backdrop: .asset(asset), text: "22:17",
             font: .system(size: 68, weight: .light, design: .rounded),
-            opacity: 1.0, halo: true, appearance: .aqua
+            opacity: 1.0, halo: .standard, appearance: .aqua
         )
         let bare = try render(
-            wallpaper: asset, text: "", font: .system(size: 68), opacity: 1.0,
-            halo: false, appearance: .aqua
+            backdrop: .asset(asset), text: "", font: .system(size: 68), opacity: 1.0,
+            halo: .none, appearance: .aqua
         )
 
         // A generous margin in from every corner, well clear of the centred text.
@@ -102,13 +156,13 @@ final class HomepageGlyphHaloTests: XCTestCase {
     func testTheCentreKeepsItsSaturation() throws {
         let asset = try XCTUnwrap(wallpaperNames.first)
         let bare = try render(
-            wallpaper: asset, text: "", font: .system(size: 68), opacity: 1.0,
-            halo: false, appearance: .aqua
+            backdrop: .asset(asset), text: "", font: .system(size: 68), opacity: 1.0,
+            halo: .none, appearance: .aqua
         )
         let withText = try render(
-            wallpaper: asset, text: "22:17",
+            backdrop: .asset(asset), text: "22:17",
             font: .system(size: 68, weight: .light, design: .rounded),
-            opacity: 1.0, halo: true, appearance: .aqua
+            opacity: 1.0, halo: .standard, appearance: .aqua
         )
 
         // A band across the middle, skipping the vertical strip the text sits
@@ -139,27 +193,35 @@ final class HomepageGlyphHaloTests: XCTestCase {
 
     // MARK: - Measuring
 
+    /// - Parameters:
+    ///   - halo: the treatment under test — `.standard` is what the shipped
+    ///     wallpapers get, `.reinforced` what a user-chosen picture gets.
+    ///   - backdrops: what to measure against; nil means every shipped
+    ///     wallpaper.
     private func assertClears(
-        label: String, font: Font, text: String, opacity: Double
+        label: String, font: Font, text: String, opacity: Double,
+        halo: HomepageGlyphHalo.Treatment = .standard,
+        backdrops: [(name: String, backdrop: Backdrop)]? = nil
     ) throws {
+        let backdrops = backdrops ?? wallpaperNames.map { ($0, Backdrop.asset($0)) }
         for (name, appearance) in [("light", NSAppearance.Name.aqua),
                                    ("dark", NSAppearance.Name.darkAqua)] {
-            var worst = (ratio: Double.infinity, wallpaper: "")
-            for asset in wallpaperNames {
+            var worst = (ratio: Double.infinity, backdrop: "")
+            for (backdropName, backdrop) in backdrops {
                 let image = try render(
-                    wallpaper: asset, text: text, font: font, opacity: opacity,
-                    halo: true, appearance: appearance
+                    backdrop: backdrop, text: text, font: font, opacity: opacity,
+                    halo: halo, appearance: appearance
                 )
                 let mask = try render(
-                    wallpaper: nil, text: text, font: font, opacity: 1.0,
-                    halo: false, appearance: appearance
+                    backdrop: .mask, text: text, font: font, opacity: 1.0,
+                    halo: .none, appearance: appearance
                 )
                 let ratio = try harmfulRatio(image: image, mask: mask)
-                if ratio < worst.ratio { worst = (ratio, asset) }
+                if ratio < worst.ratio { worst = (ratio, backdropName) }
             }
             XCTAssertGreaterThanOrEqual(
                 worst.ratio, floor,
-                "\(label) measures \(worst.ratio):1 on \(worst.wallpaper) in \(name)"
+                "\(label) measures \(worst.ratio):1 on \(worst.backdrop) in \(name)"
             )
         }
     }
@@ -241,19 +303,33 @@ final class HomepageGlyphHaloTests: XCTestCase {
         }
     }
 
-    /// Renders the text over the wallpaper exactly as the homepage composes
-    /// them. `wallpaper: nil` renders the mask: the same type, white, on black,
-    /// with no halo, so glyph coverage can be told from wallpaper brightness.
+    /// What the text is rendered over.
+    private enum Backdrop {
+        /// A shipped wallpaper asset.
+        case asset(String)
+        /// The brightest backdrop a user's photo can hold — the worst case
+        /// that can exist for white type.
+        case white
+        /// Black, for the coverage mask: the same type, white, with no halo,
+        /// so glyph coverage can be told from backdrop brightness.
+        case mask
+    }
+
+    /// Renders the text over the backdrop exactly as the homepage composes
+    /// them, through the real `homepageGlyphHalo(_:)` the homepage applies.
     private func render(
-        wallpaper: String?, text: String, font: Font, opacity: Double,
-        halo: Bool, appearance: NSAppearance.Name
+        backdrop: Backdrop, text: String, font: Font, opacity: Double,
+        halo: HomepageGlyphHalo.Treatment, appearance: NSAppearance.Name
     ) throws -> Sampled {
         let size = CGSize(width: 320, height: 160)
 
         let content = ZStack {
-            if let wallpaper {
-                Image(wallpaper).resizable().scaledToFill()
-            } else {
+            switch backdrop {
+            case .asset(let name):
+                Image(name).resizable().scaledToFill()
+            case .white:
+                Color.white
+            case .mask:
                 Color.black
             }
             Text(text)
