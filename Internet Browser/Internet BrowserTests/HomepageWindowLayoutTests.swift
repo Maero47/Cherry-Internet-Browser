@@ -85,10 +85,19 @@ final class HomepageWindowLayoutTests: XCTestCase {
         let settings = SettingsManager.shared
         let savedMatches = settings.homepageMatchesAccent
         let savedAccent = settings.accentColorHex
+        // An imported theme that defines `ntp_background` outranks the accent
+        // wallpaper (`HomepageBackgroundResolver.resolve` checks it first), so
+        // without standing this preference down the subject of this test
+        // depends on which theme happens to be installed on the machine — it
+        // passed until a theme with a background was imported, then failed for
+        // a reason that had nothing to do with layout.
+        let savedUsesTheme = settings.homepageUsesThemeBackground
         settings.homepageMatchesAccent = true
+        settings.homepageUsesThemeBackground = false
         settings.accentColorHex = "DB283C"
         defer {
             settings.homepageMatchesAccent = savedMatches
+            settings.homepageUsesThemeBackground = savedUsesTheme
             settings.accentColorHex = savedAccent
         }
         guard case .accentWallpaper = settings.homepageBackgroundSource(isPrivate: false) else {
