@@ -267,7 +267,18 @@ final class SettingsManager {
     // MARK: - Theme
 
     var appearanceMode: AppearanceMode {
-        didSet { UserDefaults.standard.set(appearanceMode.rawValue, forKey: Keys.appearanceMode) }
+        didSet {
+            UserDefaults.standard.set(appearanceMode.rawValue, forKey: Keys.appearanceMode)
+            applyAppearance()
+        }
+    }
+
+    /// Hands the choice to AppKit — see `CherryAppearance` for why the app,
+    /// not each window, carries it. Called from `appearanceMode.didSet` and
+    /// once from `init`, so this is the only place it is ever set.
+    func applyAppearance() {
+        let mode = appearanceMode
+        onMainActor { CherryAppearance.apply(mode) }
     }
 
     var accentColorHex: String {
@@ -668,6 +679,10 @@ final class SettingsManager {
         // so without this the icon would only follow the accent from the first
         // time the user re-picked it in a session.
         applyAppIcon()
+        // And for the appearance: the persisted choice has to reach AppKit
+        // before the first window comes up, or the app is born in the
+        // two-appearances state this call exists to end.
+        applyAppearance()
     }
 
     // MARK: - App Icon

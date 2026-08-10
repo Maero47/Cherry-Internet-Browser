@@ -487,14 +487,15 @@ extension ThemeContrast {
     /// keeps its artwork, its frame and its colours everywhere else.
     /// The tone a themed bar falls back to when the theme's own will not do.
     ///
-    /// Absolute rather than `Color.primary`, and that is load-bearing:
-    /// `resolve` reads `NSApplication.effectiveAppearance`, which is the app's
-    /// appearance and not necessarily this window's — Cherry sets a window's
-    /// appearance from its own preference, so the two genuinely diverge. A
-    /// dynamic colour handed to the guard would be measured in one appearance
-    /// and drawn in the other, and the plate would come out inverted. An
-    /// absolute tone resolves the same everywhere, which is the only way the
-    /// glyph and its plate can be guaranteed to agree.
+    /// Absolute rather than `Color.primary`, and that is load-bearing: an
+    /// absolute tone resolves the same in every appearance, so the glyph and
+    /// the plate chosen from it can never disagree even if the appearance the
+    /// guard measures in and the one the content draws in ever drift apart
+    /// again. They used to: `.preferredColorScheme` was the only place
+    /// Cherry's appearance choice went, so `resolve` measured in the SYSTEM's
+    /// appearance while the content drew in Cherry's. `CherryAppearance` now
+    /// pins `NSApp.appearance` to the same choice, which closes that gap — the
+    /// absolute tones stay as the belt to that suspender.
     static let barGlyphOnLight = Color(red: 0.10, green: 0.10, blue: 0.12)
     static let barGlyphOnDark = Color(red: 0.98, green: 0.98, blue: 0.98)
 

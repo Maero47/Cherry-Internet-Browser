@@ -9,6 +9,13 @@ import AppKit
 /// The appearance every Cherry window inherits: the user's accent colour as
 /// the SwiftUI tint, and the chosen light/dark override.
 ///
+/// The light/dark override here styles the SwiftUI content ONLY. The same
+/// choice is applied to `NSApp.appearance` by `CherryAppearance`, and both
+/// must stay: without the AppKit half, every surface that reads
+/// `effectiveAppearance` — sheets, panels, alerts, and the contrast guard's
+/// `ThemeContrast.resolve` — follows macOS while the content follows Cherry,
+/// and the guard measures glyphs in an appearance they are not drawn in.
+///
 /// This is applied ONCE per window root — the `WindowGroup` scene and each
 /// `NSHostingView` the app builds by hand (detached windows, tear-off windows,
 /// incognito windows, the tab ghost/preview chips). Everything those windows
