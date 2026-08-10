@@ -15,7 +15,9 @@
 //
 
 import AppKit
+import ImageIO
 import SwiftUI
+import UniformTypeIdentifiers
 import XCTest
 @testable import Cherry
 
@@ -141,6 +143,110 @@ final class HomepageWindowLayoutTests: XCTestCase {
             }
         }
         XCTAssertTrue(escapees.isEmpty, "painting outside the homepage: \(escapees)")
+    }
+
+    /// The same guarantee for the picture the user chose. The shipped
+    /// wallpapers all share one moderate aspect; a user's photo can have any,
+    /// so `scaledToFill`'s overflow — the exact mechanism behind the original
+    /// containment bug — is unbounded here. A very wide picture in a narrow
+    /// window and a very tall picture in a short window must both stay inside
+    /// the homepage, on both axes.
+    func testHomepageCustomPictureStaysInsideTheHomepageBounds() throws {
+        let settings = SettingsManager.shared
+        let store = HomepageCustomImageStore.shared
+        let savedMatches = settings.homepageMatchesAccent
+        let savedUsesTheme = settings.homepageUsesThemeBackground
+        let savedUsesCustom = settings.homepageUsesCustomImage
+        var backup: URL?
+        if let current = store.storedFileURL {
+            backup = FileManager.default.temporaryDirectory
+                .appendingPathComponent("layout-backup-\(UUID().uuidString).\(current.pathExtension)")
+            try FileManager.default.copyItem(at: current, to: backup!)
+        }
+        defer {
+            if let backup {
+                try? store.importImage(from: backup)
+                try? FileManager.default.removeItem(at: backup)
+            } else {
+                store.removeImage()
+            }
+            settings.homepageMatchesAccent = savedMatches
+            settings.homepageUsesThemeBackground = savedUsesTheme
+            settings.homepageUsesCustomImage = savedUsesCustom
+        }
+        settings.homepageUsesCustomImage = true
+        settings.homepageUsesThemeBackground = false
+
+        for (scenario, imageSize, hostSize) in [
+            ("a very wide picture in a narrow window",
+             CGSize(width: 3200, height: 200), CGSize(width: 600, height: 800)),
+            ("a very tall picture in a short window",
+             CGSize(width: 200, height: 3200), CGSize(width: 900, height: 300)),
+        ] {
+            let picked = try makePicture(size: imageSize)
+            try store.importImage(from: picked)
+            try? FileManager.default.removeItem(at: picked)
+            guard settings.homepageBackgroundSource(isPrivate: false) == .customImage else {
+                return XCTFail("expected the user's picture to be the background under test")
+            }
+
+            let hosting = NSHostingView(rootView: HomePageView(
+                repository: ShortcutRepository(),
+                isPrivateMode: false,
+                onShortcutClick: { _ in },
+                onSearch: { _ in },
+                onAskAI: { _ in false }
+            ))
+            hosting.frame = CGRect(origin: .zero, size: hostSize)
+            let window = NSWindow(
+                contentRect: hosting.frame,
+                styleMask: [.titled, .resizable],
+                backing: .buffered,
+                defer: true
+            )
+            window.isReleasedWhenClosed = false
+            defer {
+                window.close()
+                pump(0.2)
+            }
+            window.contentView = hosting
+            window.layoutIfNeeded()
+            pump(0.5)
+
+            let root = try XCTUnwrap(hosting.layer)
+            var escapees: [String] = []
+            walkLayers(root, root: root, underMask: false) { layer, frameInRoot, underMask in
+                guard !underMask else { return }
+                if frameInRoot.minX < root.bounds.minX - 4 || frameInRoot.maxX > root.bounds.maxX + 4
+                    || frameInRoot.minY < root.bounds.minY - 4 || frameInRoot.maxY > root.bounds.maxY + 4 {
+                    escapees.append("\(type(of: layer)) at \(frameInRoot)")
+                }
+            }
+            XCTAssertTrue(escapees.isEmpty, "\(scenario): painting outside the homepage: \(escapees)")
+        }
+    }
+
+    /// A real image file for the store to import: pale (so this doubles as a
+    /// bright-photo fixture) and extreme in aspect.
+    private func makePicture(size: CGSize) throws -> URL {
+        let width = Int(size.width), height = Int(size.height)
+        let context = try XCTUnwrap(CGContext(
+            data: nil, width: width, height: height, bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: try XCTUnwrap(CGColorSpace(name: CGColorSpace.sRGB)),
+            bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue
+        ))
+        context.setFillColor(CGColor(red: 0.95, green: 0.95, blue: 0.92, alpha: 1))
+        context.fill(CGRect(origin: .zero, size: size))
+        let image = try XCTUnwrap(context.makeImage())
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("layout-picture-\(UUID().uuidString).png")
+        let destination = try XCTUnwrap(CGImageDestinationCreateWithURL(
+            url as CFURL, UTType.png.identifier as CFString, 1, nil
+        ))
+        CGImageDestinationAddImage(destination, image, nil)
+        XCTAssertTrue(CGImageDestinationFinalize(destination))
+        return url
     }
 
     // MARK: - Walking

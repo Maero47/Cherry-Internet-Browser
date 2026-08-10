@@ -56,6 +56,8 @@ final class HomepageBackgroundSourceTests: XCTestCase {
 
     private func resolve(
         matchesAccent: Bool,
+        prefersCustomImage: Bool = false,
+        customImageIsAvailable: Bool = false,
         prefersThemeBackground: Bool,
         themeHasBackground: Bool,
         isPrivate: Bool = false,
@@ -64,6 +66,8 @@ final class HomepageBackgroundSourceTests: XCTestCase {
     ) -> HomepageBackgroundSource {
         HomepageBackgroundResolver.resolve(
             matchesAccent: matchesAccent,
+            prefersCustomImage: prefersCustomImage,
+            customImageIsAvailable: customImageIsAvailable,
             prefersThemeBackground: prefersThemeBackground,
             themeHasBackground: themeHasBackground,
             isPrivate: isPrivate,
@@ -134,6 +138,124 @@ final class HomepageBackgroundSourceTests: XCTestCase {
             ),
             .curatedTheme(.slate)
         )
+    }
+
+    // MARK: - The user's own picture
+
+    /// A picture the user chose by hand outranks everything, including a
+    /// theme background the user is also letting win: choosing a file says
+    /// "put exactly this on my homepage", importing a theme only says "use
+    /// this theme".
+    func testAChosenPictureOutranksTheThemeBackground() {
+        XCTAssertEqual(
+            resolve(
+                matchesAccent: true,
+                prefersCustomImage: true,
+                customImageIsAvailable: true,
+                prefersThemeBackground: true,
+                themeHasBackground: true
+            ),
+            .customImage
+        )
+        XCTAssertEqual(
+            resolve(
+                matchesAccent: false,
+                prefersCustomImage: true,
+                customImageIsAvailable: true,
+                prefersThemeBackground: false,
+                themeHasBackground: false,
+                curatedTheme: .forest
+            ),
+            .customImage
+        )
+    }
+
+    /// The private-window rule keeps an imported third-party artifact out of
+    /// private windows. The user's own picture is their appearance choice,
+    /// like the accent wallpaper — which private windows have always shown —
+    /// so it is not gated.
+    func testAChosenPictureShowsInPrivateWindows() {
+        XCTAssertEqual(
+            resolve(
+                matchesAccent: true,
+                prefersCustomImage: true,
+                customImageIsAvailable: true,
+                prefersThemeBackground: true,
+                themeHasBackground: true,
+                isPrivate: true
+            ),
+            .customImage
+        )
+    }
+
+    /// Storage can be cleaned or the copy corrupted behind the preference's
+    /// back. Preferring a picture that is gone must fall through to whatever
+    /// would have won without it — the homepage never goes blank.
+    func testAMissingPictureFallsBackRatherThanBlanking() {
+        XCTAssertEqual(
+            resolve(
+                matchesAccent: true,
+                prefersCustomImage: true,
+                customImageIsAvailable: false,
+                prefersThemeBackground: true,
+                themeHasBackground: true
+            ),
+            .themeBackground
+        )
+        XCTAssertEqual(
+            resolve(
+                matchesAccent: true,
+                prefersCustomImage: true,
+                customImageIsAvailable: false,
+                prefersThemeBackground: false,
+                themeHasBackground: false
+            ),
+            .accentWallpaper(assetName: "HomepageWallpaper2563EB")
+        )
+        XCTAssertEqual(
+            resolve(
+                matchesAccent: false,
+                prefersCustomImage: true,
+                customImageIsAvailable: false,
+                prefersThemeBackground: false,
+                themeHasBackground: false,
+                curatedTheme: .rose
+            ),
+            .curatedTheme(.rose)
+        )
+    }
+
+    /// A copy still sitting in storage stays quiet once the user has picked
+    /// any other swatch — availability alone must never outrank a choice.
+    func testAStoredPictureStaysQuietOnceAnotherSwatchIsPicked() {
+        XCTAssertEqual(
+            resolve(
+                matchesAccent: true,
+                prefersCustomImage: false,
+                customImageIsAvailable: true,
+                prefersThemeBackground: false,
+                themeHasBackground: false
+            ),
+            .accentWallpaper(assetName: "HomepageWallpaper2563EB")
+        )
+    }
+
+    // MARK: - Glyph treatment follows the source
+
+    /// The halo decision is made against the source in one pure mapping:
+    /// shipped wallpapers keep the stack their numbers were measured with,
+    /// the user's picture gets the reinforced stack measured against pure
+    /// white, and the gradient/flat sources — whose luminance is known —
+    /// get none.
+    func testEachSourceBuysItsGlyphTreatment() {
+        XCTAssertEqual(
+            HomepageGlyphHalo.treatment(for: .accentWallpaper(assetName: "HomepageWallpaperDB283C")),
+            .standard
+        )
+        XCTAssertEqual(HomepageGlyphHalo.treatment(for: .customImage), .reinforced)
+        XCTAssertEqual(HomepageGlyphHalo.treatment(for: .themeBackground), .none)
+        XCTAssertEqual(HomepageGlyphHalo.treatment(for: .accentGradient), .none)
+        XCTAssertEqual(HomepageGlyphHalo.treatment(for: .curatedTheme(.midnight)), .none)
     }
 
     // MARK: - Private windows are never themed

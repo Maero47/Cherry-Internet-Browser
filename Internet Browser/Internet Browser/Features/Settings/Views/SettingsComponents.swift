@@ -6,6 +6,7 @@
 //  SF Symbol headers, labeled/toggle rows, and accent-aware swatches.
 //
 
+import AppKit
 import SwiftUI
 
 /// Vertical stack of settings cards with a consistent column width.
@@ -245,6 +246,8 @@ enum HomepageSwatchPreview {
     case gradient([Color])
     /// A thumbnail of the real wallpaper image the homepage would draw.
     case wallpaper(assetName: String)
+    /// The stored copy of the picture the user chose themselves.
+    case image(NSImage)
     /// A flat fill — an imported Firefox theme's `ntp_background`.
     case flat(Color)
 }
@@ -319,6 +322,18 @@ struct HomepageSwatch: View {
             Image(assetName)
                 .resizable()
                 .scaledToFill()
+        case .image(let image):
+            // The user's own picture, bare for the same reason — but hung in
+            // an overlay: a photo can have any aspect, and `scaledToFill`'s
+            // overflow must not become this tile's layout size (the same
+            // containment bargain the homepage itself makes).
+            Color.clear
+                .overlay {
+                    Image(nsImage: image)
+                        .resizable()
+                        .scaledToFill()
+                }
+                .clipped()
         case .flat(let color):
             color
         }
