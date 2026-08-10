@@ -77,6 +77,33 @@ struct BrowserView: View {
                     onDecline: { actionSessions.decline(request.id) }
                 )
             }
+            // HTTP authentication, on the tab's own window for the same reason
+            // the consent sheet above is. Dismissing it any other way (Escape,
+            // clicking away) declines the challenge, which leaves the tab on
+            // the page it was already showing.
+            .sheet(item: Binding(
+                get: { viewModel.pendingAuthPrompt },
+                set: { newValue in
+                    guard newValue == nil, let prompt = viewModel.pendingAuthPrompt else { return }
+                    prompt.resolve(.cancel)
+                    viewModel.pendingAuthPrompt = nil
+                }
+            )) { prompt in
+                HTTPAuthSheet(
+                    prompt: prompt,
+                    // A private window neither reads the vault nor writes to it.
+                    savedCredentials: prompt.isPrivate
+                        ? []
+                        : viewModel.passwordRepository.credentials(for: prompt.url),
+                    revealSaved: { item, completion in
+                        viewModel.revealSavedPassword(item, completion: completion)
+                    },
+                    onSubmit: { user, password, remember in
+                        prompt.resolve(.credential(user: user, password: password, remember: remember))
+                    },
+                    onCancel: { prompt.resolve(.cancel) }
+                )
+            }
             .alert(
                 viewModel.isPrivateMode ? "Exit Incognito Mode?" : "Enter Incognito Mode?",
                 isPresented: $viewModel.showPrivateModeAlert
@@ -209,7 +236,12 @@ struct BrowserView: View {
                 guard let closing = notification.object as? NSWindow,
                       closing === viewModel.associatedWindow else { return }
                 ExtensionManager.shared.windowClosed(viewModel)
-                guard !viewModel.isPrivateMode else { return }
+                guard !viewModel.isPrivateMode else {
+                    // A certificate exception made in a private window dies
+                    // with private browsing, not with the process.
+                    viewModel.forgetPrivateCertificateExceptionsIfLastPrivateWindow()
+                    return
+                }
                 viewModel.saveSessionForRestore()
             }
             .onAppear {
@@ -1055,6 +1087,11 @@ struct BrowserContentView: View {
                 )
                     .id(tab.id)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    // Drawn OVER the web view rather than instead of it. The
+                    // web view keeps its back/forward list, the tab keeps the
+                    // address that failed, and neither the failed page nor the
+                    // one still loaded underneath can reach any of this.
+                    .overlay { failureOverlay }
             }
         }
         // Video fullscreen hides the whole navigation bar, and with it the MCP
@@ -1075,6 +1112,32 @@ struct BrowserContentView: View {
         .onChange(of: viewModel.focusAddressBarTrigger) { _, _ in
             guard isFocused else { return }
             omniboxFocusTrigger += 1
+        }
+    }
+
+    /// The certificate interstitial, or the error surface, or nothing.
+    ///
+    /// The certificate warning wins when both are set, which can happen for one
+    /// frame: refusing the connection makes WebKit report a TLS failure, and
+    /// "this certificate expired on 12 April 2015" is strictly more useful than
+    /// "the secure connection failed".
+    @ViewBuilder
+    private var failureOverlay: some View {
+        if let warning = tab.certificateWarning {
+            CertificateWarningView(
+                warning: warning,
+                canGoBack: tab.canGoBack,
+                onLeave: { viewModel.leaveCertificateWarning(for: tab) },
+                onProceed: { viewModel.proceedPastCertificateWarning(for: tab) }
+            )
+        } else if let failure = tab.loadFailure {
+            NavigationFailureView(
+                failure: failure,
+                isRetrying: tab.isRetryingFailedLoad,
+                canGoBack: tab.canGoBack,
+                onRetry: { viewModel.retryFailedLoad(for: tab) },
+                onBack: { viewModel.goBack(for: tab) }
+            )
         }
     }
 }

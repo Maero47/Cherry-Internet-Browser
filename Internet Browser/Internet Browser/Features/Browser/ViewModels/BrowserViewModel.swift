@@ -56,6 +56,12 @@ final class BrowserViewModel {
 
     var showAutoFillPopup: Bool = false
 
+    // MARK: - HTTP authentication
+    /// The sign-in request waiting on THIS window's sheet, if any. One at a
+    /// time: a second challenge arriving while a sheet is up would replace the
+    /// question in front of the user without them having answered the first.
+    var pendingAuthPrompt: HTTPAuthPrompt?
+
     // MARK: - Find in Page
     // M2a: kept as ONE window-global query/count pair (not per-pane state) —
     // there's only one find bar/input on screen, so a second query would need
@@ -257,6 +263,20 @@ final class BrowserViewModel {
     }
 
     func goBack(for tab: Tab) {
+        // Back out of a failure surface goes back in the WEB VIEW's history,
+        // which was never disturbed: the failed navigation either never
+        // committed or was refused before it could. With nothing behind it,
+        // Back lands on the new-tab page rather than on the failure it just
+        // dismissed.
+        if tab.isShowingFailure {
+            tab.clearFailureState()
+            if tab.canGoBack, tab.webView?.canGoBack == true {
+                tab.goBack()
+            } else {
+                goHome(for: tab)
+            }
+            return
+        }
         if tab.internalPage != nil {
             // Back out of an internal cherry:// page re-shows the site that
             // was showing: its WKWebView was kept alive the whole time, so
@@ -294,11 +314,73 @@ final class BrowserViewModel {
     }
 
     func reload(for tab: Tab) {
+        // Reload on a failure surface is the same action as its Retry button.
+        // `tab.reload()` would re-request whatever the web view last committed,
+        // which is the previous page, not the address that failed.
+        if tab.isShowingFailure {
+            retryFailedLoad(for: tab)
+            return
+        }
         // Internal cherry:// pages are always-fresh SwiftUI views; reloading
         // would only act on the hidden covered site, which would be silent
         // and surprising — no-op instead.
         guard tab.internalPage == nil else { return }
         tab.reload()
+    }
+
+    // MARK: - Failed loads
+
+    func retryFailedLoad(for tab: Tab) {
+        tab.retryFailedLoad()
+    }
+
+    /// The certificate interstitial's primary action. Back where there is a
+    /// back, home where there is not; either way the tab does not stay pointed
+    /// at a site whose identity could not be checked.
+    func leaveCertificateWarning(for tab: Tab) {
+        tab.clearFailureState()
+        if tab.canGoBack, tab.webView?.canGoBack == true {
+            tab.goBack()
+        } else {
+            goHome(for: tab)
+        }
+    }
+
+    /// The interstitial's deliberate escape hatch. The exception it records is
+    /// the whole of what "Continue" means: this host, this port, in memory,
+    /// and in a private window it is dropped with the window.
+    func proceedPastCertificateWarning(for tab: Tab) {
+        guard let warning = tab.certificateWarning else { return }
+        CertificateExceptionStore.shared.allow(warning.exceptionKey, isPrivate: warning.isPrivate)
+        tab.clearFailureState()
+        tab.loadURL(warning.url)
+    }
+
+    /// Reads a saved credential for the HTTP authentication sheet, under
+    /// whatever the password settings require. Never reached from a private
+    /// window: the sheet does not build the control that calls it there.
+    func revealSavedPassword(_ item: PasswordItem, completion: @escaping (String?) -> Void) {
+        let deliver = { completion(PasswordRepository.shared.fetchPassword(for: item.id)) }
+        guard SettingsManager.shared.requireTouchIDForAutoFill else {
+            deliver()
+            return
+        }
+        passwordManager.authenticateWithTouchID(
+            reason: "Use the saved password for \(item.domain)"
+        ) { success in
+            if success { deliver() } else { completion(nil) }
+        }
+    }
+
+    /// Called when a private window goes away, or leaves private mode. Private
+    /// certificate exceptions are dropped once no private window is left to own
+    /// them; normal ones are untouched.
+    func forgetPrivateCertificateExceptionsIfLastPrivateWindow() {
+        let anotherPrivateWindowRemains = BrowserViewModel.windowViewModels.values.contains {
+            $0.windowID != self.windowID && $0.isPrivateMode
+        }
+        guard !anotherPrivateWindowRemains else { return }
+        CertificateExceptionStore.shared.forgetPrivateExceptions()
     }
 
     // MARK: - Zoom
@@ -402,6 +484,7 @@ final class BrowserViewModel {
         tab.loadingProgress = 0
         tab.showSettingsPage = false
         tab.internalPage = nil
+        tab.clearFailureState()
 
         if let homepage = HomepagePreference.shared.homepageURL {
             tab.showHomePage = false
@@ -737,6 +820,10 @@ final class BrowserViewModel {
         }
 
         if wasPrivate && !isPrivateMode {
+            // Leaving private browsing drops this window's certificate
+            // exceptions with it. They were only ever for the private session,
+            // and the window is no longer in one.
+            forgetPrivateCertificateExceptionsIfLastPrivateWindow()
             // Announce the now-finalized (post hard-replace) tab set, since
             // this window was excluded from every extension-facing API while
             // private and so was never previously known to the controller.

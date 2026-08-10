@@ -700,7 +700,12 @@ struct WebViewWrapper: NSViewRepresentable {
                     let canForward = webView.canGoForward
                     Task { @MainActor in
                         guard let self, let tab = self.tab else { return }
-                        if let url {
+                        // A failure surface owns the tab's address: WebKit
+                        // reverts `webView.url` to the last committed page when
+                        // a provisional navigation fails, and letting that
+                        // write through would replace the address the user
+                        // asked for with the one that happened to work last.
+                        if let url, !tab.isShowingFailure {
                             self.lastLoadedURL = url
                             tab.url = url
                         }
@@ -722,8 +727,11 @@ struct WebViewWrapper: NSViewRepresentable {
                               // The tab is titled after the internal page
                               // while one is shown ("Settings" etc.); the
                               // covered site's title is restored from the
-                              // web view by closeInternalPage.
-                              tab.internalPage == nil else { return }
+                              // web view by closeInternalPage. A failure
+                              // surface titles the tab after the host that
+                              // failed, for the same reason: the tab strip
+                              // must not advertise the last page that worked.
+                              tab.internalPage == nil, !tab.isShowingFailure else { return }
                         if let title, !title.isEmpty {
                             tab.title = title
                         }
@@ -800,6 +808,13 @@ struct WebViewWrapper: NSViewRepresentable {
 
         func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
             tab?.isLoading = true
+            // A navigation that is NOT the retry of the failure on screen
+            // replaces it immediately (the user typed something else, or a
+            // link was followed). A retry keeps its surface up until it has
+            // content to commit — see `didCommit`.
+            if let tab, tab.isShowingFailure, !tab.isRetryingFailedLoad {
+                tab.clearFailureState()
+            }
             // If credentials were captured on the previous page, the navigation
             // confirms the login went through — show the save prompt now
             PasswordManager.shared.onNavigationAfterCapture()
@@ -814,6 +829,12 @@ struct WebViewWrapper: NSViewRepresentable {
             // otherwise a popup's navigation would reset the opener's mute
             // frames and re-derive the opener's blocking from the popup's URL.
             guard webView === self.webView else { return }
+
+            // Content is arriving, so whatever Cherry was drawing instead of
+            // this page comes down now. Cleared HERE and not at
+            // didStartProvisionalNavigation so a retry that fails again swaps
+            // one failure surface for the next, with no blank frame between.
+            tab?.clearFailureState()
 
             // Main-frame navigation invalidates previously-registered sub-frames;
             // drop them (iframes re-register as they load), then re-apply the
@@ -842,6 +863,7 @@ struct WebViewWrapper: NSViewRepresentable {
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             tab?.isLoading = false
             tab?.loadingProgress = 1.0
+            commitPendingCredentialSave(for: webView)
             fetchFavicon(for: webView)
             saveHistory(for: webView)
 
@@ -871,11 +893,215 @@ struct WebViewWrapper: NSViewRepresentable {
         }
 
         func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
-            tab?.isLoading = false
+            handleNavigationFailure(error, in: webView)
         }
 
         func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
-            tab?.isLoading = false
+            handleNavigationFailure(error, in: webView)
+        }
+
+        /// The single route from "WebKit said no" to something on screen.
+        ///
+        /// Both delegate callbacks land here because the distinction between
+        /// them (did the navigation commit before it died?) changes nothing the
+        /// user needs told: either way there is no page.
+        private func handleNavigationFailure(_ error: Error, in webView: WKWebView) {
+            // A popup this coordinator is still the delegate of is not this tab.
+            guard webView === self.webView, let tab else { return }
+            tab.isLoading = false
+
+            // The certificate interstitial is already up for this tab. WebKit
+            // fails the connection Cherry itself refused, and that -1202 must
+            // not overwrite a screen that says something far more specific.
+            guard tab.certificateWarning == nil else { return }
+
+            let nsError = error as NSError
+            // Declining the sign-in sheet is a decision, not a failure to
+            // explain. Leave the tab on the page it was already showing.
+            if nsError.domain == NSURLErrorDomain,
+               nsError.code == NSURLErrorUserCancelledAuthentication {
+                restoreAfterDeclinedAuthentication(webView)
+                return
+            }
+
+            guard let failure = NavigationFailure.make(from: error, requestedURL: tab.url) else { return }
+            // `webView.isLoading` is the discriminator between the two things
+            // -999 means: a navigation already replaced this one (invisible),
+            // or the user pressed Stop and nothing is running (a screen).
+            guard !failure.isSilent(whileStillLoading: webView.isLoading) else { return }
+
+            tab.showLoadFailure(failure)
+            // Keep the coordinator's idea of what is loaded in step with the
+            // tab's, or `updateNSView` sees a URL it has not loaded and
+            // re-requests the address that just failed.
+            lastLoadedURL = failure.url
+        }
+
+        /// Cancel on the authentication sheet leaves the tab where it was. A
+        /// tab that had nowhere to be goes to the new-tab page rather than to a
+        /// white rectangle.
+        private func restoreAfterDeclinedAuthentication(_ webView: WKWebView) {
+            guard let tab else { return }
+            let current = webView.url?.absoluteString ?? ""
+            guard current.isEmpty || current == "about:blank" else { return }
+            if webView.canGoBack {
+                webView.goBack()
+            } else {
+                tab.clearFailureState()
+                tab.url = nil
+                tab.title = "New Tab"
+                tab.showHomePage = true
+            }
+        }
+
+        // MARK: - Authentication challenges
+
+        /// Certificates and HTTP authentication, which before this existed had
+        /// no handler at all: an untrusted certificate failed into a blank tab,
+        /// and a site behind HTTP basic auth was simply unreachable because
+        /// there was nowhere in Cherry to type a user name.
+        /// Deliberately the completion-handler spelling, not the `async` one
+        /// this file uses everywhere else. WebKit decides whether to consult a
+        /// navigation delegate about a challenge with `respondsToSelector:`,
+        /// and the `async` overload was measured NOT to satisfy it: with it in
+        /// place, `expired.badssl.com` never reached this method at all and
+        /// failed straight through to a generic -1202. The two spellings are
+        /// interchangeable for `decidePolicyFor`, which is why the rest of the
+        /// file can use the nicer one; they are not interchangeable here.
+        func webView(
+            _ webView: WKWebView,
+            didReceive challenge: URLAuthenticationChallenge,
+            completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
+        ) {
+            switch challenge.protectionSpace.authenticationMethod {
+            case NSURLAuthenticationMethodServerTrust:
+                let outcome = handleServerTrust(challenge, in: webView)
+                completionHandler(outcome.0, outcome.1)
+            case NSURLAuthenticationMethodHTTPBasic,
+                 NSURLAuthenticationMethodHTTPDigest,
+                 NSURLAuthenticationMethodNTLM:
+                Task { @MainActor in
+                    let outcome = await self.handleHTTPAuthentication(challenge, in: webView)
+                    completionHandler(outcome.0, outcome.1)
+                }
+            default:
+                // Client certificates and anything else keep the behaviour they
+                // had. Claiming to handle a method and then declining it is
+                // worse than letting the system decline it.
+                completionHandler(.performDefaultHandling, nil)
+            }
+        }
+
+        /// Evaluates the server's chain ourselves, so a failure can be
+        /// described rather than merely reported.
+        ///
+        /// A chain that evaluates cleanly goes to default handling: Cherry adds
+        /// nothing to the trusted case and must not become the thing that
+        /// decides it.
+        private func handleServerTrust(
+            _ challenge: URLAuthenticationChallenge,
+            in webView: WKWebView
+        ) -> (URLSession.AuthChallengeDisposition, URLCredential?) {
+            guard let trust = challenge.protectionSpace.serverTrust else {
+                return (.performDefaultHandling, nil)
+            }
+            if SecTrustEvaluateWithError(trust, nil) {
+                return (.performDefaultHandling, nil)
+            }
+
+            let space = challenge.protectionSpace
+            // A tab that has gone away is treated as private: an exception must
+            // never be granted, or recorded, on behalf of a tab nobody can see.
+            let isPrivate = tab?.isPrivate ?? true
+            let key = CertificateExceptionStore.Key(host: space.host, port: space.port)
+
+            if CertificateExceptionStore.shared.allows(key, isPrivate: isPrivate) {
+                return (.useCredential, URLCredential(trust: trust))
+            }
+
+            guard let tab else { return (.cancelAuthenticationChallenge, nil) }
+
+            let target = webView.url
+                ?? tab.url
+                ?? URL(string: "https://\(space.host)")
+                ?? URL(fileURLWithPath: "/")
+            tab.showCertificateWarning(
+                CertificateWarning(
+                    host: space.host,
+                    port: space.port,
+                    url: target,
+                    problem: CertificateInspector.problem(with: trust, host: space.host),
+                    certificateCommonName: CertificateInspector.commonName(of: trust),
+                    isPrivate: isPrivate
+                )
+            )
+            lastLoadedURL = target
+            return (.cancelAuthenticationChallenge, nil)
+        }
+
+        /// Raises the sign-in sheet on this tab's own window and waits for it.
+        private func handleHTTPAuthentication(
+            _ challenge: URLAuthenticationChallenge,
+            in webView: WKWebView
+        ) async -> (URLSession.AuthChallengeDisposition, URLCredential?) {
+            guard let tab, let viewModel else { return (.performDefaultHandling, nil) }
+            let space = challenge.protectionSpace
+
+            // A repeat challenge means the last answer was rejected, so the
+            // credential that was about to be filed is not one worth filing.
+            if challenge.previousFailureCount > 0 { pendingCredentialSave = nil }
+
+            let target = webView.url
+                ?? tab.url
+                ?? URL(string: "\(space.protocol ?? "https")://\(space.host)")
+                ?? URL(fileURLWithPath: "/")
+
+            let answer = await withCheckedContinuation { (continuation: CheckedContinuation<HTTPAuthPrompt.Answer, Never>) in
+                viewModel.pendingAuthPrompt = HTTPAuthPrompt(
+                    host: space.host,
+                    realm: space.realm,
+                    previouslyFailed: challenge.previousFailureCount > 0,
+                    isPrivate: tab.isPrivate,
+                    url: target,
+                    continuation: continuation
+                )
+            }
+            viewModel.pendingAuthPrompt = nil
+
+            switch answer {
+            case .cancel:
+                return (.cancelAuthenticationChallenge, nil)
+            case .credential(let user, let password, let remember):
+                if remember, !tab.isPrivate {
+                    pendingCredentialSave = (url: target, user: user, password: password)
+                }
+                // A private tab's credential is not put in the process-wide
+                // session credential store either: `.forSession` would leave it
+                // reachable from normal windows for the rest of the run.
+                let persistence: URLCredential.Persistence = tab.isPrivate ? .none : .forSession
+                return (.useCredential, URLCredential(user: user, password: password, persistence: persistence))
+            }
+        }
+
+        /// A credential the user asked Cherry to remember, held until the load
+        /// it belongs to actually succeeds. Filing it at submit time would save
+        /// every typo. Never set for a private tab.
+        private var pendingCredentialSave: (url: URL, user: String, password: String)?
+
+        /// Files the held credential once the authenticated page has loaded.
+        private func commitPendingCredentialSave(for webView: WKWebView) {
+            guard let pending = pendingCredentialSave else { return }
+            pendingCredentialSave = nil
+            guard let tab, !tab.isPrivate,
+                  let loadedHost = webView.url?.host,
+                  let pendingHost = pending.url.host,
+                  HostNormalizer.foldedASCII(loadedHost) == HostNormalizer.foldedASCII(pendingHost)
+            else { return }
+            _ = PasswordRepository.shared.addCredential(
+                url: pending.url.absoluteString,
+                username: pending.user,
+                password: pending.password
+            )
         }
 
         /// WebKit prefers this overload when it exists, which is the point: it
@@ -921,6 +1147,17 @@ struct WebViewWrapper: NSViewRepresentable {
             // createWebViewWith can decide whether to open a tab or block it.
             if isNewWindow {
                 return .allow
+            }
+
+            // A port no browser will open. Caught HERE because WebKit's own
+            // refusal happens below the navigation delegate: it produces no
+            // error, calls nothing, and leaves the tab on about:blank with the
+            // omnibox quietly rewritten. Refusing it ourselves is the only way
+            // the user is told anything at all.
+            if isMainFrame, let failure = NavigationFailure.blockedPortFailure(for: url) {
+                tab?.showLoadFailure(failure)
+                lastLoadedURL = url
+                return .cancel
             }
 
             // Focus Mode: block main-frame navigations to blocked domains

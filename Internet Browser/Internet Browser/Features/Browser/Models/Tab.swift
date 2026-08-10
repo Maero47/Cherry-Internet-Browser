@@ -35,6 +35,31 @@ final class Tab: NSObject, Identifiable {
     /// it and the web view is not rendered — but `url` and `webView` keep the
     /// covered site, so Back simply re-shows it with history intact.
     var internalPage: CherryPage? = nil
+
+    /// The load that did not happen, if this tab is showing one.
+    ///
+    /// Deliberately NOT an `internalPage`: an internal page REPLACES the tab's
+    /// location with a `cherry://` URL, and the address the user asked for is
+    /// exactly what must not be lost here. The failure is drawn over the tab's
+    /// own web view instead, which keeps `url` (the failing address, in the
+    /// omnibox and editable), the web view's back/forward list, and the site
+    /// underneath, all untouched.
+    var loadFailure: NavigationFailure? = nil
+
+    /// A retry is in flight and the failure surface is saying so. The surface
+    /// stays up until the retry has content to commit, so a second failure
+    /// replaces the first instead of flashing through a blank page.
+    var isRetryingFailedLoad: Bool = false
+
+    /// The certificate interstitial this tab is blocked behind. Set only by
+    /// `WebViewWrapper`'s authentication-challenge handler, after the
+    /// connection has already been refused: by the time this is visible there
+    /// is no live connection to the site to dismiss into.
+    var certificateWarning: CertificateWarning? = nil
+
+    /// Whether Cherry's own chrome is standing in front of this tab's page.
+    var isShowingFailure: Bool { loadFailure != nil || certificateWarning != nil }
+
     var webView: WKWebView?
     var group: TabGroup?
     var isSleeping: Bool
@@ -212,6 +237,10 @@ final class Tab: NSObject, Identifiable {
         self.url = url
         self.showHomePage = false
         self.showSettingsPage = false
+        // A deliberate navigation always leaves a failure surface behind. Retry
+        // does NOT come through here (see `retryFailedLoad`) precisely because
+        // it must keep the surface up while it works.
+        clearFailureState()
         // Loading web content always leaves any internal cherry:// page; the
         // new navigation brings its own favicon, so drop the parked one.
         self.internalPage = nil
@@ -219,6 +248,66 @@ final class Tab: NSObject, Identifiable {
         self.isSleeping = false
         self.lastActiveDate = Date()
         webView?.load(URLRequest(url: url))
+    }
+
+    // MARK: - Failed loads
+
+    /// Puts the failure surface in front of this tab's page.
+    ///
+    /// `url` is written back to the address that failed. It has to be: WebKit
+    /// reverts `webView.url` to the previously committed page when a
+    /// PROVISIONAL navigation fails, so without this the omnibox would quietly
+    /// go back to showing the last page that worked while the user looked at an
+    /// error about a different address. `WebViewWrapper`'s URL observer skips
+    /// its write-back while a failure is showing, for the same reason.
+    func showLoadFailure(_ failure: NavigationFailure) {
+        certificateWarning = nil
+        loadFailure = failure
+        isRetryingFailedLoad = false
+        isLoading = false
+        loadingProgress = 0
+        showHomePage = false
+        showSettingsPage = false
+        if let failedURL = failure.url {
+            url = failedURL
+            title = failedURL.host ?? failedURL.absoluteString
+        }
+    }
+
+    /// Blocks this tab behind the certificate interstitial.
+    func showCertificateWarning(_ warning: CertificateWarning) {
+        loadFailure = nil
+        isRetryingFailedLoad = false
+        certificateWarning = warning
+        isLoading = false
+        loadingProgress = 0
+        showHomePage = false
+        showSettingsPage = false
+        url = warning.url
+        title = warning.host
+    }
+
+    func clearFailureState() {
+        loadFailure = nil
+        certificateWarning = nil
+        isRetryingFailedLoad = false
+    }
+
+    /// Re-requests the address that failed, keeping the surface up while it
+    /// runs. Cleared by `didCommit` once the retry has something to show.
+    func retryFailedLoad() {
+        guard let target = loadFailure?.url ?? certificateWarning?.url ?? url else { return }
+        isRetryingFailedLoad = true
+        isLoading = true
+        loadingProgress = 0
+        guard let webView else {
+            // No web view yet (a tab whose very first load failed while asleep).
+            // Going through loadURL drops the surface, which is right: there is
+            // nothing to keep it in front of.
+            loadURL(target)
+            return
+        }
+        webView.load(URLRequest(url: target))
     }
 
     // MARK: - Internal cherry:// Pages

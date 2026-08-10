@@ -260,7 +260,16 @@ struct NavigationBarView: View {
                 isLoading: showsLoadingChrome,
                 // The covered site's URL is preserved while an internal page
                 // is shown — don't wear its https lock on a cherry:// location.
-                isSecure: tab.internalPage == nil && tab.url?.scheme == "https",
+                //
+                // `!tab.isShowingFailure` for a sharper reason: the padlock is
+                // a claim about the connection, and the certificate
+                // interstitial exists precisely because that claim could not be
+                // made. A lock beside `expired.badssl.com`, next to a screen
+                // saying the certificate could not be verified, is the browser
+                // contradicting its own security warning.
+                isSecure: tab.internalPage == nil
+                    && !tab.isShowingFailure
+                    && tab.url?.scheme == "https",
                 isPrivateMode: isPrivateMode,
                 focusTrigger: focusAddressBarTrigger,
                 onSubmit: { input in
