@@ -434,6 +434,112 @@ final class MCPSettingsPresentationTests: XCTestCase {
         }
     }
 
+    // MARK: - The Codex registration flow
+
+    /// The add command as the pane hands it to the user. Asserted against the
+    /// exact shape `codex mcp add --help` (codex-cli 0.145.0) accepts, and the
+    /// exact command that was run successfully against the real CLI.
+    ///
+    /// Dies when: the URL loses its `/mcp` path, the server name changes, or
+    /// `--bearer-token-env-var` is dropped or misspelled.
+    @MainActor
+    func testCodexAddCommandCarriesTheURLAndTheVariableName() {
+        let port = SettingsManager.shared.mcpServerPort
+        let command = MCPServerManager.shared.codexRegistrationCommand()
+
+        XCTAssertTrue(command.hasPrefix("codex mcp add cherry --url http://127.0.0.1:\(port)/mcp"), command)
+        XCTAssertTrue(command.contains("--bearer-token-env-var CHERRY_MCP_TOKEN"), command)
+    }
+
+    /// The variable the profile line exports and the variable Codex is told to
+    /// read must be the same string, or registration succeeds and every later
+    /// connection fails to authenticate — the exact failure the two-step pane
+    /// exists to prevent. The name is pinned as a literal on purpose: it is in
+    /// users' shell profiles, so renaming the constant is a breaking change
+    /// this test must surface.
+    ///
+    /// Dies when: either the export line or the add command renames the
+    /// variable without the other.
+    @MainActor
+    func testTheExportedVariableIsTheOneCodexIsToldToRead() throws {
+        let profile = MCPServerManager.shared.codexProfileLine(includingToken: false)
+        let add = MCPServerManager.shared.codexRegistrationCommand()
+
+        let flag = "--bearer-token-env-var "
+        let flagRange = try XCTUnwrap(add.range(of: flag), add)
+        let variable = try XCTUnwrap(add[flagRange.upperBound...].split(separator: " ").first)
+
+        XCTAssertEqual(String(variable), "CHERRY_MCP_TOKEN")
+        XCTAssertTrue(profile.hasPrefix("export \(variable)="), profile)
+    }
+
+    /// Neither half of the Codex flow may carry the secret in the default
+    /// form. The profile line reads it from the file with `$(cat …)`, and the
+    /// add command never carries it at all, in any mode — Codex has no flag
+    /// that takes a token value.
+    ///
+    /// Dies when: the safe profile form embeds the literal token, or a token
+    /// value creeps into the add command.
+    @MainActor
+    func testTheCodexFlowDoesNotContainTheLiteralToken() throws {
+        try withTokenPresent { store, token in
+            let profile = MCPServerManager.shared.codexProfileLine(includingToken: false)
+            XCTAssertTrue(profile.contains("$(cat "), profile)
+            XCTAssertTrue(profile.contains(store.tokenFileURL.path), profile)
+            XCTAssertFalse(profile.contains(token), "the token leaked into the safe profile line")
+
+            let add = MCPServerManager.shared.codexRegistrationCommand()
+            XCTAssertFalse(add.contains(token), "the token leaked into the codex add command")
+            XCTAssertFalse(add.contains("$(cat "), add)
+        }
+    }
+
+    /// The reveal has to actually reveal, for the same reason as the Claude
+    /// form: a placeholder would pass any "no `$(cat …)`" assertion hardest in
+    /// exactly the broken case.
+    ///
+    /// Dies when: the revealed profile line stops substituting the real token
+    /// and falls back to `<token>`.
+    @MainActor
+    func testTheRevealedCodexProfileLineCarriesTheRealToken() throws {
+        try withTokenPresent { _, token in
+            let profile = MCPServerManager.shared.codexProfileLine(includingToken: true)
+            XCTAssertFalse(profile.contains("$(cat "), profile)
+            XCTAssertTrue(profile.contains(token), "the revealed profile line does not carry the real token")
+            XCTAssertFalse(profile.contains("<token>"), profile)
+        }
+    }
+
+    /// One server, two clients. Both commands must name the same URL and both
+    /// token forms must read the same file — pinned at a NON-default port so a
+    /// builder that hardcodes 8787 dies here instead of passing by luck, and
+    /// through `SettingsManager.shared` so the entry point the view calls is
+    /// what is being tested, not a pure function beside it.
+    ///
+    /// Dies when: either client's command stops following the settings port
+    /// (hardcodes one, or reads a different property), or the Codex profile
+    /// line reads a different token file than the Claude command.
+    @MainActor
+    func testBothClientsAddressTheSameServerAndTheSameTokenFile() throws {
+        let original = SettingsManager.shared.mcpServerPort
+        SettingsManager.shared.mcpServerPort = 9911
+        defer { SettingsManager.shared.mcpServerPort = original }
+
+        try withTokenPresent { store, _ in
+            let claude = MCPServerManager.shared.registrationCommand(includingToken: false)
+            let codexAdd = MCPServerManager.shared.codexRegistrationCommand()
+            let codexProfile = MCPServerManager.shared.codexProfileLine(includingToken: false)
+
+            let url = "http://127.0.0.1:9911/mcp"
+            XCTAssertTrue(claude.contains(url), claude)
+            XCTAssertTrue(codexAdd.contains(url), codexAdd)
+
+            let fileRead = "$(cat \"\(store.tokenFileURL.path)\")"
+            XCTAssertTrue(claude.contains(fileRead), claude)
+            XCTAssertTrue(codexProfile.contains(fileRead), codexProfile)
+        }
+    }
+
     /// Runs `body` with a real token on disk, restoring whatever was there
     /// before. The command builder reads `MCPTokenStore.shared`, which is not
     /// injectable, so the only way to assert on a real token is to guarantee

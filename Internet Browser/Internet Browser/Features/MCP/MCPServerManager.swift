@@ -201,24 +201,66 @@ final class MCPServerManager {
 
     var isRunning: Bool { listener != nil }
 
-    /// The command the user pastes into a terminal to register Cherry.
-    /// Surfaced by the Settings pane in step 8.
-    func registrationCommand(includingToken: Bool) -> String {
-        let port = SettingsManager.shared.mcpServerPort
+    /// The variable the Codex flow stores the token in. Codex is handed this
+    /// NAME, not the secret: `--bearer-token-env-var` tells it which variable
+    /// to read at connection time, from its own environment.
+    static let codexTokenEnvironmentVariable = "CHERRY_MCP_TOKEN"
+
+    /// The one address both clients are pointed at. Claude and Codex register
+    /// against the same listener, the same port, the same path — one server
+    /// with two clients, and this is the only place the URL is spelled.
+    private var serverURL: String {
+        "http://127.0.0.1:\(SettingsManager.shared.mcpServerPort)/mcp"
+    }
+
+    /// How a generated command names the token. The `$(cat …)` form reads the
+    /// secret out of its file at the moment the line runs, so the pane can be
+    /// copied from without the token appearing on screen or in shell history;
+    /// `includingToken` is the explicit reveal behind the Show Token button.
+    /// Both clients' commands come through here — same file, same secret.
+    private func tokenReference(includingToken: Bool) -> String {
         let store = MCPTokenStore.shared
-        let token: String
         if includingToken {
             // A token that cannot be served safely is not shown either — the
             // pane would otherwise hand the user a command that is about to be
             // rejected by the server's own fail-closed check.
-            token = store?.tokenForAuthentication() ?? "<token>"
-        } else if let path = store?.tokenFileURL.path {
-            token = "$(cat \"\(path)\")"
-        } else {
-            token = "<token>"
+            return store?.tokenForAuthentication() ?? "<token>"
         }
-        return "claude mcp add --transport http --scope user cherry http://127.0.0.1:\(port)/mcp "
-            + "--header \"Authorization: Bearer \(token)\""
+        if let path = store?.tokenFileURL.path {
+            return "$(cat \"\(path)\")"
+        }
+        return "<token>"
+    }
+
+    /// The command the user pastes into a terminal to register Cherry with
+    /// Claude Code. Claude takes the secret inline, as a header, so this is
+    /// genuinely one command.
+    func registrationCommand(includingToken: Bool) -> String {
+        "claude mcp add --transport http --scope user cherry \(serverURL) "
+            + "--header \"Authorization: Bearer \(tokenReference(includingToken: includingToken))\""
+    }
+
+    /// The line the user adds to their shell profile so the token variable
+    /// exists in every shell Codex runs from.
+    ///
+    /// This is the half of the Codex flow that Claude does not have. Codex
+    /// resolves `--bearer-token-env-var` in ITS environment, at connection
+    /// time — a variable exported once, in the shell where the `add` was
+    /// typed, dies with that shell, after which registration looks fine and
+    /// every connection fails authentication. The profile is where a variable
+    /// outlives a shell, so the profile is what the pane asks for.
+    func codexProfileLine(includingToken: Bool) -> String {
+        "export \(Self.codexTokenEnvironmentVariable)="
+            + "\"\(tokenReference(includingToken: includingToken))\""
+    }
+
+    /// The registration command for Codex. Note what is NOT here: the token,
+    /// in any form. Codex is told only the variable's name — verified against
+    /// `codex mcp add --help` (codex-cli 0.145.0), which takes
+    /// `--url <URL> --bearer-token-env-var <ENV_VAR>` for streamable HTTP.
+    func codexRegistrationCommand() -> String {
+        "codex mcp add cherry --url \(serverURL) "
+            + "--bearer-token-env-var \(Self.codexTokenEnvironmentVariable)"
     }
 
     // MARK: Lifecycle

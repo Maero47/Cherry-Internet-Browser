@@ -51,7 +51,21 @@ struct MCPSettingsView: View {
     /// form and never puts it on screen unasked. Revealing it is a button.
     @State private var revealToken = false
 
-    @State private var copiedCommand = false
+    /// Which client the registration card is currently explaining. One card,
+    /// one client at a time: the two flows differ in exactly the way the copy
+    /// has to dwell on (inline header versus environment variable), and
+    /// showing both at once would be two near-identical walls of text with
+    /// the one difference that matters buried between them.
+    @State private var registrationClient: RegistrationClient = .claudeCode
+
+    private enum RegistrationClient: String, CaseIterable {
+        case claudeCode = "Claude Code"
+        case codex = "Codex"
+    }
+
+    /// The command most recently copied, so each Copy button can say "Copied"
+    /// about its own command and not about a neighbour's.
+    @State private var copiedCommand: String?
     @State private var confirmingRegenerate = false
     @State private var regenerateOutcome: RegenerateOutcome?
 
@@ -99,7 +113,7 @@ struct MCPSettingsView: View {
         SettingsCard(
             icon: "point.3.connected.trianglepath.dotted",
             title: "MCP Server",
-            subtitle: "Lets Claude Code use this browser."
+            subtitle: "Lets Claude Code or Codex use this browser."
         ) {
             statusBlock
 
@@ -238,34 +252,31 @@ struct MCPSettingsView: View {
     private var registrationCard: some View {
         SettingsCard(
             icon: "terminal",
-            title: "Register Claude Code",
-            subtitle: "Run this once in Terminal."
+            title: "Register a coding agent",
+            subtitle: "Both talk to the same server, port, and token."
         ) {
-            Text(command)
-                .font(.system(size: 11, design: .monospaced))
-                .foregroundStyle(.primary)
-                .textSelection(.enabled)
-                .fixedSize(horizontal: false, vertical: true)
-                .padding(10)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background {
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill(Color.primary.opacity(0.05))
+            Picker("Client", selection: $registrationClient) {
+                ForEach(RegistrationClient.allCases, id: \.self) { client in
+                    Text(client.rawValue)
                 }
-                .accessibilityLabel("Registration command")
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+
+            switch registrationClient {
+            case .claudeCode: claudeRegistration
+            case .codex: codexRegistration
+            }
 
             HStack(spacing: 8) {
-                Button(copiedCommand ? "Copied" : "Copy Command", action: copyCommand)
-                    .controlSize(.small)
-
                 Button(revealToken ? "Hide Token" : "Show Token") {
                     revealToken.toggle()
-                    copiedCommand = false
+                    copiedCommand = nil
                 }
                 .controlSize(.small)
                 .help(revealToken
                       ? "Go back to the form that reads the token from its file"
-                      : "Put the token itself in the command, on screen")
+                      : "Put the token itself on screen")
 
                 Spacer(minLength: 0)
             }
@@ -276,26 +287,117 @@ struct MCPSettingsView: View {
                         + "right now, can read it.",
                     tone: .failure
                 )
-            } else {
-                MCPBodyText(
-                    "This form reads the token out of its file when you run it, so the secret never appears on "
-                        + "screen or in your shell history."
-                )
             }
-
-            MCPBodyText("Cherry has only been verified against Claude Code. Claude Desktop is untested.")
         }
     }
 
-    private var command: String {
+    /// Claude Code takes the secret inline, as a header, so this really is one
+    /// command: run it and you are done.
+    @ViewBuilder
+    private var claudeRegistration: some View {
+        MCPBodyText("Run this once in Terminal:")
+
+        commandBlock(claudeCommand, label: "Claude Code registration command")
+        copyRow(for: claudeCommand)
+
+        if !revealToken {
+            MCPBodyText(
+                "This form reads the token out of its file when you run it, so the secret never appears on "
+                    + "screen or in your shell history."
+            )
+        }
+
+        MCPBodyText("Cherry has been verified against Claude Code. Claude Desktop is untested.")
+    }
+
+    /// Codex never takes the token. Its `--bearer-token-env-var` flag takes the
+    /// NAME of an environment variable, and Codex reads that variable from its
+    /// own environment when it connects, not when it registers. So the flow is
+    /// honestly two steps, and the pane says why rather than pretending the
+    /// second command is the whole story: a variable exported once, in the
+    /// shell where the add was typed, dies with that shell, and from then on
+    /// registration looks fine while every connection fails to authenticate.
+    @ViewBuilder
+    private var codexRegistration: some View {
+        MCPBodyText(
+            "Codex is different: the command below hands it the name of an environment variable, "
+                + "\(MCPServerManager.codexTokenEnvironmentVariable), and Codex reads that variable itself "
+                + "every time it connects. The variable therefore has to exist in every shell you run Codex "
+                + "from, which makes this two steps."
+        )
+
+        MCPBodyText("1. Add this line to your shell profile (for example ~/.zshrc), then open a new terminal:")
+        commandBlock(codexProfileLine, label: "Shell profile line for the Codex token")
+        copyRow(for: codexProfileLine)
+
+        MCPBodyText("2. In that new terminal, register Cherry:")
+        commandBlock(codexAddCommand, label: "Codex registration command")
+        copyRow(for: codexAddCommand)
+
+        MCPNoticeText(
+            "Typing the export once instead of putting it in your profile seems to work: registration "
+                + "succeeds. But the variable dies with that shell, and every Codex session started after it "
+                + "fails to authenticate against Cherry. The profile is what makes the variable exist "
+                + "wherever Codex runs.",
+            tone: .failure
+        )
+
+        if !revealToken {
+            MCPBodyText(
+                "The profile line reads the token out of its file each time a shell starts, so the secret is "
+                    + "not written into your profile, your history, or this screen. It does sit in the "
+                    + "environment of every shell you open afterwards, where anything you start from that "
+                    + "shell can read it. That is the trade the Codex flow makes."
+            )
+        }
+
+        MCPBodyText(
+            "What has been verified on a real codex command line: registration with exactly this command "
+                + "succeeds, and Codex stores the address and the variable name. A live Codex session "
+                + "reading Cherry has not been tested."
+        )
+    }
+
+    private func commandBlock(_ command: String, label: String) -> some View {
+        Text(command)
+            .font(.system(size: 11, design: .monospaced))
+            .foregroundStyle(.primary)
+            .textSelection(.enabled)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(Color.primary.opacity(0.05))
+            }
+            .accessibilityLabel(label)
+    }
+
+    private func copyRow(for command: String) -> some View {
+        HStack(spacing: 8) {
+            Button(copiedCommand == command ? "Copied" : "Copy Command") { copy(command) }
+                .controlSize(.small)
+            Spacer(minLength: 0)
+        }
+    }
+
+    private var claudeCommand: String {
         manager.registrationCommand(includingToken: revealToken)
     }
 
-    private func copyCommand() {
+    private var codexProfileLine: String {
+        manager.codexProfileLine(includingToken: revealToken)
+    }
+
+    private var codexAddCommand: String {
+        manager.codexRegistrationCommand()
+    }
+
+    private func copy(_ command: String) {
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         pasteboard.setString(command, forType: .string)
-        copiedCommand = true
+        copiedCommand = command
     }
 
     // MARK: - Token
@@ -352,7 +454,7 @@ struct MCPSettingsView: View {
         do {
             try store.rotate()
             regenerateOutcome = .done
-            copiedCommand = false
+            copiedCommand = nil
             // The request path re-reads the file per request, so live clients
             // start failing with 401 without a restart. The listener is only
             // restarted so a server that had failed closed on an unsecurable
