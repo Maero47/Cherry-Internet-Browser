@@ -732,7 +732,11 @@ final class BrowserViewModel {
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
         window.isMovableByWindowBackground = false
-        window.isMovable = false
+        // System-movable like every browser window — see
+        // `configureBrowserWindow`, whose flags this inline configuration
+        // mirrors: non-movable windows lose the green button's arrangement
+        // menu.
+        window.isMovable = true
         window.backgroundColor = .clear
         window.isOpaque = false
         window.titlebarSeparatorStyle = .none

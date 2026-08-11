@@ -24,6 +24,13 @@ class DragAreaNSView: NSView {
     private var initialMouseLocation: NSPoint = .zero
     private var initialWindowOrigin: NSPoint = .zero
 
+    /// The window is system-movable (the green button's arrangement menu
+    /// requires it — see `configureBrowserWindow`), so without this AppKit
+    /// would ALSO server-drag the window from this view while `mouseDragged`
+    /// below moves it manually: two movers, double-speed dragging. This view
+    /// owns its drags alone.
+    override var mouseDownCanMoveWindow: Bool { false }
+
     override func mouseDown(with event: NSEvent) {
         guard let window = self.window else {
             super.mouseDown(with: event)
@@ -57,7 +64,7 @@ class DragAreaNSView: NSView {
 // MARK: - Window Configurator
 
 /// Invisible view that configures the hosting NSWindow from within the SwiftUI hierarchy.
-/// This ensures isMovable = false is set AFTER SwiftUI creates the window.
+/// This ensures the movability flags are set AFTER SwiftUI creates the window.
 struct WindowConfigurator: NSViewRepresentable {
     func makeNSView(context: Context) -> NSView {
         let view = WindowConfiguratorNSView()
@@ -71,7 +78,13 @@ class WindowConfiguratorNSView: NSView {
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         guard let window = self.window else { return }
-        window.isMovable = false
+        // The same pair `configureBrowserWindow` sets, and for the same
+        // reason: system-movable (or the green button's arrangement menu is
+        // withheld), background drags off. This runs after SwiftUI installs
+        // the content, so it must agree with the window-side configuration —
+        // it used to force `isMovable = false`, which would quietly undo the
+        // arrangement-menu fix on every browser window.
+        window.isMovable = true
         window.isMovableByWindowBackground = false
     }
 }

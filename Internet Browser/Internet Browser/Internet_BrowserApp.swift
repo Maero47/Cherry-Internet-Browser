@@ -339,7 +339,16 @@ func configureBrowserWindow(_ window: NSWindow) {
     window.titlebarAppearsTransparent = true
     window.titleVisibility = .hidden
     window.isMovableByWindowBackground = false
-    window.isMovable = false
+    // Movable — for the SYSTEM, not for AppKit dragging. `isMovable = false`
+    // declares the window ineligible for server-side moving and resizing
+    // (NSWindow.h: a non-movable window "will also not be moved (or resized)
+    // by the system"), and the green button's arrangement menu — Fill /
+    // Center / Move & Resize / tiling — is exactly that, so it collapsed to
+    // Fullscreen alone. Cherry's own dragging never needed the flag: the drag
+    // areas move the window with `setFrameOrigin` and refuse AppKit's drag
+    // (`DragAreaNSView.mouseDownCanMoveWindow`), and background drags stay
+    // off via `isMovableByWindowBackground` above.
+    window.isMovable = true
     window.backgroundColor = .clear
     window.isOpaque = false
     window.titlebarSeparatorStyle = .none

@@ -540,6 +540,64 @@ extension ThemeContrast {
     }
 }
 
+// MARK: - Live resize
+
+/// Whether any window is currently being live-resized, and a generation that
+/// advances each time one settles.
+///
+/// This exists for ONE consumer: `ThemeContrastGuard`. A live resize sweeps
+/// every chrome cluster's geometry through a fresh cache key on every frame,
+/// and a full re-sample and re-solve per cluster per frame costs hundreds of
+/// milliseconds against a busy theme (measured in
+/// `WindowResizeAndZoomTests.testLiveResizeSweepTiming`). While this reports
+/// `isLiveResizing`, the guard serves each cluster's last settled plan instead
+/// of solving; when `settledGeneration` advances, every asking body re-runs
+/// and computes the real answer for the final geometry.
+///
+/// Both properties are @Observable and read by the guard unconditionally, so
+/// a plate layer's body re-runs when a resize begins and again when it
+/// settles — the settling read is what turns the held plan back into the
+/// measured one.
+@MainActor
+@Observable
+final class WindowLiveResizeMonitor {
+    static let shared = WindowLiveResizeMonitor()
+
+    private(set) var isLiveResizing = false
+    private(set) var settledGeneration = 0
+
+    /// Live resizes can overlap across windows; the hold lifts only when the
+    /// last one ends.
+    @ObservationIgnored private var resizingWindows = 0
+    @ObservationIgnored private var observers: [NSObjectProtocol] = []
+
+    private init() {
+        let center = NotificationCenter.default
+        observers.append(center.addObserver(
+            forName: NSWindow.willStartLiveResizeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.resizeDidStart() }
+        })
+        observers.append(center.addObserver(
+            forName: NSWindow.didEndLiveResizeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.resizeDidEnd() }
+        })
+    }
+
+    private func resizeDidStart() {
+        resizingWindows += 1
+        isLiveResizing = true
+    }
+
+    private func resizeDidEnd() {
+        resizingWindows = max(0, resizingWindows - 1)
+        guard resizingWindows == 0 else { return }
+        isLiveResizing = false
+        settledGeneration += 1
+    }
+}
+
 // MARK: - The guard
 
 /// Answers "does this CLUSTER need a surface, and which one" for one rectangle,
@@ -576,12 +634,30 @@ final class ThemeContrastGuard {
     /// recorded too — a body that asks is a body that asks.
     var served: [ServedPlate]?
 
+    /// How many times the guard has actually sampled and solved (as opposed
+    /// to serving the cache or a held plan). A counter rather than a test-only
+    /// hook because incrementing an Int is free and it is the only way a test
+    /// can pin "a live-resize frame does not re-solve" without measuring
+    /// wall-clock time.
+    private(set) var sampledPlateCount = 0
+
     private var cache: [String: ThemeScrimPlan?] = [:]
 
     /// Plenty for every cluster in several windows at a few window widths;
     /// dropped wholesale rather than evicted one by one, because a resize
     /// invalidates a whole generation of keys at once anyway.
     private let cacheLimit = 512
+
+    /// The last plan each cluster IDENTITY settled on — the key is everything
+    /// the geometry key carries EXCEPT the geometry (theme, foreground,
+    /// overlays, floor, control width, plus the row band the cluster lives
+    /// in). This is what a live-resize frame serves instead of solving; see
+    /// `plate`. Seeded by every real solve, so it is warm before any drag.
+    private var lastSettledPlan: [String: ThemeScrimPlan?] = [:]
+
+    /// A handful of identities per theme; bounded only so switching themes
+    /// forever cannot grow it without limit.
+    private let lastSettledLimit = 64
 
     private init() {}
 
@@ -605,20 +681,28 @@ final class ThemeContrastGuard {
         floor: Double,
         windowPoints: CGFloat
     ) -> ThemeScrimPlan? {
-        // Read first and unconditionally: this is the @Observable dependency
-        // that re-runs the caller's body when the theme changes, and a cache
-        // hit must not skip it.
+        // Read first and unconditionally: these are the @Observable
+        // dependencies that re-run the caller's body — the theme, and the
+        // live-resize lifecycle whose settling is what re-asks the real
+        // question once a drag ends. A cache hit must not skip them.
         let themeID = FirefoxThemeManager.shared.activeTheme?.id
+        let isLiveResizing = WindowLiveResizeMonitor.shared.isLiveResizing
+        _ = WindowLiveResizeMonitor.shared.settledGeneration
         guard let themeID, let context, rect.width >= 1, rect.height >= 1 else { return nil }
 
         let canvas = canvas ?? rect
         let resolved = ThemeContrast.resolve(context.foreground)
-        let key = [
-            themeID,
-            Self.quantized(rect), Self.quantized(canvas),
+        // The question minus the geometry: shared by the exact cache key and
+        // the live-resize identity below.
+        let question = [
             Self.tag(resolved),
             context.overlays.map { Self.tag(ThemeContrast.resolve($0)) }.joined(separator: "/"),
             String(format: "%.2f/%.0f", floor, windowPoints)
+        ].joined(separator: "|")
+        let key = [
+            themeID,
+            Self.quantized(rect), Self.quantized(canvas),
+            question
         ].joined(separator: "|")
 
         if let cached = cache[key] {
@@ -629,6 +713,25 @@ final class ThemeContrastGuard {
             return cached
         }
 
+        // A live resize sweeps the geometry through a fresh key on every
+        // frame, and paying a full re-sample and re-solve per cluster per
+        // frame is the measured stutter (~600ms/frame against a busy theme —
+        // `testLiveResizeSweepTiming`). Mid-drag, serve the plan this cluster
+        // identity last settled on; the artwork sliding under the controls is
+        // measured again the moment the drag ends, when `settledGeneration`
+        // re-runs every asking body and this branch is no longer taken. What
+        // the user sees mid-drag is the pre-drag surface, corrected on
+        // release — never a weakened measurement.
+        let identity = [themeID, Self.rowBand(rect), question].joined(separator: "|")
+        if isLiveResizing, let held = lastSettledPlan[identity] {
+            served?.append(ServedPlate(
+                rect: rect, floor: floor, windowPoints: windowPoints,
+                foreground: resolved, plan: held
+            ))
+            return held
+        }
+
+        sampledPlateCount += 1
         let sample = ThemeBackdropSampler.backdrop(
             under: rect, canvas: canvas, overlays: context.overlays
         )
@@ -637,11 +740,23 @@ final class ThemeContrastGuard {
         )
         if cache.count >= cacheLimit { cache.removeAll(keepingCapacity: true) }
         cache[key] = plan
+        if lastSettledPlan.count >= lastSettledLimit { lastSettledPlan.removeAll(keepingCapacity: true) }
+        lastSettledPlan[identity] = plan
         served?.append(ServedPlate(
             rect: rect, floor: floor, windowPoints: windowPoints,
             foreground: resolved, plan: plan
         ))
         return plan
+    }
+
+    /// The vertical band a cluster occupies — the part of its geometry that a
+    /// horizontal live resize does NOT move, which is what lets a held plan
+    /// find its cluster again while the widths sweep. Clusters sharing a band
+    /// and a question (the two navigation button clusters) share a held plan
+    /// mid-drag; they get their own answers back the moment the resize
+    /// settles.
+    private static func rowBand(_ rect: CGRect) -> String {
+        "\(Int(rect.minY.rounded())),\(Int(rect.height.rounded()))"
     }
 
     private static func quantized(_ rect: CGRect) -> String {
