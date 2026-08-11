@@ -310,6 +310,19 @@ struct NavigationFailure: Equatable {
         return "\(domain) \(code)"
     }
 
+    /// Whether the failure screen offers Pearl's runner.
+    ///
+    /// Only `.offline`. That screen is a WAIT — the network is gone and the
+    /// user is stuck until it returns — so a game while waiting is a kindness.
+    /// Every other family is an INSTRUCTION (fix the spelling, check the
+    /// server, read what the system said), and burying an instruction under
+    /// a game would make those screens worse at their one job. The rule
+    /// lives here, on the model, so `PearlRunnerOfferTests` can walk every
+    /// family and prove the game appears on exactly one of them.
+    var offersPearlRunner: Bool {
+        family == .offline
+    }
+
     /// The SF Symbol on the surface. Deliberately not an alarm: these are
     /// conditions to read, not warnings to heed. The one screen in Cherry with
     /// a warning mark is the certificate interstitial.
