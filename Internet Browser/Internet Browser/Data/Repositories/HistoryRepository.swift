@@ -226,14 +226,61 @@ final class HistoryRepository {
 
     // MARK: - Search
 
+    /// Every row whose title or URL contains `query`, in `historyItems` order
+    /// (newest visit first). Unranked — this is the general-purpose search the
+    /// library screen and the MCP tool use.
+    ///
+    /// The scan is still linear in history size, which is a fact about
+    /// `historyItems` being an in-memory array; what changed is the constant.
+    /// It used to case-fold both fields of every row on every call, and now
+    /// reads the fold `HistoryItem` did when it was built. See
+    /// `HistoryItem.loweredTitle`.
     func searchHistory(query: String) -> [HistoryItem] {
         guard !query.isEmpty else { return historyItems }
 
-        let lowercasedQuery = query.lowercased()
+        let needle = OmniboxRanking.needle(for: query)
+        guard !needle.isEmpty else { return historyItems }
         return historyItems.filter { item in
-            item.title.lowercased().contains(lowercasedQuery) ||
-            item.url.absoluteString.lowercased().contains(lowercasedQuery)
+            item.searchText.urlContains(needle) || item.searchText.titleContains(needle)
         }
+    }
+
+    /// The omnibox's history matches, ranked by frecency and match position.
+    ///
+    /// The query is folded to bytes once, and every row is then matched, scored
+    /// and (if it is still in the running) deduplicated in a single pass. There
+    /// is no separate filter step: `OmniboxRanking.matchKind` answers "does this
+    /// match" and "where did it match" from the same two byte searches, so a
+    /// row that is going to be discarded costs nothing beyond those. Nothing on
+    /// this path allocates per row — the folding, and the host/path/query
+    /// boundaries the ranking needs, were done when the row was built
+    /// (`HistoryItem.searchText`).
+    ///
+    /// Private-window visits cannot appear here because they are never written:
+    /// `WebViewWrapper.Coordinator.saveHistory` refuses to record a tab whose
+    /// `isPrivate` is true — or whose tab has been deallocated, so a
+    /// just-closed private tab cannot slip through either. This method reads
+    /// `historyItems`, which is the store, so there is nothing extra to filter
+    /// here and nothing that could be forgotten — the omnibox cannot rank a
+    /// private visit because no private visit exists to rank.
+    ///
+    /// `OmniboxHistoryCostTests` measures the whole thing at 20,000 rows.
+    func rankedSuggestions(
+        query: String, limit: Int, now: Date = Date()
+    ) -> [RankedOmniboxCandidate] {
+        let needle = OmniboxRanking.needle(for: query)
+        guard !needle.isEmpty, limit > 0 else { return [] }
+
+        let candidates = historyItems.lazy.map { item in
+            OmniboxCandidate(
+                url: item.url,
+                title: item.title,
+                visitCount: item.visitCount,
+                lastVisit: item.visitDate,
+                text: item.searchText
+            )
+        }
+        return OmniboxRanking.rank(candidates, needle: needle, now: now, limit: limit)
     }
 
     // MARK: - Grouping

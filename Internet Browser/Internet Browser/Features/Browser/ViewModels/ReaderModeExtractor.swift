@@ -9,6 +9,15 @@ struct ReaderContent {
     let title: String
     let byline: String?
     let content: String // HTML
+    /// The page the article was extracted from.
+    ///
+    /// The extracted HTML keeps the article's markup verbatim, and real
+    /// articles are full of RELATIVE `src` and `href` — `/img/hero.jpg`,
+    /// `../figure-2.png`, `#footnote-3`. Rendered with no base URL those
+    /// resolve against nothing: every relative image silently fails to load
+    /// and every relative link goes nowhere. This is what the reader view
+    /// resolves them against. See `ReaderWebView`.
+    let sourceURL: URL?
 }
 
 struct ReaderModeExtractor {
@@ -74,6 +83,38 @@ struct ReaderModeExtractor {
         var removeSelectors = 'script, style, nav, footer, header, .ad, .ads, .sidebar, .comments, .social, .share, [role="navigation"], iframe, form';
         clone.querySelectorAll(removeSelectors).forEach(function(el) { el.remove(); });
 
+        // Everything else that can execute or fetch, which the list above did
+        // not cover. This matters more than it used to: the reader document now
+        // renders against the article's own base URL, so anything left in here
+        // resolves and runs somewhere real rather than nowhere. The reader view
+        // ALSO turns JavaScript off outright and serves a `default-src 'none'`
+        // CSP — this pass is the first of those three, not the only one.
+        //
+        //  * `<base>` would silently override the base URL the reader passes in;
+        //  * `<link>`/`<meta>` can fetch and can redirect the document;
+        //  * `<object>`/`<embed>`/`<svg>` script are script by another name;
+        //  * `<noscript>`/`<template>` hide markup from this pass that the
+        //    parser will happily bring back.
+        clone.querySelectorAll('base, link, meta, object, embed, applet, noscript, template, svg script, svg use').forEach(function(el) { el.remove(); });
+
+        // Inline handlers (`onerror`, `onclick`, …) and `javascript:` URLs are
+        // script that survives having every <script> removed.
+        var all = clone.querySelectorAll('*');
+        for (var n = 0; n < all.length; n++) {
+            var el = all[n];
+            var attrs = el.attributes;
+            for (var a = attrs.length - 1; a >= 0; a--) {
+                var name = attrs[a].name.toLowerCase();
+                var value = (attrs[a].value || '').replace(/[\\s\\u0000-\\u001f]/g, '').toLowerCase();
+                if (name.indexOf('on') === 0) { el.removeAttribute(attrs[a].name); continue; }
+                if ((name === 'href' || name === 'src' || name === 'xlink:href' ||
+                     name === 'action' || name === 'formaction' || name === 'data') &&
+                    (value.indexOf('javascript:') === 0 || value.indexOf('vbscript:') === 0)) {
+                    el.removeAttribute(attrs[a].name);
+                }
+            }
+        }
+
         return {
             title: title,
             byline: byline,
@@ -83,6 +124,10 @@ struct ReaderModeExtractor {
     """;
 
     static func extract(from webView: WKWebView) async -> ReaderContent? {
+        // Read on the main actor before awaiting: `WKWebView.url` is the page
+        // the extraction ran against, and it is what every relative `src` and
+        // `href` in the returned markup is relative TO.
+        let sourceURL = await MainActor.run { webView.url }
         do {
             let result = try await webView.evaluateJavaScript(extractionJS)
             guard let dict = result as? [String: Any],
@@ -94,7 +139,8 @@ struct ReaderModeExtractor {
             return ReaderContent(
                 title: title,
                 byline: byline?.isEmpty == true ? nil : byline,
-                content: content
+                content: content,
+                sourceURL: sourceURL
             )
         } catch {
             return nil

@@ -708,7 +708,14 @@ struct BrowserView: View {
         if viewModel.showReaderMode, let content = viewModel.readerContent {
             ReaderModeView(
                 content: content,
-                onDismiss: { viewModel.toggleReaderMode() }
+                onDismiss: { viewModel.toggleReaderMode() },
+                // A link followed from the reader leaves reader mode and opens
+                // as a normal tab, where the omnibox, history and per-site
+                // rules all apply. The reader's own web view never navigates.
+                onOpenLink: { url in
+                    viewModel.toggleReaderMode()
+                    viewModel.newTab(url: url)
+                }
             )
             .transition(.opacity)
             .zIndex(996)

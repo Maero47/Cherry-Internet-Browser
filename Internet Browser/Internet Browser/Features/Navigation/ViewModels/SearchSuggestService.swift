@@ -66,27 +66,26 @@ class SearchSuggestService {
         isLoading = false
     }
 
+    /// How many history rows the omnibox will ever show. Unchanged — the
+    /// difference is that these are now the best four rather than the first
+    /// four the repository happened to hand back.
+    private static let historySuggestionLimit = 4
+
+    /// The address bar's history matches, best first.
+    ///
+    /// This used to take whatever order `searchHistory` returned — which is
+    /// `historyItems` order, i.e. most-recently-visited-anything first — and
+    /// keep the first four. So typing `git` offered whichever four pages
+    /// containing "git" happened to have been visited last, and the site the
+    /// user opens every morning could sit below a page they read once.
+    ///
+    /// Ordering, deduplication and the "you are already typing it" rule all
+    /// live in `OmniboxRanking` now, which is pure and tested; the repository
+    /// does the scan. See `OmniboxRanking.recencyHalfLifeDays` for the curve.
     private func matchHistory(query: String) -> [SuggestionItem] {
-        let lowered = query.lowercased()
-        let matches = HistoryRepository.shared.searchHistory(query: query)
-
-        // Deduplicate by host+path, prefer higher visit count
-        var seen = Set<String>()
-        var results: [SuggestionItem] = []
-
-        for item in matches {
-            let key = item.url.absoluteString.lowercased()
-            guard !seen.contains(key) else { continue }
-            seen.insert(key)
-
-            // Skip if the URL exactly matches the query (user is already typing it)
-            if item.url.absoluteString.lowercased() == lowered { continue }
-
-            results.append(.history(title: item.title, url: item.url))
-            if results.count >= 4 { break }
-        }
-
-        return results
+        HistoryRepository.shared
+            .rankedSuggestions(query: query, limit: Self.historySuggestionLimit)
+            .map { .history(title: $0.candidate.title, url: $0.candidate.url) }
     }
 
     @MainActor
