@@ -16,7 +16,12 @@ struct BrowserView: View {
     /// consent sheet the moment a request for one of its tabs arrives.
     @State private var actionSessions = WebActionSessionStore.shared
 
-    init(initialURL: URL? = nil, isPrivate: Bool = false) {
+    /// `presentsSetupWizardIfFirstRun` is passed true only by
+    /// `openBrowserWindow` — a window that is actually presented. The
+    /// `WindowGroup` scene builds a `BrowserView()` too (never shown, see
+    /// `Internet_BrowserApp`), and letting it try would consume the wizard's
+    /// once-per-session claim on a window nobody sees.
+    init(initialURL: URL? = nil, isPrivate: Bool = false, presentsSetupWizardIfFirstRun: Bool = false) {
         let vm = BrowserViewModel()
         vm.isPrivateMode = isPrivate
         if let tab = vm.tabManager.selectedTab {
@@ -26,6 +31,9 @@ struct BrowserView: View {
                 tab.showHomePage = false
                 tab.title = url.host ?? "Loading..."
             }
+        }
+        if presentsSetupWizardIfFirstRun {
+            vm.attachSetupWizardIfEligible()
         }
         _viewModel = State(initialValue: vm)
     }
@@ -40,6 +48,16 @@ struct BrowserView: View {
 
     var body: some View {
         configuredLayout
+            // The first-run setup wizard, over the launch window only (the
+            // one window whose view model won the presentation claim). A
+            // sheet cannot re-open the window bring-up bug: it is presented
+            // after this window is already configured and shown, and it never
+            // touches this window's frame. Dismissing it by ANY route funnels
+            // through `showSetupWizard`'s didSet, which writes the first-run
+            // marker — so Escape is a skip, not a loophole.
+            .sheet(isPresented: $viewModel.showSetupWizard) {
+                SetupWizardView(onFinish: { viewModel.showSetupWizard = false })
+            }
             .sheet(isPresented: $viewModel.showAddBookmark) {
                 // The focused pane's tab, not always the primary — so bookmarking
                 // from the secondary pane saves THAT pane's page.

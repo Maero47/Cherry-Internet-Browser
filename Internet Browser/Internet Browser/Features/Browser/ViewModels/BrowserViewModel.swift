@@ -28,6 +28,32 @@ final class BrowserViewModel {
     var showTabSearch: Bool = false
     var isPrivateMode: Bool = false
     var showPrivateModeAlert: Bool = false
+    /// Whether THIS window is presenting the first-run setup wizard sheet.
+    /// True only after `attachSetupWizardIfEligible()` wins the session's one
+    /// claim. The true→false transition is the wizard's single dismissal
+    /// choke point — Finish, Skip Setup and Escape all come through here —
+    /// and is what writes the first-run marker, so however the sheet went
+    /// away, it has had its one showing. Quitting the app with the sheet
+    /// still up never runs this, which is exactly the "offer it once more
+    /// next launch" behaviour `SetupWizardPresenter` documents.
+    var showSetupWizard: Bool = false {
+        didSet {
+            if oldValue && !showSetupWizard {
+                SetupWizardPresenter.shared.markSeen()
+            }
+        }
+    }
+
+    /// Presents the setup wizard in this window if it wins the claim — a true
+    /// first run, a non-private window, and nobody else has claimed it this
+    /// session (`SetupWizardPresenter`). Called by `BrowserView.init` only
+    /// for windows built by `openBrowserWindow`; the never-presented
+    /// `WindowGroup` scene and tear-off windows must not consume the claim.
+    func attachSetupWizardIfEligible() {
+        if SetupWizardPresenter.shared.claimPresentation(isPrivate: isPrivateMode) {
+            showSetupWizard = true
+        }
+    }
     var showDownloadToast: Bool = false
     var toastDownloadID: UUID?
     var toastIsCompleted: Bool = false

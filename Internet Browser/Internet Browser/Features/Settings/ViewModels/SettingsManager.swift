@@ -329,6 +329,43 @@ final class SettingsManager {
         Color(hex: accentColorHex)
     }
 
+    // MARK: - Homepage background selection
+    // The write half of the no-lock-out contract the resolver reads: picking
+    // any source clears the preferences that would outrank it. One definition,
+    // called by every surface that offers the choice — the Settings pane's
+    // swatches and the setup wizard — because these multi-property writes are
+    // exactly the kind of rule that drifts when each surface keeps its own
+    // copy.
+
+    /// "Auto": the homepage follows the accent colour.
+    func selectAutoHomepageBackground() {
+        homepageMatchesAccent = true
+        homepageUsesThemeBackground = false
+        homepageUsesCustomImage = false
+    }
+
+    /// One of the curated homepage themes, chosen explicitly.
+    func selectCuratedHomepageTheme(_ theme: HomepageTheme) {
+        homepageTheme = theme
+        homepageMatchesAccent = false
+        homepageUsesThemeBackground = false
+        homepageUsesCustomImage = false
+    }
+
+    /// An imported Firefox theme's `ntp_background`.
+    func selectThemeHomepageBackground() {
+        homepageUsesThemeBackground = true
+        homepageUsesCustomImage = false
+    }
+
+    /// The picture the user chose themselves (already imported into
+    /// `HomepageCustomImageStore`). Nothing else needs clearing: the custom
+    /// image is the strongest source while preferred, and un-preferring it
+    /// hands the homepage back to whichever of the others still applies.
+    func selectCustomImageHomepageBackground() {
+        homepageUsesCustomImage = true
+    }
+
     // MARK: - Homepage appearance
     // Single source of truth for the homepage background: views read these
     // instead of `homepageTheme` directly, so the active source (imported
