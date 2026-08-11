@@ -16,6 +16,12 @@ struct PersistedExtensionRecord: Codable {
     var displayName: String
     var packageFileName: String
     var enabled: Bool
+    /// What makes this the same extension as a later install of it — see
+    /// `ExtensionIdentity`. Optional because it is absent from indexes written
+    /// before duplicate detection existed (and `nil` for a package that
+    /// declares no stable identity); such a record simply cannot be matched
+    /// against, so it is never wrongly replaced.
+    var identity: String?
 }
 
 /// App-global owner of the single `WKWebExtensionController` and every
@@ -174,11 +180,47 @@ final class ExtensionManager: NSObject {
         var icon: NSImage? { webExtension?.icon(for: NSSize(width: 32, height: 32)) }
     }
 
+    /// Where THIS manager keeps its managed copies and `index.json`. Instance
+    /// state rather than a global so a test can point a manager at a temp
+    /// directory — see `isolatedForTesting(directory:)`. `shared` uses the
+    /// app's real directory, `Self.extensionsDirectory`.
+    let managedDirectory: URL
+
     private override init() {
+        managedDirectory = Self.extensionsDirectory
         controller = Self.makeController()
         super.init()
         controller.delegate = self
     }
+
+    private init(managedDirectory: URL, controller: WKWebExtensionController) {
+        self.managedDirectory = managedDirectory
+        self.controller = controller
+        super.init()
+        controller.delegate = self
+    }
+
+    #if DEBUG
+    /// A manager with its OWN extensions directory and its own non-persistent
+    /// controller, for tests.
+    ///
+    /// Tests run inside the hosted `Cherry.app`, so `Bundle.main.bundleIdentifier`
+    /// is `com.cherry.browser` and anything driving `ExtensionManager.shared`
+    /// installs into the USER'S real extensions directory — which is how
+    /// earlier rounds left enabled copies of uBO Lite behind in it and then
+    /// measured a browser they had themselves modified. A test that installs
+    /// anything must use this instead.
+    static func isolatedForTesting(directory: URL) -> ExtensionManager {
+        let configuration = WKWebExtensionController.Configuration.nonPersistent()
+        let webViewConfiguration = configuration.webViewConfiguration ?? WKWebViewConfiguration()
+        BrowserUserAgent.apply(to: webViewConfiguration)
+        configuration.webViewConfiguration = webViewConfiguration
+        return ExtensionManager(
+            managedDirectory: directory,
+            controller: WKWebExtensionController(configuration: configuration)
+        )
+    }
+    #endif
 
     /// Builds `controller` — see the property's own documentation for why the
     /// user agent has to be attached here and nowhere later.
@@ -242,22 +284,26 @@ final class ExtensionManager: NSObject {
         return directory
     }()
 
-    private static var indexFileURL: URL { extensionsDirectory.appendingPathComponent("index.json") }
+    private var indexFileURL: URL { managedDirectory.appendingPathComponent("index.json") }
 
-    private static func managedPackageURL(for record: PersistedExtensionRecord) -> URL {
-        extensionsDirectory
-            .appendingPathComponent(record.id, isDirectory: true)
+    private func directoryURL(forExtensionID id: String) -> URL {
+        managedDirectory.appendingPathComponent(id, isDirectory: true)
+    }
+
+    private func managedPackageURL(for record: PersistedExtensionRecord) -> URL {
+        directoryURL(forExtensionID: record.id)
             .appendingPathComponent(record.packageFileName)
     }
 
-    private static func loadPersistedRecords() -> [PersistedExtensionRecord] {
+    private func loadPersistedRecords() -> [PersistedExtensionRecord] {
         guard let data = try? Data(contentsOf: indexFileURL) else { return [] }
         return (try? JSONDecoder().decode([PersistedExtensionRecord].self, from: data)) ?? []
     }
 
     private func persistRecords() {
         guard let data = try? JSONEncoder().encode(installedExtensions.map(\.record)) else { return }
-        try? data.write(to: Self.indexFileURL, options: .atomic)
+        try? FileManager.default.createDirectory(at: managedDirectory, withIntermediateDirectories: true)
+        try? data.write(to: indexFileURL, options: .atomic)
     }
 
     /// Copies `sourceURL` (a `.xpi`/`.zip` file OR an unpacked extension
@@ -266,7 +312,7 @@ final class ExtensionManager: NSObject {
     /// launch's reload) reads from this managed copy, never the original.
     private func copyIntoManagedDirectory(from sourceURL: URL, id: String) throws -> URL {
         let fileManager = FileManager.default
-        let extensionDirectory = Self.extensionsDirectory.appendingPathComponent(id, isDirectory: true)
+        let extensionDirectory = directoryURL(forExtensionID: id)
         try fileManager.createDirectory(at: extensionDirectory, withIntermediateDirectories: true)
         let destination = extensionDirectory.appendingPathComponent(sourceURL.lastPathComponent)
         if fileManager.fileExists(atPath: destination.path) {
@@ -325,25 +371,57 @@ final class ExtensionManager: NSObject {
     /// persists its record (enabled by default), loads its context, then
     /// announces every already-open window/tab so content scripts inject
     /// into pages that were loaded before this call.
+    /// Installing an extension that is ALREADY installed replaces it in place
+    /// rather than adding a second copy of it. Keying every install on a fresh
+    /// `UUID()` is what let the same extension pile up: the owner's toolbar
+    /// showed three identical ad-blocker buttons because `index.json` held
+    /// three uBO Lite records. The replacement deliberately reuses the
+    /// existing record's `id`, because that id is the context's
+    /// `uniqueIdentifier` and therefore the key to that extension's
+    /// WebKit-side storage — so re-installing a newer build keeps the user's
+    /// settings and filter lists instead of resetting them.
     @discardableResult
     func loadExtension(from fileURL: URL) async throws -> LoadedExtension {
-        let id = UUID().uuidString
+        // The SOURCE is parsed before anything is copied, for two reasons: the
+        // identity that decides replace-vs-add comes from the manifest, and a
+        // package WebKit refuses is now rejected without the extensions
+        // directory ever being touched at all.
+        let sourceExtension = try await WKWebExtension(resourceBaseURL: fileURL)
+        let identity = ExtensionIdentity.of(manifest: sourceExtension.manifest)
+
+        let replacedID = identity.flatMap { identity in
+            installedExtensions.first { $0.record.identity == identity }?.id
+        }
+        let id = replacedID ?? UUID().uuidString
+
+        if replacedID != nil {
+            // Unload the old context before its package is replaced underneath
+            // it, and clear the old copy out so a package that arrived under a
+            // different filename doesn't leave the previous one beside it.
+            if let index = installedExtensions.firstIndex(where: { $0.id == id }),
+               let context = installedExtensions[index].context {
+                try? controller.unload(context)
+                clearPendingPopupAnchors(for: context)
+                installedExtensions[index].context = nil
+            }
+            try? FileManager.default.removeItem(at: directoryURL(forExtensionID: id))
+        }
+
         let packageURL = try copyIntoManagedDirectory(from: fileURL, id: id)
 
-        // The managed copy is made BEFORE WebKit is asked to parse it, so a
-        // package WebKit refuses would otherwise leave its copy in the
-        // extensions directory forever with no record in `index.json`
-        // pointing at it — an orphan nothing can enable, disable or remove.
-        // A failed load leaves nothing behind.
         let webExtension: WKWebExtension
         let context: WKWebExtensionContext
         do {
             webExtension = try await WKWebExtension(resourceBaseURL: packageURL)
             context = try makeLoadedContext(for: webExtension, id: id)
         } catch {
-            try? FileManager.default.removeItem(
-                at: Self.extensionsDirectory.appendingPathComponent(id, isDirectory: true)
-            )
+            // Leaves nothing behind: no managed copy, and no record pointing at
+            // one. On the replace path the old copy is already gone, so the
+            // record goes with it rather than surviving as a row backed by
+            // nothing.
+            try? FileManager.default.removeItem(at: directoryURL(forExtensionID: id))
+            installedExtensions.removeAll { $0.id == id }
+            persistRecords()
             throw error
         }
 
@@ -351,9 +429,17 @@ final class ExtensionManager: NSObject {
             id: id,
             displayName: webExtension.displayName ?? packageURL.deletingPathExtension().lastPathComponent,
             packageFileName: packageURL.lastPathComponent,
-            enabled: true
+            enabled: true,
+            identity: identity
         )
-        installedExtensions.append(InstalledExtension(record: record, webExtension: webExtension, context: context))
+        // Re-resolved by id AFTER the await above, never an index carried
+        // across it — same rule as `reloadPersistedExtensions()`.
+        let installed = InstalledExtension(record: record, webExtension: webExtension, context: context)
+        if let index = installedExtensions.firstIndex(where: { $0.id == id }) {
+            installedExtensions[index] = installed
+        } else {
+            installedExtensions.append(installed)
+        }
         persistRecords()
         announceInitialStateIfNeeded()
 
@@ -396,10 +482,11 @@ final class ExtensionManager: NSObject {
     ///    that point no context has been created yet, so there's nothing to
     ///    unload.
     func reloadPersistedExtensions() async {
-        let records = Self.loadPersistedRecords()
+        let records = loadPersistedRecords()
+        var backfilledAnyIdentity = false
 
         for record in records {
-            guard FileManager.default.fileExists(atPath: Self.managedPackageURL(for: record).path) else { continue }
+            guard FileManager.default.fileExists(atPath: managedPackageURL(for: record).path) else { continue }
             installedExtensions.append(InstalledExtension(record: record, webExtension: nil, context: nil))
         }
 
@@ -412,7 +499,7 @@ final class ExtensionManager: NSObject {
 
             let webExtension: WKWebExtension
             do {
-                webExtension = try await WKWebExtension(resourceBaseURL: Self.managedPackageURL(for: record))
+                webExtension = try await WKWebExtension(resourceBaseURL: managedPackageURL(for: record))
             } catch {
                 // Nobody to throw to here (this runs at launch, not from a
                 // user action), and a silently blank row would look exactly
@@ -429,9 +516,26 @@ final class ExtensionManager: NSObject {
             guard let index = installedExtensions.firstIndex(where: { $0.id == record.id }) else { continue }
 
             installedExtensions[index].webExtension = webExtension
+            // Records written before duplicate detection existed carry no
+            // identity, so nothing could match against them and the NEXT
+            // install of an already-installed extension would add yet another
+            // copy. Now that the manifest is parsed, fill it in — this is what
+            // makes an existing install (including the duplicates already in
+            // the user's index) replaceable rather than merely un-duplicable
+            // from here on.
+            if installedExtensions[index].record.identity == nil,
+               let identity = ExtensionIdentity.of(manifest: webExtension.manifest) {
+                installedExtensions[index].record.identity = identity
+                backfilledAnyIdentity = true
+            }
             if installedExtensions[index].record.enabled {
                 installedExtensions[index].context = try? makeLoadedContext(for: webExtension, id: record.id)
             }
+        }
+
+        // Identities backfilled above only live in memory until written.
+        if backfilledAnyIdentity {
+            persistRecords()
         }
 
         if installedExtensions.contains(where: { $0.context != nil }) {
@@ -480,8 +584,36 @@ final class ExtensionManager: NSObject {
             clearPendingPopupAnchors(for: context)
         }
         installedExtensions.remove(at: index)
-        try? FileManager.default.removeItem(at: Self.extensionsDirectory.appendingPathComponent(id, isDirectory: true))
+        try? FileManager.default.removeItem(at: directoryURL(forExtensionID: id))
         persistRecords()
+    }
+
+    // MARK: - Serving an extension's own pages
+
+    /// The loaded context that owns `url`, or `nil` if nothing loaded does.
+    ///
+    /// Asks the controller rather than matching the URL's host against our own
+    /// record ids: those two values are NOT the same. `makeLoadedContext` sets
+    /// `uniqueIdentifier` to the persisted record id, and WebKit leaves
+    /// `baseURL` — which is what extension page URLs are actually built from —
+    /// on its own separate random host. Matching on the record id would find
+    /// nothing.
+    func servingContext(for url: URL) -> WKWebExtensionContext? {
+        guard ExtensionPageRouting.isExtensionURL(url) else { return nil }
+        return controller.extensionContext(for: url)
+    }
+
+    /// Identifies which extension's web view kind `url` needs — see
+    /// `WebViewServingIdentity.extensionPage`.
+    func servingHost(for url: URL) -> String? {
+        servingContext(for: url)?.baseURL.host
+    }
+
+    /// The configuration a web view MUST be built from to load `url`, or `nil`
+    /// if `url` is not an extension page (or belongs to no loaded extension).
+    /// A web view built any other way fails the load with −1008.
+    func webViewConfiguration(servingPageAt url: URL) -> WKWebViewConfiguration? {
+        servingContext(for: url)?.webViewConfiguration
     }
 
     // MARK: - Toolbar action + popup
@@ -751,6 +883,16 @@ extension ExtensionManager: WKWebExtensionControllerDelegate {
             keyWindow: NSApp.keyWindow,
             window: { $0.associatedWindow }
         ) else {
+            completionHandler(nil, nil)
+            return
+        }
+        // An extension page no loaded context can serve has no web view that
+        // could ever show it, so opening a tab for it would only put Cherry's
+        // own failure screen in front of the user — a browser error for the
+        // browser's own doing. Refuse the tab instead.
+        if let url = configuration.url,
+           ExtensionPageRouting.isExtensionURL(url),
+           servingContext(for: url) == nil {
             completionHandler(nil, nil)
             return
         }

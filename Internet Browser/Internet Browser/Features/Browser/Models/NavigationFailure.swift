@@ -64,6 +64,11 @@ struct NavigationFailure: Equatable {
         /// interstitial (see `CertificateWarning`) — a protocol-level
         /// handshake failure rather than a certificate Cherry can describe.
         case secureConnectionFailed
+        /// A `webkit-extension://` page belonging to no loaded extension —
+        /// removed, disabled, or a URL restored from a session in which it
+        /// still existed. Not a network failure: nothing was requested, and no
+        /// web view in the process could have served it.
+        case extensionPageUnavailable
         case unrecognised
     }
 
@@ -110,6 +115,17 @@ struct NavigationFailure: Equatable {
         // redirect chain fails at the URL it reached, not the one that was typed.
         let failingURL = nsError.userInfo[NSURLErrorFailingURLErrorKey] as? URL ?? requestedURL
 
+        // A −1008 on an extension URL is the one failure whose family cannot be
+        // read from domain and code alone: `NSURLErrorResourceUnavailable` is
+        // generic, but on a `webkit-extension://` URL it means precisely that
+        // no loaded extension serves that page. Cherry cancels those before the
+        // load (see `extensionPageUnavailable(for:)`); this catches any that
+        // still reach WebKit, so the user is never shown "<random uuid> did not
+        // load" for a page of the browser's own.
+        if code == NSURLErrorResourceUnavailable, ExtensionPageRouting.isExtensionURL(failingURL) {
+            return extensionPageUnavailable(for: failingURL ?? requestedURL ?? URL(string: "\(ExtensionPageRouting.scheme)://")!)
+        }
+
         return NavigationFailure(
             family: family(domain: domain, code: code),
             url: failingURL,
@@ -154,6 +170,26 @@ struct NavigationFailure: Equatable {
             systemDescription: "",
             domain: NSURLErrorDomain,
             code: NSURLErrorUnsupportedURL
+        )
+    }
+
+    // MARK: - Extension pages with no extension
+
+    /// A `webkit-extension://` page that no loaded extension can serve.
+    ///
+    /// Built by Cherry before the load rather than read off an error, for the
+    /// same reason as `blockedPortFailure`: what WebKit produces on its own for
+    /// this is a bare `NSURLErrorDomain −1008`, whose only rendering is
+    /// "<random uuid> did not load" over the system's untranslated sentence.
+    /// The user cannot act on that, and it names the browser's own internal
+    /// host as though it were a site that was down.
+    static func extensionPageUnavailable(for url: URL) -> NavigationFailure {
+        NavigationFailure(
+            family: .extensionPageUnavailable,
+            url: url,
+            systemDescription: "",
+            domain: NSURLErrorDomain,
+            code: NSURLErrorResourceUnavailable
         )
     }
 
@@ -238,6 +274,8 @@ struct NavigationFailure: Equatable {
             return "Cherry will not connect to port \(url?.port ?? 0)"
         case .secureConnectionFailed:
             return "Cherry could not open a secure connection to \(host)"
+        case .extensionPageUnavailable:
+            return "That extension is no longer installed"
         case .unrecognised:
             return "\(host) did not load"
         }
@@ -266,6 +304,8 @@ struct NavigationFailure: Equatable {
             return "Every browser refuses a short list of ports that belong to other protocols, and port \(url?.port ?? 0) is on it. The request was never sent."
         case .secureConnectionFailed:
             return "The encrypted connection could not be established. This is a failure of the connection itself, not of the site's certificate."
+        case .extensionPageUnavailable:
+            return "This page belongs to an extension, and no extension it could have come from is installed and enabled right now."
         case .unrecognised:
             return systemDescription
         }
@@ -298,6 +338,8 @@ struct NavigationFailure: Equatable {
             return "If this is a server you run, move it to a port browsers will open, such as 8000 or 8080."
         case .secureConnectionFailed:
             return "Retry. If it keeps happening, the site's server and Cherry could not agree on how to encrypt the connection, and only the site can fix that."
+        case .extensionPageUnavailable:
+            return "Install or enable the extension in Settings \u{25B8} Extensions, then open its page again."
         case .unrecognised:
             return nil
         }
@@ -338,6 +380,7 @@ struct NavigationFailure: Equatable {
         case .unsupportedScheme: return "link.badge.plus"
         case .blockedPort: return "nosign"
         case .secureConnectionFailed: return "lock.slash"
+        case .extensionPageUnavailable: return "puzzlepiece.extension"
         case .unrecognised: return "exclamationmark.circle"
         }
     }

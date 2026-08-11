@@ -231,9 +231,79 @@ struct WebViewWrapper: NSViewRepresentable {
         return webView
     }
 
+    /// The configuration a fresh web view for a tab showing `url` must be
+    /// built from, and the kind of web view that makes it.
+    ///
+    /// An extension's own page can ONLY be loaded by a web view built from
+    /// that extension context's `webViewConfiguration`; a plain configuration
+    /// with `webExtensionController` set — which is what every tab used to get,
+    /// and what looked sufficient — fails the load with −1008. See
+    /// `ExtensionPageRouting` for the measurement.
+    ///
+    /// `nil` means the URL is an extension page nothing loaded can serve.
+    /// There is no configuration that would load it, so the caller must not
+    /// pretend otherwise.
+    ///
+    /// Static and internal so the test can build a web view exactly the way a
+    /// tab does and prove it actually serves the page.
+    /// `manager` defaults to the app's single `ExtensionManager`; a test passes
+    /// an isolated one so it never installs into the user's real extensions
+    /// directory (see `ExtensionManager.isolatedForTesting(directory:)`).
+    static func baseConfiguration(
+        forTabAt url: URL?,
+        isPrivate: Bool,
+        manager: ExtensionManager = .shared
+    ) -> (configuration: WKWebViewConfiguration, identity: WebViewServingIdentity)? {
+        // Extensions never run in private tabs in v1a, so a private tab is
+        // always an ordinary web view and an extension URL in one is
+        // unservable rather than merely unconfigured.
+        let servingHost: (URL) -> String? = isPrivate
+            ? { _ in nil }
+            : { manager.servingHost(for: $0) }
+
+        guard let identity = ExtensionPageRouting.servingIdentity(for: url, servingHost: servingHost) else {
+            return nil
+        }
+
+        guard case .extensionPage = identity,
+              let url,
+              let extensionConfiguration = manager.webViewConfiguration(servingPageAt: url)
+        else {
+            let configuration = WKWebViewConfiguration()
+            if !isPrivate {
+                configuration.webExtensionController = manager.controller
+            }
+            return (configuration, .ordinary)
+        }
+
+        return (extensionConfiguration, identity)
+    }
+
     /// Builds, configures, and attaches a fresh `CherryWebView` for a tab
     /// that has no webview yet.
     private func makeFreshWebView(context: Context, settings: SettingsManager, adBlockActive: Bool) -> WKWebView {
+        // An extension's own page (its options page, its dashboard) is built
+        // from WebKit's configuration for that extension and given NONE of the
+        // page-oriented plumbing below. The ad-block rule lists and cosmetic
+        // filters exist to alter websites, and running them over uBO Lite's
+        // own dashboard would be Cherry rewriting an extension's UI; the
+        // autofill and devtools bridges inject into a `userContentController`
+        // that belongs to WebKit's extension configuration, not to Cherry.
+        if !tab.isPrivate,
+           let url = tab.url,
+           let resolved = Self.baseConfiguration(forTabAt: url, isPrivate: false),
+           case .extensionPage = resolved.identity {
+            resolved.configuration.preferences.isElementFullscreenEnabled = true
+            let cherry = CherryWebView(frame: .zero, configuration: resolved.configuration)
+            cherry.allowsBackForwardNavigationGestures = true
+            cherry.allowsMagnification = true
+            cherry.onFocused = onFocused
+            cherry.tabID = tab.id
+            context.coordinator.servingIdentity = resolved.identity
+            tab.webView = cherry
+            return cherry
+        }
+
         let configuration = WKWebViewConfiguration()
         // Extensions never run in private/incognito tabs in v1a — there's no
         // per-extension "allow in private browsing" opt-in yet, so leaving the
@@ -507,6 +577,13 @@ struct WebViewWrapper: NSViewRepresentable {
         /// Its capture of the view model is weak on the BrowserView side.
         var onNewTabWithWebView: ((WKWebView, URL?) -> Void)?
         var lastLoadedURL: URL?
+        /// What this web view was BUILT to serve. Fixed for the web view's
+        /// lifetime, because WebKit fixes it at creation: an ordinary web view
+        /// cannot load any extension page, and an extension web view cannot
+        /// load anything outside its own extension. A navigation that crosses
+        /// that line has to go to a different web view — see
+        /// `ExtensionPageRouting` and `decidePolicyFor`.
+        var servingIdentity: WebViewServingIdentity = .ordinary
         /// URL of the PDF currently rendered in the viewer (set after didFinish)
         var displayedPDFURL: URL?
         /// Tracks whether cosmetic ad blocking is currently active for this web view
@@ -1153,6 +1230,54 @@ struct WebViewWrapper: NSViewRepresentable {
             if isMainFrame || isNewWindow {
                 if NavigationSchemePolicy.opensInAnotherApp(scheme) {
                     NSWorkspace.shared.open(url)
+                    return .cancel
+                }
+            }
+
+            // A main-frame navigation that crosses between ordinary pages and
+            // an extension's own pages cannot be served by THIS web view,
+            // whichever side it starts on — WebKit binds that at creation.
+            // Left alone, the extension→web direction is the worst kind of
+            // failure: measured, WebKit drops it with no error and no
+            // `didFail` at all, so the tab just stops with no explanation.
+            //
+            // Both directions are therefore handled here rather than allowed
+            // and left to fail: the navigation is cancelled and re-opened in a
+            // NEW tab, which `makeFreshWebView` builds from the right
+            // configuration for whichever side it landed on.
+            if isMainFrame, !isNewWindow {
+                let isPrivate = tab?.isPrivate ?? false
+                let servingHost: (URL) -> String? = isPrivate
+                    ? { _ in nil }
+                    : { ExtensionManager.shared.servingHost(for: $0) }
+                let target = ExtensionPageRouting.servingIdentity(for: url, servingHost: servingHost)
+
+                if target == nil, ExtensionPageRouting.isExtensionURL(url) {
+                    // An extension page nothing loaded can serve — the
+                    // extension was removed, disabled, or this is a stale URL
+                    // from a restored session. No web view can show it, so say
+                    // that instead of letting it fail as a bare −1008.
+                    tab?.showLoadFailure(NavigationFailure.extensionPageUnavailable(for: url))
+                    lastLoadedURL = url
+                    return .cancel
+                }
+
+                if ExtensionPageRouting.requiresNewWebView(current: servingIdentity, target: target) {
+                    let destination = url
+                    // This tab keeps showing what it was showing, so its URL
+                    // has to say so: the omnibox may already have been set to
+                    // the typed address by `updateNSView` before the load was
+                    // handed here, and leaving it there would point at a page
+                    // this tab is not on.
+                    let stayingOn = webView.url
+                    DispatchQueue.main.async { [weak self] in
+                        guard let self else { return }
+                        if let stayingOn {
+                            self.tab?.url = stayingOn
+                            self.lastLoadedURL = stayingOn
+                        }
+                        self.viewModel?.tabManager.newTab(url: destination)
+                    }
                     return .cancel
                 }
             }
