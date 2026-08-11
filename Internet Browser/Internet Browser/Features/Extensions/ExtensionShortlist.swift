@@ -66,29 +66,55 @@ enum ExtensionShortlist {
         ),
     ]
 
-    // REJECTED CANDIDATES — verified NOT to work in Cherry's
-    // WKWebExtensionController runtime on 2026-08-11. Do not re-test these
-    // versions; do not offer them from the wizard. Full per-check evidence is
-    // in the ExtensionVerificationTests harness output.
+    // REJECTED CANDIDATES — did NOT demonstrate their function in Cherry's
+    // WKWebExtensionController runtime on 2026-08-11. Do not offer them from
+    // the wizard. Per-check evidence is in the ExtensionVerificationTests
+    // harness output; the mechanism behind each rejection was chased down
+    // separately by ExtensionGapDiagnosisTests.
+    //
+    // TWO OF THESE REJECTION REASONS WERE WRONG, and the corrections are
+    // recorded here so nobody reasons from them again. Neither candidate has
+    // been promoted: that is a verdict change and belongs to a round that
+    // re-runs the full verification harness.
     //
     // - uBlock Origin 1.73.0 (MV2): loads, but blocked zero ad requests in
-    //   A/B fetch batteries — Apple's runtime has no blocking webRequest.
-    // - uBlock Origin Lite 2026.804.1652, Firefox build (MV3): loads, and
-    //   declarativeNetRequest reports six rulesets ENABLED (ublock-filters,
-    //   easylist, ...), yet no request is ever blocked — registered rules are
-    //   ignored by the request pipeline. An apparent success in one early run
-    //   was WebKit's own tracker blocking, not the extension (unload did not
-    //   restore fetchability; later runs never blocked at all).
-    // - uBlock Origin Lite, Safari build: same, blocks nothing (that build
-    //   expects its app-extension wrapper).
-    // - Bitwarden 2026.7.0 (MV2): toolbar popup web view stays an unbooted
-    //   3-element shell with no text after 30s — the Angular app never
-    //   starts. No autofill artifacts in pages either.
+    //   A/B fetch batteries. Mechanism: this runtime DOES deliver
+    //   `webRequest` events — `onBeforeRequest`/`onBeforeSendHeaders` fire
+    //   with real URLs and `addListener(…, ["blocking"])` is accepted — but
+    //   the listener's return value is discarded. A minimal MV2 fixture's
+    //   `{cancel: true}` and its added `Sec-GPC`/`DNT` request headers both
+    //   had no effect on the wire. `webRequestBlocking` is not among the
+    //   permissions WebKit grants at all.
+    // - uBlock Origin Lite 2026.804.1652, Firefox build (MV3): CORRECTION —
+    //   it DOES block. The earlier "registered rules are ignored by the
+    //   request pipeline" was a measurement artefact: an 8-second settle
+    //   window, and probe URLs its converted rules do not contain. Probed
+    //   with URLs matching three of its own shipped rules, blocking starts at
+    //   t+10s and all six enabled rulesets are in force by t+90s, with
+    //   fetchability restored on unload. Static, dynamic and session DNR
+    //   rules all work in this runtime.
+    // - uBlock Origin Lite, Safari build: blocks nothing (that build expects
+    //   its app-extension wrapper). Not re-examined this round.
+    // - Bitwarden 2026.7.0 (MV2): toolbar popup stays an unbooted 3-element
+    //   shell. Mechanism: the extension popup web view's user agent has no
+    //   product token (Cherry sets `applicationNameForUserAgent` on tab
+    //   configurations only, never on the extension controller's
+    //   `webViewConfiguration`), so Bitwarden's `getDevice()` matches neither
+    //   Firefox, Chrome, Edge, Vivaldi, Opera nor Safari, returns null, and
+    //   `this.device.toString()` throws inside Angular's DI. Giving the same
+    //   popup web view a Safari user agent and reloading boots it fully.
     // - Privacy Badger 2026.8.7 (MV2): no GPC/DNT header appears on page
-    //   requests (its header injection needs blocking webRequest).
-    // - Vimium 2.4.2 (MV3): the runtime rejects its content_scripts (its
-    //   `file:///` match patterns fail Apple's parser: "content_scripts
-    //   entry has no specified matches"); no script injects at all.
+    //   requests — same discarded-return-value mechanism as uBlock Origin.
+    // - Vimium 2.4.2 (MV3): CORRECTION — its content scripts DO inject. The
+    //   "content_scripts entry has no specified matches" error is scoped to
+    //   the ONE entry whose only patterns are `file:///` and `file:///*/`;
+    //   sibling entries load normally (proved with a three-entry fixture, and
+    //   by vimium.css reaching the page). Note the patterns themselves parse:
+    //   `WKWebExtensionMatchPattern(string: "file:///")` succeeds. What that
+    //   lost entry carries is `content_scripts/file_urls.css`, four lines
+    //   fixing a Chrome file:// directory-listing quirk. Vimium stays off the
+    //   shortlist because its keyboard behaviour is still unverifiable in the
+    //   harness, not because it fails to load.
     // - Video Speed Controller 0.11.0 (MV3): its functional script declares
     //   `"world": "MAIN"`, which this runtime never executes — no controller
     //   attaches even with a fully-loaded real video (readyState 4).
