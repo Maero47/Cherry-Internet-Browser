@@ -39,15 +39,30 @@ struct ExtensionShortlistEntry: Identifiable, Equatable {
 }
 
 enum ExtensionShortlist {
-    /// Survivors of the live verification run (2026-08-11, macOS 26.5), in
-    /// wizard display order. Ten candidates went through the harness; these
-    /// two demonstrably did their job in Cherry.
+    /// Survivors of the live verification run (2026-08-12, macOS 26.5), in
+    /// wizard display order. Re-run from scratch in the runtime the app now
+    /// ships — the user-agent change altered the environment every extension
+    /// runs in, and a shortlist verified under different conditions is not
+    /// verified. Ten candidates went through the harness; these three
+    /// demonstrably did their job in Cherry.
     ///
-    /// - Dark Reader: verified three independent runs — injects its `<style>`
-    ///   elements and turns example.com's body to rgb(24, 26, 27).
-    /// - Simple Translate: popup renders and a Spanish input came back as a
-    ///   real English translation through its backend.
+    /// - uBO Lite: blocks real requests. Three URLs built from rules it
+    ///   actually ships came back blocked from t+10s, stayed blocked for the
+    ///   full two-minute window, and became fetchable again the moment it was
+    ///   switched off (the attribution leg). The control URL never blocked.
+    /// - Dark Reader: injects its `<style>` elements and turns example.com's
+    ///   body to rgb(24, 26, 27) — four independent runs now.
+    /// - Simple Translate: popup renders (142 elements) and "buenos días
+    ///   amigo" came back as "good morning friend" through its backend.
     static let entries: [ExtensionShortlistEntry] = [
+        ExtensionShortlistEntry(
+            id: "ubo-lite",
+            displayName: "uBO Lite",
+            summary: "Blocks ads and trackers",
+            sourceURL: URL(string: "https://github.com/uBlockOrigin/uBOL-home/releases/download/2026.804.1652/uBOLite_2026.804.1652.firefox.signed.xpi")!,
+            verifiedVersion: "2026.804.1652",
+            caveat: "Blocking starts about ten seconds after it loads, so the first page or two can still show ads. It also does not block everything in Cherry: one of its six filter lists (easylist) registers but never takes effect, so some ads get through."
+        ),
         ExtensionShortlistEntry(
             id: "darkreader",
             displayName: "Dark Reader",
@@ -67,62 +82,61 @@ enum ExtensionShortlist {
     ]
 
     // REJECTED CANDIDATES — did NOT demonstrate their function in Cherry's
-    // WKWebExtensionController runtime on 2026-08-11. Do not offer them from
-    // the wizard. Per-check evidence is in the ExtensionVerificationTests
-    // harness output; the mechanism behind each rejection was chased down
-    // separately by ExtensionGapDiagnosisTests.
+    // WKWebExtensionController runtime. Do not offer them from the wizard.
+    // Every one of these was re-run on 2026-08-12 against the shipping
+    // runtime (the user-agent change included), with a battery that now
+    // carries URLs built from rules a real blocker ships and a settle window
+    // polled to two minutes instead of sampled once at t+8s — the two
+    // measurement errors that produced a wrong verdict last time. Per-check
+    // evidence is in the ExtensionVerificationTests output; the mechanism
+    // behind each rejection was chased down by ExtensionGapDiagnosisTests.
     //
-    // TWO OF THESE REJECTION REASONS WERE WRONG, and the corrections are
-    // recorded here so nobody reasons from them again. Neither candidate has
-    // been promoted: that is a verdict change and belongs to a round that
-    // re-runs the full verification harness.
-    //
-    // - uBlock Origin 1.73.0 (MV2): loads, but blocked zero ad requests in
-    //   A/B fetch batteries. Mechanism: this runtime DOES deliver
-    //   `webRequest` events — `onBeforeRequest`/`onBeforeSendHeaders` fire
-    //   with real URLs and `addListener(…, ["blocking"])` is accepted — but
-    //   the listener's return value is discarded. A minimal MV2 fixture's
+    // - uBlock Origin 1.73.0 (MV2): loads (one `commands` manifest warning),
+    //   and blocked ZERO of eight discriminator URLs across the full 120s
+    //   window — re-measured, not inherited. Mechanism: this runtime DOES
+    //   deliver `webRequest` events — `onBeforeRequest`/`onBeforeSendHeaders`
+    //   fire with real URLs and `addListener(…, ["blocking"])` is accepted —
+    //   but the listener's return value is discarded. A minimal MV2 fixture's
     //   `{cancel: true}` and its added `Sec-GPC`/`DNT` request headers both
     //   had no effect on the wire. `webRequestBlocking` is not among the
-    //   permissions WebKit grants at all.
-    // - uBlock Origin Lite 2026.804.1652, Firefox build (MV3): CORRECTION —
-    //   it DOES block. The earlier "registered rules are ignored by the
-    //   request pipeline" was a measurement artefact: an 8-second settle
-    //   window, and probe URLs its converted rules do not contain. Probed
-    //   with URLs matching three of its own shipped rules, blocking starts at
-    //   t+10s and all six enabled rulesets are in force by t+90s, with
-    //   fetchability restored on unload. Static, dynamic and session DNR
-    //   rules all work in this runtime.
-    // - uBlock Origin Lite, Safari build: blocks nothing (that build expects
-    //   its app-extension wrapper). Not re-examined this round.
-    // - Bitwarden 2026.7.0 (MV2): toolbar popup stayed an unbooted 3-element
-    //   shell. Mechanism: the extension popup web view's user agent had no
-    //   product token (Cherry set `applicationNameForUserAgent` on tab
-    //   configurations only, never on the extension controller's
-    //   `webViewConfiguration`), so Bitwarden's `getDevice()` matched neither
-    //   Firefox, Chrome, Edge, Vivaldi, Opera nor Safari, returned null, and
-    //   `this.device.toString()` threw inside Angular's DI. Giving the same
-    //   popup web view a Safari user agent and reloading booted it fully.
-    //   THE RUNTIME GAP IS NOW CLOSED — the extension controller carries the
-    //   same user agent as tabs (see `BrowserUserAgent`), which is what that
-    //   A/B says unblocks the popup. Bitwarden STAYS REJECTED regardless:
-    //   nobody has re-run the harness against it since, and login, vault sync
-    //   and autofill were never exercised at all. Promotion is a verdict
-    //   change and needs its own verification round.
+    //   permissions WebKit grants at all. Nothing Cherry can bridge.
+    // - uBlock Origin Lite, Safari build (MV3): blocks nothing, still. It
+    //   registers three rulesets (`ublock-filters`, `easylist`,
+    //   `easyprivacy`) and not one request stopped in 120s; that build
+    //   expects its Safari app-extension wrapper. THE FIREFOX BUILD OF THE
+    //   SAME VERSION IS ON THE SHORTLIST — the wizard must serve that
+    //   artifact, not this one.
+    // - Bitwarden 2026.7.0 (MV2): its popup does not come up. Round 1 saw an
+    //   unbooted 3-element Angular shell and diagnosed the cause — the popup
+    //   web view had no product token in its user agent, so `getDevice()`
+    //   returned null and threw inside Angular's DI. That gap is now closed
+    //   (the extension controller carries the same user agent as tabs, see
+    //   `BrowserUserAgent`), and this round re-ran the probe against it: the
+    //   popup web view now answers no JavaScript AT ALL — a 30-second
+    //   evaluate returns nothing, its web content process wedged — and it
+    //   deadlocked the harness until the probe was given a deadline. Whatever
+    //   the user agent fixed, the popup is still not usable. Login, vault
+    //   sync and autofill remain unexercised.
     // - Privacy Badger 2026.8.7 (MV2): no GPC/DNT header appears on page
-    //   requests — same discarded-return-value mechanism as uBlock Origin.
-    // - Vimium 2.4.2 (MV3): CORRECTION — its content scripts DO inject. The
-    //   "content_scripts entry has no specified matches" error is scoped to
-    //   the ONE entry whose only patterns are `file:///` and `file:///*/`;
-    //   sibling entries load normally (proved with a three-entry fixture, and
-    //   by vimium.css reaching the page). Note the patterns themselves parse:
-    //   `WKWebExtensionMatchPattern(string: "file:///")` succeeds. What that
-    //   lost entry carries is `content_scripts/file_urls.css`, four lines
-    //   fixing a Chrome file:// directory-listing quirk. Vimium stays off the
-    //   shortlist because its keyboard behaviour is still unverifiable in the
-    //   harness, not because it fails to load. Cherry now reports that entry
-    //   for what it is — a warning naming what was dropped, against a loaded
-    //   extension (see `ExtensionPackageStatus`), not a failed load.
+    //   requests (httpbin echoes the real headers back) — same
+    //   discarded-return-value mechanism as uBlock Origin.
+    // - Vimium 2.4.2 (MV3): its content scripts DO inject — this round proved
+    //   it positively rather than by inference: `vimium.css` reaches the page
+    //   (a `.vimium-reset` div computes to `display: inline`, which only its
+    //   stylesheet does). The "content_scripts entry has no specified
+    //   matches" error is scoped to the ONE entry whose only patterns are
+    //   `file:///` and `file:///*/`; sibling entries load normally, and
+    //   Cherry now reports that as a warning against a LOADED extension (see
+    //   `ExtensionPackageStatus`), not a failed load. It stays off the
+    //   shortlist for one honest reason: its keyboard behaviour cannot be
+    //   exercised here. Every Vimium handler is wrapped in `forTrusted`
+    //   (`lib/utils.js`), which drops any event with `isTrusted == false`, so
+    //   a dispatched `KeyboardEvent` can never drive it; and a real `NSEvent`
+    //   cannot be delivered either, because the test host is never the active
+    //   app (`activate(ignoringOtherApps:)` is refused, the window never
+    //   becomes key, and WebKit drops keys aimed at a non-key window). NOT a
+    //   verdict that Vimium is broken — a verdict that nobody has watched it
+    //   work. Listing it would be listing something unrun.
     // - Video Speed Controller 0.11.0 (MV3): its functional script declares
     //   `"world": "MAIN"`, which this runtime never executes — no controller
     //   attaches even with a fully-loaded real video (readyState 4).

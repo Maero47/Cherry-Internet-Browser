@@ -6,6 +6,28 @@
 import SwiftUI
 import WebKit
 
+/// Which URL schemes Cherry renders itself, and which belong to another app.
+///
+/// Split out of the navigation-policy closure so the answer is checkable
+/// without a live web view: getting it wrong sends a URL only THIS process can
+/// serve out to LaunchServices, which answers the user with a "There is no
+/// application set to open the URL…" alert (see `webkit-extension` below).
+enum NavigationSchemePolicy {
+    /// Everything Cherry loads in a tab. `webkit-extension` is in here because
+    /// it is WebKit's scheme for a loaded extension's own pages — its options
+    /// page, its dashboards — which extensions open in tabs (uBO Lite opens
+    /// its options page on first run). Those are ours to render.
+    static let internallyHandled: Set<String> = [
+        "http", "https", "about", "file", "blob", "data", "webkit-extension",
+    ]
+
+    /// Whether a main-frame navigation to `scheme` should be handed to macOS
+    /// (`tel:`, `mailto:`, another app's custom scheme) rather than loaded.
+    static func opensInAnotherApp(_ scheme: String?) -> Bool {
+        !internallyHandled.contains(scheme?.lowercased() ?? "")
+    }
+}
+
 // MARK: - CherryWebView (adds "Inspect Element" to the right-click context menu)
 
 final class CherryWebView: WKWebView {
@@ -1129,7 +1151,7 @@ struct WebViewWrapper: NSViewRepresentable {
             // Sub-frame navigations (iframes, media sources) must be left alone —
             // video players use blob:, data:, and other schemes internally.
             if isMainFrame || isNewWindow {
-                if !["http", "https", "about", "file", "blob", "data"].contains(scheme) {
+                if NavigationSchemePolicy.opensInAnotherApp(scheme) {
                     NSWorkspace.shared.open(url)
                     return .cancel
                 }

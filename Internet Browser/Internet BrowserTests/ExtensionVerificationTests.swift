@@ -39,6 +39,11 @@ final class ExtensionVerificationTests: XCTestCase {
     private var packagesDirectory: URL!
     private var evidenceDirectory: URL!
     private var savedAdBlockEnabled = true
+    /// Extensions already in the user's persistent index when the test
+    /// started, with the enabled ones switched off for the duration and put
+    /// back in tearDown. Every evidence file records what was found here, so
+    /// no verdict rests on an unexamined starting state.
+    private var preExistingExtensions: [(id: String, name: String, wasEnabled: Bool)] = []
 
     override func setUp() async throws {
         let environment = ProcessInfo.processInfo.environment
@@ -58,12 +63,36 @@ final class ExtensionVerificationTests: XCTestCase {
         // configuration never receives the lists.
         savedAdBlockEnabled = SettingsManager.shared.adBlockEnabled
         SettingsManager.shared.adBlockEnabled = false
+
+        // The hosted app shares the USER'S real Application Support extension
+        // index, and it is not guaranteed empty — round 1 left two enabled uBO
+        // Lite copies in it. An already-loaded content blocker would answer
+        // every ad probe below and a second copy of the candidate would make
+        // "the extension did it" unattributable, so switch off whatever is
+        // installed for the duration and put it back afterwards.
+        preExistingExtensions = ExtensionManager.shared.installedExtensions
+            .map { (id: $0.id, name: $0.displayName, wasEnabled: $0.enabled) }
+        for existing in preExistingExtensions where existing.wasEnabled {
+            ExtensionManager.shared.setEnabled(false, forExtensionID: existing.id)
+        }
     }
 
     override func tearDown() async throws {
         if packagesDirectory != nil {
             SettingsManager.shared.adBlockEnabled = savedAdBlockEnabled
+            for existing in preExistingExtensions where existing.wasEnabled {
+                ExtensionManager.shared.setEnabled(true, forExtensionID: existing.id)
+            }
         }
+    }
+
+    /// One line naming the user's own installed extensions, stamped into every
+    /// evidence file.
+    private var preExistingDescription: String {
+        let described = preExistingExtensions
+            .map { "\($0.name) [\($0.id)] was\($0.wasEnabled ? "" : " not") enabled" }
+            .joined(separator: ", ")
+        return described.isEmpty ? "none installed" : described
     }
 
     // MARK: - Evidence
@@ -79,6 +108,9 @@ final class ExtensionVerificationTests: XCTestCase {
         let packageForm: String
         let displayName: String?
         let version: String?
+        /// The user's own installed extensions at the start of the run, all
+        /// disabled for its duration (see `setUp`).
+        var preExisting: String = ""
         let loadErrors: [String]
         var runtimeErrors: [String]
         var checks: [Check]
@@ -86,6 +118,8 @@ final class ExtensionVerificationTests: XCTestCase {
     }
 
     private func writeEvidence(_ evidence: Evidence) throws {
+        var evidence = evidence
+        evidence.preExisting = preExistingDescription
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let url = evidenceDirectory.appendingPathComponent("\(evidence.candidate).json")
@@ -177,16 +211,35 @@ final class ExtensionVerificationTests: XCTestCase {
         try? browserViewModel.tabManager.closeTab(tab)
     }
 
+    /// Holds a completion handler's answer for `evaluate`'s deadline loop.
+    private final class ResultBox { var value: String? }
+
     /// Runs `body` as an async function in the page's JS world and returns its
     /// result, stringified, so evidence files hold exactly what was observed.
+    ///
+    /// Deliberately the completion-handler form behind a deadline rather than
+    /// a bare `await`: when a web content process dies mid-call — which the
+    /// Bitwarden popup did on this runtime — the async form's continuation is
+    /// never resumed and the WHOLE ROUND hangs on one candidate, taking every
+    /// later candidate's evidence with it. A candidate that wedges its web
+    /// view is a result about that candidate; it is not a reason to lose the
+    /// others, so the wait ends and says so.
     @discardableResult
-    private func evaluate(_ body: String, in webView: WKWebView) async -> String {
-        do {
-            let result = try await webView.callAsyncJavaScript(body, arguments: [:], in: nil, contentWorld: .page)
-            return result.map { String(describing: $0) } ?? "null"
-        } catch {
-            return "js-error: \(error.localizedDescription)"
+    private func evaluate(_ body: String, arguments: [String: Any] = [:],
+                          in webView: WKWebView, timeout: TimeInterval = 30) async -> String {
+        let box = ResultBox()
+        let work = Task { @MainActor in
+            do {
+                let value = try await webView.callAsyncJavaScript(
+                    body, arguments: arguments, in: nil, contentWorld: .page)
+                box.value = value.map { String(describing: $0) } ?? "null"
+            } catch {
+                box.value = "js-error: \(error.localizedDescription)"
+            }
         }
+        let answered = await poll(timeout: timeout) { box.value != nil }
+        if !answered { work.cancel() }
+        return answered ? (box.value ?? "null") : "js-timeout: no answer in \(Int(timeout))s"
     }
 
     /// The ad-request battery shared by the baseline and every content
@@ -201,15 +254,43 @@ final class ExtensionVerificationTests: XCTestCase {
     /// it third-party) and one control URL no list should ever touch. A
     /// blocker is judged ONLY on URLs the platform demonstrably let through
     /// moments earlier in the same test.
-    private static let adProbeURLs = [
-        "https://static.doubleclick.net/instream/ad_status.js",
-        "https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js",
-        "https://www.google-analytics.com/analytics.js",
-        "https://httpbin.org/anything/advertisement.js",
-        "https://httpbin.org/anything/adsbygoogle.js",
-        "https://httpbin.org/robots.txt",
+    ///
+    /// Round 1's battery was ONLY the generic half below, and that is half of
+    /// why it called uBO Lite a failure: a modern MV3 blocker ships converted
+    /// DNR rules, not a filter list, and none of its 18,380 rules happen to
+    /// name `/advertisement.js`. So the battery now also carries URLs built
+    /// from rules uBO Lite DEMONSTRABLY ships (rule indices from the
+    /// diagnosis round's read of its own `rulesets/main/*.json`), which is
+    /// what makes "blocked nothing" mean "the blocker did nothing" rather
+    /// than "we asked about rules it does not have".
+    private static let hostProbeURLs: [String: String] = [
+        "doubleclick": "https://static.doubleclick.net/instream/ad_status.js",
+        "googlesyndication": "https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js",
+        "google-analytics": "https://www.google-analytics.com/analytics.js",
+        "generic advertisement.js": "https://httpbin.org/anything/advertisement.js",
+        "generic adsbygoogle.js": "https://httpbin.org/anything/adsbygoogle.js",
     ]
+    private static let ruleDerivedProbeURLs: [String: String] = [
+        "ublock-filters#2144": "https://httpbin.org/anything/webtracking.min.js",
+        "easylist#442": "https://httpbin.org/anything/-ad-manager/probe",
+        "easyprivacy#618": "https://httpbin.org/anything/probe.beacon.min.js",
+    ]
+    private static let blockerProbeURLs: [String: String] =
+        hostProbeURLs.merging(ruleDerivedProbeURLs) { first, _ in first }
+    private static let adProbeURLs = blockerProbeURLs.values.sorted() + [controlURL]
     private static let controlURL = "https://httpbin.org/robots.txt"
+
+    /// url → the probe name it was chosen for, so evidence lines read
+    /// "easylist#442=blocked" rather than a bare URL.
+    private static let probeNames: [String: String] =
+        Dictionary(uniqueKeysWithValues: blockerProbeURLs.map { ($0.value, $0.key) })
+            .merging([controlURL: "control"]) { _, new in new }
+
+    private static func batteryLine(_ map: [String: String]) -> String {
+        map.sorted { (probeNames[$0.key] ?? $0.key) < (probeNames[$1.key] ?? $1.key) }
+            .map { "\(probeNames[$0.key] ?? $0.key)=\($0.value)" }
+            .joined(separator: " | ")
+    }
 
     /// Runs the battery in `tab` and returns url → "fetched"/"blocked".
     private func runAdBattery(in tab: Tab) async -> [String: String] {
@@ -221,17 +302,14 @@ final class ExtensionVerificationTests: XCTestCase {
             }
             return JSON.stringify(out);
             """
-        do {
-            let result = try await tab.webView!.callAsyncJavaScript(
-                body, arguments: ["urls": Self.adProbeURLs], in: nil, contentWorld: .page)
-            guard let json = result as? String, let data = json.data(using: .utf8),
-                  let map = try? JSONDecoder().decode([String: String].self, from: data) else {
-                return ["error": String(describing: result ?? "nil")]
-            }
-            return map
-        } catch {
-            return ["error": "js-error: \(error.localizedDescription)"]
+        // Through the bounded `evaluate`: a battery whose page hangs must end
+        // as one unreadable line in the timeline, not as a stuck round.
+        let json = await evaluate(body, arguments: ["urls": Self.adProbeURLs], in: tab.webView!, timeout: 60)
+        guard let data = json.data(using: .utf8),
+              let map = try? JSONDecoder().decode([String: String].self, from: data) else {
+            return ["error": json]
         }
+        return map
     }
 
     /// `String(describing:)` on these yields just "WKNSError"; the domain,
@@ -393,7 +471,18 @@ final class ExtensionVerificationTests: XCTestCase {
     /// the before-run comes back blocked in the after-run; the control URL
     /// must stay fetchable (a blocker that kills everything is broken, not
     /// working).
-    private func runContentBlockerCandidate(_ key: String, settleSeconds: UInt64 = 8) async throws {
+    ///
+    /// The settle window is POLLED, not slept through, for the second reason
+    /// round 1 got uBO Lite wrong: it probed once at t+8s. A converted-rule
+    /// blocker is not finished warming up then — the diagnosis round watched
+    /// uBO Lite's first block land at t+10s and its last ruleset come into
+    /// force around t+90s. So the battery re-runs in a fresh tab every
+    /// `pollInterval` until every discriminator is blocked or `settleWindow`
+    /// runs out, and the whole timeline goes into the evidence: the verdict
+    /// needs the first block, the caveat the wizard shows needs the last one.
+    private func runContentBlockerCandidate(_ key: String,
+                                            settleWindow: TimeInterval = 120,
+                                            pollInterval: TimeInterval = 10) async throws {
         let beforeTab = try await openProbeTab(url: URL(string: "https://example.com/")!)
         let before = await runAdBattery(in: beforeTab)
         closeProbeTab(beforeTab)
@@ -413,27 +502,52 @@ final class ExtensionVerificationTests: XCTestCase {
             try? writeEvidence(evidence)
         }
 
-        // Blockers compile/register their rulesets asynchronously after load
-        // — give them a beat, then probe from a fresh tab so rules apply from
-        // that tab's very first request.
-        try await Task.sleep(nanoseconds: settleSeconds * 1_000_000_000)
-        let afterTab = try await openProbeTab(url: URL(string: "https://example.com/")!)
-        defer { closeProbeTab(afterTab) }
-        let after = await runAdBattery(in: afterTab)
+        // Blockers compile/register their rulesets asynchronously after load,
+        // and how long that takes is itself a result. Each pass probes from a
+        // fresh tab so rules apply from that tab's very first request.
+        var timeline: [String] = []
+        var after: [String: String] = [:]
+        var everBlocked: Set<String> = []
+        var firstBlock = "nothing blocked within \(Int(settleWindow))s"
+        var lastNewBlock = ""
+        var elapsed: TimeInterval = 0
+        while elapsed < settleWindow {
+            try await Task.sleep(nanoseconds: UInt64(pollInterval * 1_000_000_000))
+            elapsed += pollInterval
+            let afterTab = try await openProbeTab(url: URL(string: "https://example.com/")!)
+            after = await runAdBattery(in: afterTab)
+            closeProbeTab(afterTab)
+            timeline.append("t+\(Int(elapsed))s: \(Self.batteryLine(after))")
+            let blockedNow = Set(discriminators.filter { after[$0] == "blocked" })
+            if !blockedNow.subtracting(everBlocked).isEmpty {
+                if everBlocked.isEmpty { firstBlock = "t+\(Int(elapsed))s" }
+                lastNewBlock = "t+\(Int(elapsed))s"
+                everBlocked.formUnion(blockedNow)
+            }
+            if everBlocked.count == discriminators.count { break }
+        }
 
         evidence.checks.append(Check(
             name: "battery before load (platform only)",
-            observed: before.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: " | "),
+            observed: Self.batteryLine(before),
             pass: !discriminators.isEmpty))
         evidence.checks.append(Check(
-            name: "battery after load",
-            observed: after.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: " | "),
+            name: "battery after load, one line per \(Int(pollInterval))s of warm-up",
+            observed: timeline.joined(separator: "\n"),
             pass: true))
+        evidence.checks.append(Check(
+            name: "warm-up: first block / last newly blocked URL",
+            observed: "first \(firstBlock)\(lastNewBlock.isEmpty ? "" : ", last new \(lastNewBlock)")",
+            pass: !everBlocked.isEmpty))
 
-        let newlyBlocked = discriminators.filter { after[$0] == "blocked" }
+        // Blocking anywhere in the window counts, not just in the last pass:
+        // a rule that bites at t+10s has done its job even if a later pass
+        // races a tab that opened before its ruleset re-registered.
+        let newlyBlocked = discriminators.filter { everBlocked.contains($0) }
         evidence.checks.append(Check(
             name: "ad URLs newly blocked by the extension",
-            observed: newlyBlocked.isEmpty ? "none" : newlyBlocked.joined(separator: ", "),
+            observed: newlyBlocked.isEmpty ? "none"
+                : newlyBlocked.map { Self.probeNames[$0] ?? $0 }.joined(separator: ", "),
             pass: !newlyBlocked.isEmpty))
         let controlSurvives = after[Self.controlURL] == "fetched"
         evidence.checks.append(Check(
@@ -465,22 +579,24 @@ final class ExtensionVerificationTests: XCTestCase {
         var attributionHolds = true
         if !newlyBlocked.isEmpty {
             ExtensionManager.shared.setEnabled(false, forExtensionID: loaded.id)
-            try await Task.sleep(nanoseconds: 2_000_000_000)
+            try await Task.sleep(nanoseconds: 5_000_000_000)
             let unloadedTab = try await openProbeTab(url: URL(string: "https://example.com/")!)
             defer { closeProbeTab(unloadedTab) }
             let unloaded = await runAdBattery(in: unloadedTab)
             let restored = newlyBlocked.filter { unloaded[$0] == "fetched" }
             attributionHolds = !restored.isEmpty
+            let restoredNames = restored.map { Self.probeNames[$0] ?? $0 }.joined(separator: ", ")
             evidence.checks.append(Check(
                 name: "unloading restores fetchability (attribution)",
-                observed: unloaded.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: " | "),
+                observed: Self.batteryLine(unloaded)
+                    + " || restored: " + (restoredNames.isEmpty ? "none" : restoredNames),
                 pass: attributionHolds))
         }
 
         evidence.verdict = newlyBlocked.isEmpty
-            ? "FAILS — loads but blocks nothing the platform let through"
+            ? "FAILS — loads but blocks nothing the platform let through in \(Int(settleWindow))s"
             : !controlSurvives ? "BROKEN — blocks the control URL too"
-            : attributionHolds ? "WORKS — blocks \(newlyBlocked.count)/\(discriminators.count) discriminator URLs, restored on unload"
+            : attributionHolds ? "WORKS — blocks \(newlyBlocked.count)/\(discriminators.count) discriminator URLs, first at \(firstBlock), restored on unload"
             : "INCONCLUSIVE — URLs stayed blocked after unload; platform interference suspected"
     }
 
@@ -612,35 +728,141 @@ final class ExtensionVerificationTests: XCTestCase {
         }
     }
 
-    // MARK: - Vimium ("works" = content script observable; keyboard can't be faked)
+    // MARK: - Vimium ("works" = a real keypress moves the page)
+
+    /// Sends one key through AppKit rather than through `dispatchEvent`.
+    ///
+    /// This is the difference that decides Vimium: every one of its handlers
+    /// is wrapped in `forTrusted` (`lib/utils.js`), which drops any event
+    /// whose `isTrusted` is false — so the synthetic `KeyboardEvent` round 1
+    /// dispatched could never have produced hints, no matter how well Vimium
+    /// worked. An `NSEvent` delivered to the window becomes a REAL keydown in
+    /// the page, `isTrusted` and all, which is exactly what Vimium is waiting
+    /// for. Returns what happened, for the evidence.
+    ///
+    /// Delivery needs three things, and the first attempt at this only had
+    /// one of them: the app has to be ACTIVE, the window has to be KEY, and
+    /// the web view has to be first responder. With `windowIsKey=false` the
+    /// event is simply dropped, and the resulting "Vimium did nothing" says
+    /// something about the harness, not about Vimium — so all three are
+    /// established and reported before any key goes out.
+    @MainActor
+    private func sendTrustedKey(_ character: String, keyCode: UInt16, to webView: WKWebView) async -> String {
+        guard let window = webView.window else { return "web view is not in a window — cannot send a key" }
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+        let accepted = window.makeFirstResponder(webView)
+        let becameKey = await poll(timeout: 5) { window.isKeyWindow && NSApplication.shared.isActive }
+        guard becameKey else {
+            return "window never became key (isKey=\(window.isKeyWindow), appActive=\(NSApplication.shared.isActive))"
+                + " — a key event would be dropped, so none was sent"
+        }
+        let focused = await evaluate("return String(document.hasFocus());", in: webView, timeout: 5)
+        func event(_ type: NSEvent.EventType) -> NSEvent? {
+            NSEvent.keyEvent(with: type, location: .zero, modifierFlags: [],
+                             timestamp: ProcessInfo.processInfo.systemUptime,
+                             windowNumber: window.windowNumber, context: nil,
+                             characters: character, charactersIgnoringModifiers: character,
+                             isARepeat: false, keyCode: keyCode)
+        }
+        guard let down = event(.keyDown), let up = event(.keyUp) else { return "could not build an NSEvent" }
+        window.sendEvent(down)
+        window.sendEvent(up)
+        let responder = window.firstResponder.map { String(describing: type(of: $0)) } ?? "none"
+        return "sent '\(character)' to \(responder) (makeFirstResponder=\(accepted), windowIsKey=true, documentHasFocus=\(focused))"
+    }
 
     func test50Vimium() async throws {
         try await runCandidate("vimium-ff") { _, tab in
             var checks: [Check] = []
-            // Vimium's UI is created on (trusted) keypresses, which a test
-            // cannot synthesize. What IS observable at rest: any DOM artifacts
-            // its content script installs at load.
+            let webView = tab.webView!
+
+            // 1. Did the content scripts arrive at all? `vimium.css` defines a
+            //    custom property on :root and a `.vimium-reset` rule that
+            //    forces a div to `display: inline` — neither is true of a page
+            //    the CSS never reached.
+            var cssState = ""
+            let cssApplied = await self.pollJS(timeout: 15, in: webView, body: """
+                const probe = document.createElement('div');
+                probe.className = 'vimium-reset';
+                document.body.appendChild(probe);
+                const display = getComputedStyle(probe).display;
+                probe.remove();
+                return JSON.stringify({
+                    rootVar: getComputedStyle(document.documentElement).getPropertyValue('--vimium-background-color').trim(),
+                    resetDivDisplay: display
+                });
+                """) { observed in cssState = observed; return observed.contains("\"resetDivDisplay\":\"inline\"") }
+            checks.append(Check(name: "vimium.css injected (:root var + .vimium-reset rule)",
+                                observed: cssState, pass: cssApplied))
+
             let artifacts = await self.evaluate("""
                 const hits = [];
-                if (document.documentElement.outerHTML.match(/vimium/i)) hits.push('outerHTML mentions vimium');
                 for (const el of document.querySelectorAll('*')) {
                     if ((el.id + ' ' + el.className).match(/vimium/i)) hits.push(el.tagName + '#' + el.id + '.' + el.className);
                     if (el.shadowRoot) hits.push('shadow root on ' + el.tagName);
                 }
                 return JSON.stringify(hits);
-                """, in: tab.webView!)
-            let present = artifacts != "[]"
-            checks.append(Check(name: "content script DOM artifacts at rest", observed: artifacts, pass: present))
-            // Try an untrusted keydown anyway and record the outcome honestly.
-            let hint = await self.evaluate("""
-                document.body.dispatchEvent(new KeyboardEvent('keydown', {key: 'f', bubbles: true}));
-                await new Promise(r => setTimeout(r, 800));
-                return JSON.stringify(document.querySelectorAll('[class*=vimium], [id*=vimium]').length);
-                """, in: tab.webView!)
-            checks.append(Check(name: "untrusted 'f' produces hints (expected unreliable)", observed: hint, pass: true))
-            let verdict = present
-                ? "INCONCLUSIVE — artifacts present but real keyboard behaviour unverifiable headlessly"
-                : "UNVERIFIABLE — no observable effect; cannot ship as 'verified'"
+                """, in: webView)
+            checks.append(Check(name: "content script DOM artifacts at rest (informative)",
+                                observed: artifacts, pass: true))
+
+            // 2. Make the page tall enough to scroll and give Vimium's
+            //    background time to answer its content script's "am I enabled
+            //    for this URL?" query — it ignores keys until that lands.
+            let prepared = await self.evaluate("""
+                if (!document.getElementById('cherry-tall')) {
+                    const filler = document.createElement('div');
+                    filler.id = 'cherry-tall';
+                    filler.style.height = '5000px';
+                    document.body.appendChild(filler);
+                }
+                window.scrollTo(0, 0);
+                await new Promise(r => setTimeout(r, 3000));
+                return JSON.stringify({scrollHeight: document.documentElement.scrollHeight, scrollY: window.scrollY});
+                """, in: webView)
+            checks.append(Check(name: "page made scrollable before the keypress",
+                                observed: prepared, pass: prepared.contains("\"scrollY\":0")))
+
+            // 3. 'j' is Vimium's scrollDown. A trusted keydown that scrolls
+            //    the page is Vimium doing its actual job: nothing else on
+            //    example.com binds 'j', and the page does not scroll itself.
+            let sendState = await self.sendTrustedKey("j", keyCode: 38, to: webView)
+            checks.append(Check(name: "trusted 'j' delivered through AppKit", observed: sendState,
+                                pass: sendState.hasPrefix("sent")))
+            var scrollState = ""
+            let scrolled = await self.pollJS(timeout: 8, in: webView, body:
+                "return JSON.stringify({scrollY: window.scrollY});"
+            ) { observed in scrollState = observed; return !observed.contains("\"scrollY\":0") }
+            checks.append(Check(name: "'j' scrolls the page (Vimium's scrollDown)",
+                                observed: scrollState, pass: scrolled))
+
+            // 4. 'f' is link hints: example.com has exactly one link, so a
+            //    working Vimium paints exactly one hint marker over it.
+            _ = await self.sendTrustedKey("f", keyCode: 3, to: webView)
+            var hintState = ""
+            let hinted = await self.pollJS(timeout: 8, in: webView, body: """
+                const markers = document.querySelectorAll('.vimiumHintMarker, .internal-vimium-hint-marker');
+                return JSON.stringify({
+                    markers: markers.length,
+                    text: markers.length ? markers[0].innerText : '',
+                    containers: document.querySelectorAll('[class*=vimium], [id*=vimium]').length
+                });
+                """) { observed in hintState = observed; return !observed.contains("\"markers\":0") }
+            checks.append(Check(name: "'f' paints link hints", observed: hintState, pass: hinted))
+            // Leave the page in its normal mode whatever happened.
+            _ = await self.sendTrustedKey("\u{1B}", keyCode: 53, to: webView)
+
+            let verdict: String
+            if cssApplied && scrolled && hinted {
+                verdict = "WORKS — content scripts inject and real keypresses scroll and paint hints"
+            } else if cssApplied && scrolled {
+                verdict = "PARTIAL — keyboard scrolling works, link hints did not appear"
+            } else if cssApplied {
+                verdict = "INCONCLUSIVE — content scripts inject but no keypress produced an effect"
+            } else {
+                verdict = "FAILS — content scripts never reached the page"
+            }
             return (checks, verdict)
         }
     }
