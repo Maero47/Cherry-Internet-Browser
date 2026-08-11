@@ -3,14 +3,18 @@
 //  Cherry Browser
 //
 //  The first-run setup wizard: a sheet over the launch window that hands the
-//  user the four decisions that actually change how Cherry feels — appearance,
-//  search & privacy, import, tab layout — and then gets out of the way.
+//  user the five decisions that actually change how Cherry feels —
+//  appearance, search & privacy, import, extensions, tab layout — and then
+//  gets out of the way.
 //
 //  Every control here binds straight to `SettingsManager.shared` or calls its
 //  selection methods — the SAME properties and methods the Settings pane
 //  writes, applied the moment they're touched. There is no local copy and no
 //  "apply" step, so the wizard can never disagree with Settings about what
-//  was chosen, and Back/Skip never has anything to roll back.
+//  was chosen, and Back/Skip never has anything to roll back. The extensions
+//  step is the one that writes nothing to settings at all: it installs
+//  through `ExtensionManager`, the same object the Settings ▸ Extensions pane
+//  and File ▸ Load Extension… hand their packages to.
 //
 //  The surface is a sheet on purpose: it is presented after the browser
 //  window is already on screen, lives in its own window AppKit manages, and
@@ -48,8 +52,9 @@ struct SetupWizardView: View {
         .frame(width: 620, height: 560)
     }
 
-    /// Exhaustive over `SetupWizardStep` on purpose: adding a case (the
-    /// extensions step's seam) breaks the build until it has a view here.
+    /// Exhaustive over `SetupWizardStep` on purpose: adding a case breaks the
+    /// build until it has a view here — which is how the extensions step got
+    /// walked in without anyone having to remember a second list.
     @ViewBuilder
     private var stepContent: some View {
         switch model.step {
@@ -57,6 +62,7 @@ struct SetupWizardView: View {
         case .appearance: SetupAppearanceStep()
         case .searchPrivacy: SetupSearchPrivacyStep()
         case .importData: SetupImportStep()
+        case .extensions: SetupExtensionsStep()
         case .tabLayout: SetupTabLayoutStep()
         }
     }
@@ -120,18 +126,16 @@ struct SetupWizardView: View {
 
 // MARK: - Welcome
 
-private struct SetupWelcomeStep: View {
-    private var accent: Color { SettingsManager.shared.accentColor }
-
+struct SetupWelcomeStep: View {
     var body: some View {
-        VStack(spacing: 16) {
-            pearlSlot
-                .padding(.top, 20)
+        VStack(spacing: 14) {
+            pearl
+                .padding(.top, 4)
 
             Text("Welcome to Cherry")
                 .font(.system(size: 24, weight: .bold))
 
-            Text("A minute of setup, four choices — how Cherry looks, how it searches, what it brings over, and how your tabs sit. Skip any of it; nothing here is permanent.")
+            Text("A minute of setup, five choices — how Cherry looks, how it searches, what it brings over, what you want added, and how your tabs sit. Skip any of it; nothing here is permanent.")
                 .font(.system(size: 13))
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
@@ -141,28 +145,33 @@ private struct SetupWelcomeStep: View {
         .frame(maxWidth: .infinity)
     }
 
-    /// Pearl's place on this page. Her painterly hero image is arriving from
-    /// a parallel branch (`PearlMascot`); until the asset exists this shows a
-    /// deliberately neutral stand-in rather than any attempt at drawing her.
+    /// Pearl herself — the first thing on the first page, at
+    /// `PearlMascot.heroHeight` so she is what the page is, not decoration
+    /// beside a heading. She is a cut-out with her own alpha, so she stands on
+    /// the sheet's material with no plate, no clip and no shadow of ours: the
+    /// painting already carries its own cream outline.
+    ///
+    /// The stand-in that stood here while the artwork lived on another branch
+    /// is GONE — no placeholder, no neutral pawprint, nothing drawn in her
+    /// place. The empty branch below is not a fallback anyone should ever see:
+    /// her imageset is compiled into this same bundle by this same build, so
+    /// reaching it means the app shipped without its own asset catalog entry,
+    /// and `SetupWizardPearlTests` fails on exactly that — it reads the image
+    /// back out of this view's tree, so a wizard that renders no Pearl is a
+    /// red test rather than a quietly emptier welcome.
+    ///
+    /// Resolved here (`heroImage`) rather than handed to `Image(_:)` as a
+    /// name, so the resolution happens where the test can watch it: what this
+    /// view carries is the decoded `NSImage`, not a string that SwiftUI might
+    /// or might not find something for at render time.
     @ViewBuilder
-    private var pearlSlot: some View {
+    private var pearl: some View {
         if let hero = PearlMascot.heroImage {
             Image(nsImage: hero)
                 .resizable()
                 .scaledToFit()
-                .frame(height: 160)
-                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .frame(height: PearlMascot.heroHeight)
                 .accessibilityLabel("Pearl, Cherry's cat")
-        } else {
-            ZStack {
-                Circle()
-                    .fill(accent.opacity(0.12))
-                    .frame(width: 120, height: 120)
-                Image(systemName: "pawprint.fill")
-                    .font(.system(size: 44, weight: .medium))
-                    .foregroundStyle(accent.opacity(0.55))
-            }
-            .accessibilityHidden(true)
         }
     }
 }

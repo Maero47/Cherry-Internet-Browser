@@ -61,7 +61,7 @@ enum ExtensionShortlist {
             summary: "Blocks ads and trackers",
             sourceURL: URL(string: "https://github.com/uBlockOrigin/uBOL-home/releases/download/2026.804.1652/uBOLite_2026.804.1652.firefox.signed.xpi")!,
             verifiedVersion: "2026.804.1652",
-            caveat: "Blocking starts about ten seconds after it loads, so the first page or two can still show ads. It also does not block everything in Cherry: one of its six filter lists (easylist) registers but never takes effect, so some ads get through."
+            caveat: "It needs about a minute and a half to warm up. The first blocks land around ten seconds after it loads and the last of its filter lists only comes into force near the 90-second mark, so ads on the first page or two are the warm-up finishing, not a broken blocker. After that it still does not catch everything in Cherry: one of its six lists (easylist) registers but never takes effect, so some ads get through."
         ),
         ExtensionShortlistEntry(
             id: "darkreader",

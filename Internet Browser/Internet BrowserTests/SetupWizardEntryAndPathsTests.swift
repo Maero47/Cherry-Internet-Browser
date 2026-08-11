@@ -236,17 +236,18 @@ final class SetupWizardEntryAndPathsTests: XCTestCase {
         XCTAssertTrue(holdsService)
     }
 
-    /// The flow: welcome first, then the four decisions, in order — and the
-    /// model's list IS `allCases`, so the parallel extensions step joins the
-    /// flow by existing (the seam cannot be forgotten in a second list).
-    /// Dies on: a hand-maintained steps array diverging from the enum, or
-    /// the steps reordering.
-    func testWizardStepsCoverTheFourDecisionsInOrder() {
+    /// The flow: welcome first, then the five decisions, in order — and the
+    /// model's list IS `allCases`, so no step can be in the enum and missing
+    /// from the flow. The extensions step, which arrived through the seam
+    /// this list reserved for it, sits between Import and Tabs.
+    /// Dies on: a hand-maintained steps array diverging from the enum, the
+    /// steps reordering, or the extensions step being dropped back out.
+    func testWizardStepsCoverTheFiveDecisionsInOrder() {
         let steps = SetupWizardModel.steps
         XCTAssertEqual(steps, SetupWizardStep.allCases)
         XCTAssertEqual(steps.first, .welcome)
 
-        let decisions: [SetupWizardStep] = [.appearance, .searchPrivacy, .importData, .tabLayout]
+        let decisions: [SetupWizardStep] = [.appearance, .searchPrivacy, .importData, .extensions, .tabLayout]
         let positions = decisions.compactMap { steps.firstIndex(of: $0) }
         XCTAssertEqual(positions.count, decisions.count, "a decision step is missing from the flow")
         XCTAssertEqual(positions, positions.sorted(), "the decision steps changed order")

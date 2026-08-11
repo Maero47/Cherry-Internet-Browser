@@ -10,17 +10,18 @@ import Observation
 /// order IS the flow: progress dots, Back/Continue and early finish all
 /// derive from `allCases`, so a step exists exactly by having a case here.
 ///
-/// SEAM — extensions step: a short list of recommended extensions is being
-/// built on a parallel branch. To land it, add `case extensions` in flow
-/// order (between `importData` and `tabLayout` was the plan), give it a
-/// `title`/`icon` below, and add its view to `SetupWizardView.stepContent`.
-/// That switch is exhaustive over this enum, so the compiler walks the merge
-/// through every site that needs the new step — nothing else changes.
+/// The extensions step sits between Import and Tabs, where the seam that
+/// reserved it said it would: everything before it is about Cherry itself,
+/// and `extensions` is the first step that reaches outside the app — it
+/// downloads and installs real packages. It comes after Import because a user
+/// who has just brought their old browser over is in exactly the frame of
+/// mind to be asked what they want added to it.
 enum SetupWizardStep: String, CaseIterable, Identifiable {
     case welcome
     case appearance
     case searchPrivacy
     case importData
+    case extensions
     case tabLayout
 
     var id: String { rawValue }
@@ -31,6 +32,7 @@ enum SetupWizardStep: String, CaseIterable, Identifiable {
         case .appearance: "Appearance"
         case .searchPrivacy: "Search & Privacy"
         case .importData: "Import"
+        case .extensions: "Extensions"
         case .tabLayout: "Tabs"
         }
     }
@@ -41,6 +43,7 @@ enum SetupWizardStep: String, CaseIterable, Identifiable {
         case .appearance: "paintpalette"
         case .searchPrivacy: "magnifyingglass"
         case .importData: "square.and.arrow.down"
+        case .extensions: "puzzlepiece.extension"
         case .tabLayout: "macwindow"
         }
     }
@@ -48,13 +51,28 @@ enum SetupWizardStep: String, CaseIterable, Identifiable {
 
 /// Where Pearl, Cherry's black-cat mascot, appears on the welcome step.
 ///
-/// Her painterly hero image is being drawn on a parallel branch and lands in
-/// `Assets.xcassets` under this name. Until the asset exists `heroImage`
-/// resolves nil and the welcome step shows a neutral placeholder — so the two
-/// branches merge without either touching the other's files. If the artwork
-/// arrives under a different name, this one string is the whole fix.
+/// The artwork has landed (`Assets.xcassets/PearlHero.imageset`), so the
+/// welcome step draws HER — the neutral placeholder that stood in while the
+/// two branches were apart is gone, and nothing draws in her place. This one
+/// string is still the whole binding between the wizard and the catalog: it is
+/// the name the welcome step resolves at render time, so a test that watches
+/// the wizard's own view tree produce an image (rather than merely asserting
+/// the file exists) fails the moment it stops matching the catalog.
+///
+/// `PearlHero` and not `PearlHeroYellow`: the cut-out with the alpha channel,
+/// because she sits directly on the sheet's own material. The yellow-plate
+/// variant carries its own background and would paint a card the sheet did
+/// not ask for.
 enum PearlMascot {
     static let heroAssetName = "PearlHero"
+
+    /// How tall Pearl is drawn on the welcome step. She is a portrait cut-out
+    /// (162 × 320 at 1x), so height is the dimension that decides how much of
+    /// the page she owns: at 200pt she is the largest thing on it — the page
+    /// reads as her greeting rather than as a form with a picture on it — and
+    /// still leaves the title, the paragraph and the footer un-scrolled inside
+    /// the sheet's 560pt.
+    static let heroHeight: CGFloat = 200
 
     @MainActor
     static var heroImage: NSImage? { NSImage(named: heroAssetName) }
