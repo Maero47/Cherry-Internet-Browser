@@ -20,6 +20,11 @@
 //  whole surface is the spinner that appears after Retry is pressed, and
 //  `accessibilityReduceMotion` replaces even that with the word.
 //
+//  The one exception is chosen, not shown: the offline family — and only it,
+//  see `NavigationFailure.offersPearlRunner` — appends a one-line offer of
+//  Pearl's runner below the actions. The offer itself is as still as the
+//  rest of the screen; nothing moves unless the user starts the game.
+//
 
 import SwiftUI
 
@@ -62,6 +67,14 @@ struct NavigationFailureView: View {
             }
 
             actions
+
+            if failure.offersPearlRunner {
+                // The wait screen's game. The failure copy, the address and
+                // Retry above keep their place and their prominence; this is
+                // an offer at the bottom, and it starts nothing on its own.
+                PearlRunnerSection()
+                    .padding(.top, 8)
+            }
 
             if let diagnostic = failure.diagnosticLine {
                 // Only the unrecognised family gets here. The domain and code
