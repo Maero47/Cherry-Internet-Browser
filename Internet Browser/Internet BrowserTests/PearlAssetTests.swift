@@ -65,7 +65,7 @@ final class PearlAssetTests: XCTestCase {
 
     func testManifestParsesWithContractFrameNamesAndCounts() throws {
         let manifest = try loadManifest()
-        XCTAssertEqual(manifest.scale, 2)
+        XCTAssertEqual(manifest.scale, 1, "sheet is a 1x pixel-art sheet; consumers divide by scale")
         XCTAssertEqual(manifest.frames.run.count, 2)
         XCTAssertEqual(manifest.frames.duck.count, 2)
         XCTAssertEqual(manifest.frames.jump.count, 1)
@@ -76,15 +76,22 @@ final class PearlAssetTests: XCTestCase {
     }
 
     func testManifestBoxesMatchTheLogicalSizes() throws {
-        let frames = try loadManifest().frames
-        for box in frames.run { XCTAssertEqual([box.w, box.h], [44, 47], "run") }
-        for box in frames.duck { XCTAssertEqual([box.w, box.h], [59, 30], "duck") }
-        for box in frames.jump { XCTAssertEqual([box.w, box.h], [44, 47], "jump") }
-        for box in frames.hit { XCTAssertEqual([box.w, box.h], [44, 47], "hit") }
-        for box in frames.tree_small { XCTAssertEqual([box.w, box.h], [17, 35], "tree_small") }
-        for box in frames.tree_large { XCTAssertEqual([box.w, box.h], [25, 50], "tree_large") }
-        for box in frames.gull { XCTAssertEqual([box.w, box.h], [46, 40], "gull") }
-        XCTAssertEqual(frames.ground.h, 12, "ground strip is 12pt tall")
+        // The contract's numbers are logical points at 1x: a consumer computes
+        // round(w / scale), and that must land on the contract exactly.
+        let manifest = try loadManifest()
+        let frames = manifest.frames
+        let scale = Double(manifest.scale)
+        func logical(_ box: Box) -> [Int] {
+            [Int((Double(box.w) / scale).rounded()), Int((Double(box.h) / scale).rounded())]
+        }
+        for box in frames.run { XCTAssertEqual(logical(box), [44, 47], "run") }
+        for box in frames.duck { XCTAssertEqual(logical(box), [59, 30], "duck") }
+        for box in frames.jump { XCTAssertEqual(logical(box), [44, 47], "jump") }
+        for box in frames.hit { XCTAssertEqual(logical(box), [44, 47], "hit") }
+        for box in frames.tree_small { XCTAssertEqual(logical(box), [17, 35], "tree_small") }
+        for box in frames.tree_large { XCTAssertEqual(logical(box), [25, 50], "tree_large") }
+        for box in frames.gull { XCTAssertEqual(logical(box), [46, 40], "gull") }
+        XCTAssertEqual(Int((Double(frames.ground.h) / scale).rounded()), 12, "ground strip is 12pt tall")
     }
 
     func testEveryFrameBoxLiesInsideTheSheet() throws {
