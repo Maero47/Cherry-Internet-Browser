@@ -557,6 +557,25 @@ extension ThemeContrast {
 final class ThemeContrastGuard {
     static let shared = ThemeContrastGuard()
 
+    /// One question a chrome surface actually asked, and the answer served —
+    /// enough to tell who asked (the rect, the floor, the control width) and
+    /// what was decided.
+    struct ServedPlate {
+        let rect: CGRect
+        let floor: Double
+        let windowPoints: CGFloat
+        let foreground: ThemeContrast.RGBA
+        let plan: ThemeScrimPlan?
+    }
+
+    /// Recorded only while a test has set this non-nil; nil (the default)
+    /// records nothing and costs nothing. This is how a test pins a view's
+    /// BODY to the guard: the pure arithmetic can be perfectly tested and a
+    /// bar still unguarded because nothing in its body asks, and measuring
+    /// the drawn pixels to find out is banned on this project. Cache hits are
+    /// recorded too — a body that asks is a body that asks.
+    var served: [ServedPlate]?
+
     private var cache: [String: ThemeScrimPlan?] = [:]
 
     /// Plenty for every cluster in several windows at a few window widths;
@@ -602,7 +621,13 @@ final class ThemeContrastGuard {
             String(format: "%.2f/%.0f", floor, windowPoints)
         ].joined(separator: "|")
 
-        if let cached = cache[key] { return cached }
+        if let cached = cache[key] {
+            served?.append(ServedPlate(
+                rect: rect, floor: floor, windowPoints: windowPoints,
+                foreground: resolved, plan: cached
+            ))
+            return cached
+        }
 
         let sample = ThemeBackdropSampler.backdrop(
             under: rect, canvas: canvas, overlays: context.overlays
@@ -612,6 +637,10 @@ final class ThemeContrastGuard {
         )
         if cache.count >= cacheLimit { cache.removeAll(keepingCapacity: true) }
         cache[key] = plan
+        served?.append(ServedPlate(
+            rect: rect, floor: floor, windowPoints: windowPoints,
+            foreground: resolved, plan: plan
+        ))
         return plan
     }
 
