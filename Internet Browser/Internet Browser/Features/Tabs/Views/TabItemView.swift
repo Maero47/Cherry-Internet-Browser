@@ -171,6 +171,7 @@ struct TabItemView: View {
             tabBackground
                 .themeLegibilityPlate(
                     titleLegibility,
+                    cluster: "tabStrip",
                     floor: ThemeContrast.textFloor,
                     // A tab is its own shape in its own row, so it takes the
                     // tab corner and its own height rather than the toolbar

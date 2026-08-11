@@ -152,38 +152,50 @@ final class WindowResizeAndZoomTests: XCTestCase {
     /// measured across the shared cluster span), both navigation button
     /// clusters, the omnibox, and the bookmark bar — with the floors, control
     /// widths and overlay stacks the real call sites pass.
-    private func askEveryCluster(width: CGFloat, tabs: Int, of guard_: ThemeContrastGuard) {
-        let canvas = CGRect(x: 0, y: 0, width: width, height: 84)
+    ///
+    /// `height` reproduces what a VERTICAL drag does to these questions on
+    /// this platform: the global rects SwiftUI hands the asking bodies shift
+    /// 1:1 with the window height (measured in
+    /// `HomepageWallpaperResizeTimingTests` — bookmark bar minY 87→91 as the
+    /// window grew 700→704), so every cluster's y here carries the same
+    /// shift. A horizontal frame changes only `width` and leaves every y
+    /// alone, which is why the original hold — keyed on the y band — held
+    /// horizontally and broke vertically.
+    private func askEveryCluster(
+        width: CGFloat, height: CGFloat = 84, tabs: Int, of guard_: ThemeContrastGuard
+    ) {
+        let shift = height - 84
+        let canvas = CGRect(x: 0, y: 0, width: width, height: height)
         let field = Color(.sRGB, red: 1, green: 1, blue: 1, opacity: 0.12)
         let iconContext = ThemeLegibility(foreground: harnessGlyph, overlays: [harnessToolbar])
         let fieldContext = ThemeLegibility(foreground: harnessGlyph, overlays: [harnessToolbar, field])
 
         // Tab strip: separate views, one shared span (`decidedAcrossCluster`).
         let span = CGRect(
-            x: 76, y: 8,
+            x: 76, y: 8 + shift,
             width: max(1, min(CGFloat(tabs) * 180, width - 220)), height: 20
         )
         for _ in 0..<tabs {
             _ = guard_.plate(
-                behind: span, canvas: canvas,
+                behind: span, cluster: "tabStrip", canvas: canvas,
                 context: ThemeLegibility(foreground: harnessGlyph),
                 floor: ThemeContrast.textFloor, windowPoints: 60
             )
         }
         _ = guard_.plate(
-            behind: CGRect(x: 8, y: 46, width: 180, height: 24), canvas: canvas,
+            behind: CGRect(x: 8, y: 46 + shift, width: 180, height: 24), cluster: "navigation", canvas: canvas,
             context: iconContext, floor: ThemeContrast.iconFloor, windowPoints: 28
         )
         _ = guard_.plate(
-            behind: CGRect(x: width - 150, y: 46, width: 142, height: 24), canvas: canvas,
+            behind: CGRect(x: width - 150, y: 46 + shift, width: 142, height: 24), cluster: "actions", canvas: canvas,
             context: iconContext, floor: ThemeContrast.iconFloor, windowPoints: 28
         )
         _ = guard_.plate(
-            behind: CGRect(x: 200, y: 44, width: max(1, width - 360), height: 28), canvas: canvas,
+            behind: CGRect(x: 200, y: 44 + shift, width: max(1, width - 360), height: 28), cluster: "omniboxField", canvas: canvas,
             context: fieldContext, floor: ThemeContrast.textFloor, windowPoints: 40
         )
         _ = guard_.plate(
-            behind: CGRect(x: 8, y: 78, width: width - 16, height: 20), canvas: canvas,
+            behind: CGRect(x: 8, y: 78 + shift, width: width - 16, height: 20), cluster: "bookmarkBar", canvas: canvas,
             context: fieldContext, floor: ThemeContrast.textFloor, windowPoints: 40
         )
     }
@@ -264,14 +276,14 @@ final class WindowResizeAndZoomTests: XCTestCase {
         func canvas(_ width: CGFloat) -> CGRect { CGRect(x: 0, y: 0, width: width, height: 84) }
 
         let before = guard_.plate(
-            behind: cluster, canvas: canvas(1000), context: context,
+            behind: cluster, cluster: "navigation", canvas: canvas(1000), context: context,
             floor: ThemeContrast.iconFloor, windowPoints: 28
         )
 
         postLiveResize(NSWindow.willStartLiveResizeNotification, window)
         for width in stride(from: CGFloat(1050), through: 1350, by: 50) {
             let held = guard_.plate(
-                behind: cluster, canvas: canvas(width), context: context,
+                behind: cluster, cluster: "navigation", canvas: canvas(width), context: context,
                 floor: ThemeContrast.iconFloor, windowPoints: 28
             )
             XCTAssertEqual(held, before, "mid-drag the cluster keeps its settled plan")
@@ -279,7 +291,7 @@ final class WindowResizeAndZoomTests: XCTestCase {
         postLiveResize(NSWindow.didEndLiveResizeNotification, window)
 
         let settled = guard_.plate(
-            behind: cluster, canvas: canvas(1360), context: context,
+            behind: cluster, cluster: "navigation", canvas: canvas(1360), context: context,
             floor: ThemeContrast.iconFloor, windowPoints: 28
         )
         let cold = ThemeContrast.plate(
@@ -294,6 +306,136 @@ final class WindowResizeAndZoomTests: XCTestCase {
         XCTAssertNotEqual(
             settled, before,
             "precondition: the artwork must differ between the two widths, or a stuck hold could pass"
+        )
+    }
+
+    /// The vertical twin of `testALiveResizeServesTheHeldPlanWithoutResampling`,
+    /// and the pin for the owner's second report: horizontal drags were smooth,
+    /// vertical and diagonal stuttered. The hold used to find a cluster's held
+    /// plan by its vertical band — geometry a VERTICAL drag changes every
+    /// frame (the global y shifts with the window height on this platform), so
+    /// the plan was never found and every frame re-solved. The identity is now
+    /// the cluster's name; a height sweep must serve held plans exactly as a
+    /// width sweep does.
+    func testAVerticalLiveResizeServesTheHeldPlanWithoutResampling() {
+        FirefoxThemeManager.shared.activeTheme = harnessTheme(id: "vhold-\(UUID().uuidString)")
+        let guard_ = ThemeContrastGuard.shared
+        let window = NSWindow()
+
+        askEveryCluster(width: 1100, height: 84, tabs: 8, of: guard_)
+        let settledSolves = guard_.sampledPlateCount
+
+        postLiveResize(NSWindow.willStartLiveResizeNotification, window)
+        guard_.served = []
+        // Every frame moves the canvas height AND every cluster's y — the
+        // churn a real vertical drag produces.
+        for height in stride(from: CGFloat(86), through: 284, by: 2) {
+            askEveryCluster(width: 1100, height: height, tabs: 8, of: guard_)
+        }
+        let asked = guard_.served?.count ?? 0
+        guard_.served = nil
+        postLiveResize(NSWindow.didEndLiveResizeNotification, window)
+
+        XCTAssertEqual(
+            guard_.sampledPlateCount, settledSolves,
+            "a vertical live-resize frame must serve held plans, never re-solve"
+        )
+        XCTAssertEqual(asked, 100 * 12, "every cluster question was still asked and answered")
+
+        // …and with the resize over, fresh geometry is measured again.
+        askEveryCluster(width: 1100, height: 300, tabs: 8, of: guard_)
+        XCTAssertGreaterThan(
+            guard_.sampledPlateCount, settledSolves,
+            "after settling, a new geometry must be solved for real"
+        )
+    }
+
+    /// The vertical settle promise: whatever was served while the heights
+    /// churned, the answer after the drag ends is EXACTLY the cold answer for
+    /// the final geometry. The end height pushes the cluster off the bottom
+    /// edge of the 160pt header artwork onto the plain frame colour, so a
+    /// stuck hold — which would keep serving the on-artwork plan — is caught.
+    func testThePlateAfterAVerticalResizeSettlesEqualsTheColdAnswer() {
+        FirefoxThemeManager.shared.activeTheme = harnessTheme(id: "vsettle-\(UUID().uuidString)")
+        let guard_ = ThemeContrastGuard.shared
+        let window = NSWindow()
+        let context = ThemeLegibility(foreground: harnessGlyph, overlays: [harnessToolbar])
+        // The cluster's y carries the height shift a real vertical drag
+        // produces; the canvas grows with it.
+        func cluster(_ height: CGFloat) -> CGRect {
+            CGRect(x: 8, y: 46 + (height - 84), width: 180, height: 24)
+        }
+        func canvas(_ height: CGFloat) -> CGRect {
+            CGRect(x: 0, y: 0, width: 1000, height: height)
+        }
+
+        let before = guard_.plate(
+            behind: cluster(84), cluster: "navigation", canvas: canvas(84), context: context,
+            floor: ThemeContrast.iconFloor, windowPoints: 28
+        )
+
+        postLiveResize(NSWindow.willStartLiveResizeNotification, window)
+        for height in stride(from: CGFloat(104), through: 284, by: 20) {
+            let held = guard_.plate(
+                behind: cluster(height), cluster: "navigation", canvas: canvas(height), context: context,
+                floor: ThemeContrast.iconFloor, windowPoints: 28
+            )
+            XCTAssertEqual(held, before, "mid-drag the cluster keeps its settled plan")
+        }
+        postLiveResize(NSWindow.didEndLiveResizeNotification, window)
+
+        let settled = guard_.plate(
+            behind: cluster(320), cluster: "navigation", canvas: canvas(320), context: context,
+            floor: ThemeContrast.iconFloor, windowPoints: 28
+        )
+        let cold = ThemeContrast.plate(
+            foreground: ThemeContrast.resolve(harnessGlyph),
+            sample: ThemeBackdropSampler.backdrop(
+                under: cluster(320), canvas: canvas(320), overlays: [harnessToolbar]
+            ),
+            floor: ThemeContrast.iconFloor,
+            windowPoints: 28
+        )
+        XCTAssertEqual(settled, cold, "the settled answer must equal the cold one")
+        XCTAssertNotEqual(
+            settled, before,
+            "precondition: the backdrop must differ between the two heights, or a stuck hold could pass"
+        )
+    }
+
+    /// The vertical measurement, same clock and same questions as the
+    /// horizontal sweep below. Before the identity fix this swept every
+    /// cluster into a fresh identity per frame and re-solved — the ~600ms
+    /// frames `HomepageWallpaperResizeTimingTests` measured in a real window.
+    func testVerticalLiveResizeSweepTiming() {
+        FirefoxThemeManager.shared.activeTheme = harnessTheme(id: "vsweep-\(UUID().uuidString)")
+        let guard_ = ThemeContrastGuard.shared
+        let clock = ContinuousClock()
+        let window = NSWindow()
+
+        askEveryCluster(width: 1100, height: 84, tabs: 8, of: guard_)
+
+        postLiveResize(NSWindow.willStartLiveResizeNotification, window)
+        var frameSeconds: [Double] = []
+        for height in stride(from: CGFloat(86), through: 324, by: 2) {
+            let elapsed = clock.measure {
+                askEveryCluster(width: 1100, height: height, tabs: 8, of: guard_)
+            }
+            frameSeconds.append(Self.seconds(elapsed))
+        }
+        postLiveResize(NSWindow.didEndLiveResizeNotification, window)
+
+        let total = frameSeconds.reduce(0, +)
+        let mean = total / Double(frameSeconds.count)
+        let worst = frameSeconds.max() ?? 0
+        print(String(
+            format: "VERTICAL SWEEP frames=%d total=%.1fms mean/frame=%.2fms worst frame=%.2fms",
+            frameSeconds.count, total * 1000, mean * 1000, worst * 1000
+        ))
+
+        XCTAssertLessThan(
+            worst, 0.1,
+            "a vertical live-resize frame re-solved the backdrop (worst \(worst * 1000)ms) — the hold is off on the vertical axis"
         )
     }
 

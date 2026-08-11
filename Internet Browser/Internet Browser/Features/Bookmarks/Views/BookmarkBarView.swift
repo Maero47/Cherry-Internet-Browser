@@ -96,6 +96,7 @@ struct BookmarkBarView: View {
         // private bars hand the guard nil and keep their stock look.
         .themeLegibilityPlate(
             legibility,
+            cluster: "bookmarkBar",
             floor: ThemeContrast.textFloor,
             windowPoints: 40
         )

@@ -248,7 +248,7 @@ struct NavigationBarView: View {
             // `themeLegibilityPlate`.
             navigationButtons
                 .customizeToolbarContextMenu { onSettings?() }
-                .themeLegibilityPlate(legibility, decidedAcrossCluster: true)
+                .themeLegibilityPlate(legibility, cluster: "navigation", decidedAcrossCluster: true)
 
             // Omnibox. Note what is NOT here: the customise context menu. It
             // is attached to the button clusters and the bar's background, so
@@ -473,7 +473,7 @@ struct NavigationBarView: View {
             actionButtons
                 .customizeToolbarContextMenu { onSettings?() }
         }
-        .themeLegibilityPlate(legibility, decidedAcrossCluster: true)
+        .themeLegibilityPlate(legibility, cluster: "actions", decidedAcrossCluster: true)
     }
 
     @ViewBuilder

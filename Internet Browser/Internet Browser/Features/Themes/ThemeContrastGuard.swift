@@ -649,10 +649,20 @@ final class ThemeContrastGuard {
     private let cacheLimit = 512
 
     /// The last plan each cluster IDENTITY settled on — the key is everything
-    /// the geometry key carries EXCEPT the geometry (theme, foreground,
-    /// overlays, floor, control width, plus the row band the cluster lives
-    /// in). This is what a live-resize frame serves instead of solving; see
-    /// `plate`. Seeded by every real solve, so it is warm before any drag.
+    /// the geometry key carries EXCEPT the geometry (theme, the cluster's
+    /// NAME, foreground, overlays, floor, control width). This is what a
+    /// live-resize frame serves instead of solving; see `plate`. Seeded by
+    /// every real solve, so it is warm before any drag.
+    ///
+    /// The identity deliberately contains no geometry at all. It used to
+    /// carry the cluster's vertical band (global minY and height) on the
+    /// assumption that a live resize only sweeps widths — but the global
+    /// rects SwiftUI hands the asking bodies shift 1:1 with the window's
+    /// HEIGHT on this platform, so a vertical or diagonal drag changed the
+    /// band every frame, the held plan was never found, and every frame paid
+    /// the full re-solve the hold exists to prevent (the measured ~600ms
+    /// hitch — `HomepageWallpaperResizeTimingTests`). A name the call site
+    /// declares is stable under both axes by construction.
     private var lastSettledPlan: [String: ThemeScrimPlan?] = [:]
 
     /// A handful of identities per theme; bounded only so switching themes
@@ -669,6 +679,14 @@ final class ThemeContrastGuard {
     ///   - rect: the band the glyphs actually occupy across the whole cluster,
     ///     not the whole hit area: measuring the padding above and below a 16pt
     ///     row of icons would average in artwork nothing is drawn on.
+    ///   - cluster: which chrome cluster is asking — "tabStrip", "navigation",
+    ///     "bookmarkBar". This is the identity a live-resize frame finds its
+    ///     held plan under, and it is a NAME rather than anything geometric
+    ///     because no part of the geometry survives both drag axes: widths
+    ///     sweep on a horizontal drag, and the global y SwiftUI reports
+    ///     shifts with the window height on a vertical one. Clusters sharing
+    ///     a name and a question (every tab in the strip) share a held plan
+    ///     mid-drag; they get their own answers the moment the resize settles.
     ///   - windowPoints: the width of one control. The tolerance inside the
     ///     percentile is a fraction of THIS, not of the cluster, so a wide row
     ///     cannot average one of its own controls away.
@@ -676,6 +694,7 @@ final class ThemeContrastGuard {
     ///     and the controls (the theme's `toolbar`, a field fill).
     func plate(
         behind rect: CGRect,
+        cluster: String,
         canvas: CGRect?,
         context: ThemeLegibility?,
         floor: Double,
@@ -722,7 +741,13 @@ final class ThemeContrastGuard {
         // re-runs every asking body and this branch is no longer taken. What
         // the user sees mid-drag is the pre-drag surface, corrected on
         // release — never a weakened measurement.
-        let identity = [themeID, Self.rowBand(rect), question].joined(separator: "|")
+        //
+        // The identity is the caller's cluster NAME, never geometry: global
+        // rects shift with the window height on this platform, so any
+        // geometric identity churns on a vertical drag and the hold silently
+        // stops holding — the exact stutter this branch exists to prevent,
+        // moved to one axis. See `lastSettledPlan`.
+        let identity = [themeID, cluster, question].joined(separator: "|")
         if isLiveResizing, let held = lastSettledPlan[identity] {
             served?.append(ServedPlate(
                 rect: rect, floor: floor, windowPoints: windowPoints,
@@ -747,16 +772,6 @@ final class ThemeContrastGuard {
             foreground: resolved, plan: plan
         ))
         return plan
-    }
-
-    /// The vertical band a cluster occupies — the part of its geometry that a
-    /// horizontal live resize does NOT move, which is what lets a held plan
-    /// find its cluster again while the widths sweep. Clusters sharing a band
-    /// and a question (the two navigation button clusters) share a held plan
-    /// mid-drag; they get their own answers back the moment the resize
-    /// settles.
-    private static func rowBand(_ rect: CGRect) -> String {
-        "\(Int(rect.minY.rounded())),\(Int(rect.height.rounded()))"
     }
 
     private static func quantized(_ rect: CGRect) -> String {
@@ -805,6 +820,9 @@ extension View {
     ///     sits OUTSIDE an `.environment` applied to the view it backs — so
     ///     `.themeLegibility(x).themeLegibilityPlate()` would silently measure
     ///     nothing.
+    ///   - cluster: this cluster's name — the identity its settled plan is
+    ///     held under while a live resize is in flight. A name, not geometry:
+    ///     see `ThemeContrastGuard.plate`.
     ///   - measureInset: how far in from this view's bounds the glyphs actually
     ///     are, vertically. A 28pt toolbar button carries a 16pt symbol, so the
     ///     rows above and below carry no glyph and must not be averaged in.
@@ -823,6 +841,7 @@ extension View {
     ///     instead of each solving the patch of artwork it happens to sit on.
     func themeLegibilityPlate(
         _ context: ThemeLegibility?,
+        cluster: String,
         floor: Double = ThemeContrast.iconFloor,
         shape: RoundedRectangle = AppConstants.ToolbarSurface.shape,
         height: CGFloat? = AppConstants.ToolbarSurface.height,
@@ -833,6 +852,7 @@ extension View {
         background {
             ThemeLegibilityPlateLayer(
                 context: context,
+                cluster: cluster,
                 floor: floor,
                 shape: shape,
                 height: height,
@@ -875,6 +895,7 @@ private struct ThemeLegibilityPlateLayer: View {
     @Environment(\.themeClusterSpan) private var clusterSpan
 
     let context: ThemeLegibility?
+    let cluster: String
     let floor: Double
     let shape: RoundedRectangle
     /// Nil means "as tall as the thing being backed" — what a tab wants.
@@ -896,6 +917,7 @@ private struct ThemeLegibilityPlateLayer: View {
             } ?? own
             if let plan = ThemeContrastGuard.shared.plate(
                 behind: measured,
+                cluster: cluster,
                 canvas: chromeCanvasFrame,
                 context: context,
                 floor: floor,

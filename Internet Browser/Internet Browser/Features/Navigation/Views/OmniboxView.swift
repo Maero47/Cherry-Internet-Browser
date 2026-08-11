@@ -106,6 +106,7 @@ struct OmniboxView: View {
                     Color.clear
                         .themeLegibilityPlate(
                             fieldLegibility,
+                            cluster: "omniboxField",
                             floor: ThemeContrast.textFloor,
                             measureInset: 2,
                             // The URL can be any length, so every run-of-text

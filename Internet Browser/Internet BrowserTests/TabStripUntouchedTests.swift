@@ -46,12 +46,18 @@ final class TabStripUntouchedTests: XCTestCase {
     }
 
     func testTabStripViewsAreByteForByteWhatMainShips() throws {
-        // shasum -a 256 of each file at d3d68e6 (main).
+        // shasum -a 256 of each file at d3d68e6 (main) — except TabItemView,
+        // which carries EXACTLY ONE departure from main: the resize-jank fix
+        // gave `themeLegibilityPlate` a required `cluster:` identity and the
+        // tab's call site names itself (`cluster: "tabStrip"`, one added
+        // line). Its pin is the hash of main + that line, so anything ELSE
+        // moving in the file — the rejected width model above all — still
+        // fails here.
         let pins: [(path: String, sha256: String)] = [
             ("Features/Tabs/Views/TabBarView.swift",
              "4d014ff0bea66595c09bb85c0ecc4e46fdfb7170b7254c494a7d91b14fadadae"),
             ("Features/Tabs/Views/TabItemView.swift",
-             "06b8758a199ab674711d3efd5b9117bfd3c92dbd1d388460a1a52d10591638e0"),
+             "0fcbd0d307d30ae5b2841402d25d12b03daaa56596ae5552d58675210d926f17"),
             ("Features/Tabs/Views/VerticalTabBarView.swift",
              "b7be556ddc99c230b32b9a168d48e5ca87ec36c0230680daa4a24547a9d20816"),
         ]
