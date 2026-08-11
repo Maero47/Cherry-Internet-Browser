@@ -82,7 +82,12 @@ struct ExtensionsSettingsView: View {
     }
 }
 
-/// One row: icon, name + version, enable/disable toggle, Remove button.
+/// One row: icon, name + version, enable/disable toggle, Remove button —
+/// plus, when WebKit had something to say about the package, a line under
+/// the name saying it. The row draws `ExtensionPackageStatus` and decides
+/// nothing itself: whether a dropped manifest entry is a warning against a
+/// running extension or a load failure is that type's judgement, checked in
+/// `ExtensionRuntimeTests`.
 private struct ExtensionRow: View {
     let installed: ExtensionManager.InstalledExtension
 
@@ -110,6 +115,7 @@ private struct ExtensionRow: View {
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                 }
+                packageStatusLines
             }
 
             Spacer()
@@ -128,5 +134,33 @@ private struct ExtensionRow: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
+    }
+
+    /// The headline plus every specific WebKit gave, or nothing at all for a
+    /// clean package. A dropped entry gets the caution triangle and stays
+    /// alongside a normal, enabled row; a package that failed to load gets
+    /// the red one, because that extension really isn't running.
+    @ViewBuilder
+    private var packageStatusLines: some View {
+        let status = installed.packageStatus
+        if let summary = status.summary {
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(alignment: .firstTextBaseline, spacing: 4) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 10))
+                    Text(summary)
+                        .font(.system(size: 11))
+                }
+                ForEach(status.details, id: \.self) { detail in
+                    Text(detail)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .foregroundStyle(status.isWarningAgainstALoadedExtension ? Color.orange : Color.red)
+            .padding(.top, 2)
+        }
     }
 }

@@ -233,11 +233,10 @@ struct WebViewWrapper: NSViewRepresentable {
         configuration.preferences.setValue(true, forKey: "allowsPictureInPictureMediaPlayback")
         configuration.defaultWebpagePreferences.allowsContentJavaScript = settings.enableJavaScript
 
-        // Use Safari user agent — WKWebView IS the Safari/WebKit engine, so this
-        // matches the actual browser fingerprint. Using Chrome UA causes Cloudflare
-        // and other bot detectors to see a fingerprint mismatch and enter infinite
-        // challenge loops. Modern Safari UA is well-supported by all sites.
-        configuration.applicationNameForUserAgent = "Version/18.3 Safari/605.1.15"
+        // Safari user agent, from the one place that owns it — extension
+        // popups/options/background pages take their token from the same
+        // source (see `BrowserUserAgent`), so raising it here raises it there.
+        BrowserUserAgent.apply(to: configuration)
 
         if settings.httpsOnlyMode {
             configuration.upgradeKnownHostsToHTTPS = true

@@ -112,7 +112,7 @@ final class WebSearchService {
         // fingerprint avoids bot-detection challenge loops.
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .nonPersistent()
-        configuration.applicationNameForUserAgent = "Version/18.3 Safari/605.1.15"
+        BrowserUserAgent.apply(to: configuration)
         // This page still makes real third-party requests, so it gets the same
         // network-level blocking a visible tab would. Cosmetic filtering is
         // skipped — nothing is displayed.

@@ -95,14 +95,20 @@ enum ExtensionShortlist {
     //   rules all work in this runtime.
     // - uBlock Origin Lite, Safari build: blocks nothing (that build expects
     //   its app-extension wrapper). Not re-examined this round.
-    // - Bitwarden 2026.7.0 (MV2): toolbar popup stays an unbooted 3-element
-    //   shell. Mechanism: the extension popup web view's user agent has no
-    //   product token (Cherry sets `applicationNameForUserAgent` on tab
+    // - Bitwarden 2026.7.0 (MV2): toolbar popup stayed an unbooted 3-element
+    //   shell. Mechanism: the extension popup web view's user agent had no
+    //   product token (Cherry set `applicationNameForUserAgent` on tab
     //   configurations only, never on the extension controller's
-    //   `webViewConfiguration`), so Bitwarden's `getDevice()` matches neither
-    //   Firefox, Chrome, Edge, Vivaldi, Opera nor Safari, returns null, and
-    //   `this.device.toString()` throws inside Angular's DI. Giving the same
-    //   popup web view a Safari user agent and reloading boots it fully.
+    //   `webViewConfiguration`), so Bitwarden's `getDevice()` matched neither
+    //   Firefox, Chrome, Edge, Vivaldi, Opera nor Safari, returned null, and
+    //   `this.device.toString()` threw inside Angular's DI. Giving the same
+    //   popup web view a Safari user agent and reloading booted it fully.
+    //   THE RUNTIME GAP IS NOW CLOSED — the extension controller carries the
+    //   same user agent as tabs (see `BrowserUserAgent`), which is what that
+    //   A/B says unblocks the popup. Bitwarden STAYS REJECTED regardless:
+    //   nobody has re-run the harness against it since, and login, vault sync
+    //   and autofill were never exercised at all. Promotion is a verdict
+    //   change and needs its own verification round.
     // - Privacy Badger 2026.8.7 (MV2): no GPC/DNT header appears on page
     //   requests — same discarded-return-value mechanism as uBlock Origin.
     // - Vimium 2.4.2 (MV3): CORRECTION — its content scripts DO inject. The
@@ -114,7 +120,9 @@ enum ExtensionShortlist {
     //   lost entry carries is `content_scripts/file_urls.css`, four lines
     //   fixing a Chrome file:// directory-listing quirk. Vimium stays off the
     //   shortlist because its keyboard behaviour is still unverifiable in the
-    //   harness, not because it fails to load.
+    //   harness, not because it fails to load. Cherry now reports that entry
+    //   for what it is — a warning naming what was dropped, against a loaded
+    //   extension (see `ExtensionPackageStatus`), not a failed load.
     // - Video Speed Controller 0.11.0 (MV3): its functional script declares
     //   `"world": "MAIN"`, which this runtime never executes — no controller
     //   attaches even with a fully-loaded real video (readyState 4).

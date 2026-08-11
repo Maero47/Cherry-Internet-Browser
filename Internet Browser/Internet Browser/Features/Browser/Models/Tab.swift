@@ -164,7 +164,8 @@ final class Tab: NSObject, Identifiable {
         let wv = WKWebView(frame: .zero, configuration: configuration)
         wv.allowsBackForwardNavigationGestures = true
         wv.allowsMagnification = true
-        // User agent is set via applicationNameForUserAgent on the configuration in WebViewWrapper
+        // User agent comes with the configuration, from `BrowserUserAgent` —
+        // the one source shared with extension pages.
         self.webView = wv
         applyMuteState()
         applyZoomLevel()
