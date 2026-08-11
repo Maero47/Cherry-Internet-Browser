@@ -254,7 +254,14 @@ private struct CommandItem: View {
 /// never did.
 @MainActor
 func openBrowserWindow(isPrivate: Bool, frame: NSRect? = nil) {
-    let hostingView = cherryHostingView(BrowserView(isPrivate: isPrivate))
+    // Every presented browser window is allowed to offer the first-run setup
+    // wizard; `SetupWizardPresenter` grants it to at most one per session,
+    // which in practice is the launch window `applicationDidFinishLaunching`
+    // opens. The wizard is a sheet presented after this window is shown, so
+    // the frame → configure → show ordering below is untouched by it.
+    let hostingView = cherryHostingView(
+        BrowserView(isPrivate: isPrivate, presentsSetupWizardIfFirstRun: true)
+    )
 
     let window = DetachedWindow(
         contentRect: NSRect(x: 0, y: 0, width: 1000, height: 700),

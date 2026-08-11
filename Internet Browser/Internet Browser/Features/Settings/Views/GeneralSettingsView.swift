@@ -367,7 +367,7 @@ struct GeneralSettingsView: View {
                         preview: .image(customImage),
                         isSelected: settings.homepageCustomImageIsActive
                     ) {
-                        settings.homepageUsesCustomImage = true
+                        settings.selectCustomImageHomepageBackground()
                     }
                 }
 
@@ -378,8 +378,7 @@ struct GeneralSettingsView: View {
                         isSelected: settings.homepageThemeBackgroundIsActive,
                         icon: "flame.fill"
                     ) {
-                        settings.homepageUsesThemeBackground = true
-                        settings.homepageUsesCustomImage = false
+                        settings.selectThemeHomepageBackground()
                     }
                 }
 
@@ -391,9 +390,7 @@ struct GeneralSettingsView: View {
                         && !settings.homepageCustomImageIsActive,
                     icon: "wand.and.stars"
                 ) {
-                    settings.homepageMatchesAccent = true
-                    settings.homepageUsesThemeBackground = false
-                    settings.homepageUsesCustomImage = false
+                    settings.selectAutoHomepageBackground()
                 }
 
                 ForEach(HomepageTheme.allCases) { theme in
@@ -405,10 +402,7 @@ struct GeneralSettingsView: View {
                             && !settings.homepageCustomImageIsActive
                             && settings.homepageTheme == theme
                     ) {
-                        settings.homepageTheme = theme
-                        settings.homepageMatchesAccent = false
-                        settings.homepageUsesThemeBackground = false
-                        settings.homepageUsesCustomImage = false
+                        settings.selectCuratedHomepageTheme(theme)
                     }
                 }
             }
@@ -601,31 +595,10 @@ struct GeneralSettingsView: View {
         }
     }
 
-    /// Pick a picture for the homepage background. On success the store owns
-    /// a copy and the picture takes over immediately; a file that cannot be
-    /// read as an image (or cannot be copied in) changes nothing and says so,
-    /// in the same plain-alert style as a failed theme import.
+    /// Pick a picture for the homepage background — the shared flow the setup
+    /// wizard also uses (see `HomepagePictureChooser`).
     private func chooseHomepagePicture() {
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = true
-        panel.canChooseDirectories = false
-        panel.allowsMultipleSelection = false
-        panel.allowedContentTypes = [.image]
-        panel.prompt = "Choose"
-        panel.message = "Choose a picture for your homepage background"
-
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-
-        do {
-            try customImageStore.importImage(from: url)
-            settings.homepageUsesCustomImage = true
-        } catch {
-            let alert = NSAlert()
-            alert.messageText = "Couldn't Use That Picture"
-            alert.informativeText = error.localizedDescription
-            alert.alertStyle = .warning
-            alert.runModal()
-        }
+        HomepagePictureChooser.chooseAndApply()
     }
 
     private func chooseDownloadDirectory() {

@@ -28,6 +28,45 @@ final class BrowserViewModel {
     var showTabSearch: Bool = false
     var isPrivateMode: Bool = false
     var showPrivateModeAlert: Bool = false
+    /// Whether THIS window is presenting the first-run setup wizard sheet.
+    /// True only after `attachSetupWizardIfEligible()` wins the session's one
+    /// claim. The true→false transition is the wizard's single dismissal
+    /// choke point — Finish, Skip Setup and Escape all come through here —
+    /// and is what writes the first-run marker, so however the sheet went
+    /// away, it has had its one showing. Quitting the app with the sheet
+    /// still up never runs this, which is exactly the "offer it once more
+    /// next launch" behaviour `SetupWizardPresenter` documents.
+    var showSetupWizard: Bool = false {
+        didSet {
+            if oldValue && !showSetupWizard {
+                SetupWizardPresenter.shared.markSeen()
+            }
+        }
+    }
+
+    /// Presents the setup wizard in this window if it wins the claim — a true
+    /// first run, a non-private window, and nobody else has claimed it this
+    /// session (`SetupWizardPresenter`). Called by `BrowserView.init` only
+    /// for windows built by `openBrowserWindow`; the never-presented
+    /// `WindowGroup` scene and tear-off windows must not consume the claim.
+    ///
+    /// The claim is taken here, synchronously — bookkeeping only — but the
+    /// flag that presents the sheet flips on the NEXT main-runloop turn.
+    /// This runs during `BrowserView.init`, i.e. at the top of
+    /// `openBrowserWindow`, BEFORE the window's frame → configure → show;
+    /// setting the flag now would hand SwiftUI a sheet to present during the
+    /// bring-up itself, and geometry activity on a window that is coming up
+    /// is exactly what strands hosted content (see `openBrowserWindow`).
+    /// A main-queue hop cannot run until the current callout — the whole of
+    /// `openBrowserWindow`, `makeKeyAndOrderFront` included — has returned,
+    /// so the sheet only ever presents over an already-shown window, the
+    /// same footing as every user-invoked sheet in the app.
+    func attachSetupWizardIfEligible() {
+        guard SetupWizardPresenter.shared.claimPresentation(isPrivate: isPrivateMode) else { return }
+        DispatchQueue.main.async { [weak self] in
+            self?.showSetupWizard = true
+        }
+    }
     var showDownloadToast: Bool = false
     var toastDownloadID: UUID?
     var toastIsCompleted: Bool = false
