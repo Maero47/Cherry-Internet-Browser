@@ -3,15 +3,28 @@
 //  Cherry Browser
 //
 //  Turns the sprite manifest into drawable images, or into honest
-//  placeholders when the sheet has not landed yet.
+//  placeholders if the sheet is ever unreachable.
 //
-//  The manifest (`pearl-sprites.json`) is the contract; the sheet
-//  (`pearl-sprites.png`, drawn by the art worker in parallel with this code)
-//  is optional at build time. When it is present each named frame is sliced
-//  out once at load; when it is absent `image(_:frame:)` returns nil and the
-//  renderer draws flat rectangles at the contract's logical sizes instead.
-//  Either way the geometry is identical, which is what lets the real art
-//  drop in without a code change.
+//  ## How the sheet is delivered
+//
+//  Both `pearl-sprites.json` and `pearl-sprites.png` ship as LOOSE bundle
+//  resources from `Features/PearlRunner/Sprites/`, and that is a decision,
+//  not an accident. The manifest addresses pixel rectangles in one specific
+//  244x159 bitmap, so the delivery has to hand back that exact bitmap. An
+//  asset-catalog imageset cannot: it is compiled into `Assets.car` with no
+//  file to look up, and `NSImage(named:)` resolves to whichever 1x/2x
+//  representation the drawing context prefers — the manifest's coordinates
+//  would then index the wrong pixels, silently, on Retina only.
+//
+//  The sheet is authored at 1x (`"scale": 1`), so a manifest rectangle is
+//  the contract's logical size in points. Magnification is nearest-neighbour
+//  via `.interpolation(.none)`; a 2x sheet would be redundant, since the 2x
+//  art is an exact pixel-doubling of the 1x.
+//
+//  If the sheet ever goes missing, `image(_:frame:)` returns nil and the
+//  renderer falls back to flat rectangles at the same logical sizes, so the
+//  geometry never changes. `PearlSpriteSheetTests` is what makes sure that
+//  fallback stays theoretical.
 //
 
 import AppKit
@@ -24,6 +37,10 @@ final class PearlSpriteLibrary {
 
     let manifest: PearlSpriteManifest?
     private let slices: [String: [CGImage]]
+
+    /// The loaded sheet's size in real pixels, or nil in placeholder mode.
+    /// The manifest's rectangles are pixel coordinates into exactly this.
+    private(set) var sheetPixelSize: CGSize?
 
     /// True once the real sheet is in the bundle and sliced.
     var hasArtwork: Bool {
@@ -57,13 +74,21 @@ final class PearlSpriteLibrary {
             }
         }
         slices = sliced
+        sheetPixelSize = CGSize(width: sheet.width, height: sheet.height)
+    }
+
+    /// The raw pixels cropped out of the sheet for a frame, or nil in
+    /// placeholder mode. A slice narrower than its manifest rectangle means
+    /// the rectangle ran off the edge of the sheet.
+    func slice(_ name: String, frame index: Int) -> CGImage? {
+        guard let frames = slices[name], !frames.isEmpty else { return nil }
+        return frames[index % frames.count]
     }
 
     /// The image for a frame, pixelated the way pixel art should be, or nil
     /// in placeholder mode.
     func image(_ name: String, frame index: Int) -> Image? {
-        guard let frames = slices[name], !frames.isEmpty else { return nil }
-        let slice = frames[index % frames.count]
+        guard let slice = slice(name, frame: index) else { return nil }
         return Image(decorative: slice, scale: CGFloat(manifest?.scale ?? 1))
             .interpolation(.none)
     }

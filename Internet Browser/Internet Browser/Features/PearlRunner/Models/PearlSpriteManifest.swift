@@ -6,18 +6,19 @@
 //
 //  ## How the split works
 //
-//  `pearl-sprites.json` sits beside the sprite sheet and maps frame names to
-//  pixel rectangles in it. The art is being drawn in parallel with this code,
-//  so everything here is written against the manifest, not against any
+//  `pearl-sprites.json` sits beside the sprite sheet in
+//  `Features/PearlRunner/Sprites/` and maps frame names to pixel rectangles
+//  in it. Everything here is written against the manifest rather than any
 //  particular image: the game's collision geometry uses the LOGICAL sizes
-//  below (fixed, at 1x), the renderer draws whatever the manifest points at,
-//  and until the real sheet lands it draws flat placeholder rectangles at
-//  exactly those logical sizes. The real sprites drop in with no code change.
+//  below (fixed, at 1x), and the renderer draws whatever the manifest points
+//  at. If the sheet were ever unreachable the renderer would fall back to
+//  flat rectangles at exactly those logical sizes, so geometry never moves.
 //
 //  `conformanceIssues()` is the contract's teeth: it checks a manifest's
 //  frame counts and pixel sizes against the logical sizes times the declared
-//  scale, and the placeholder manifest shipped with Cherry is held to it by
-//  `PearlSpriteManifestTests`.
+//  scale, and the manifest shipped with Cherry is held to it by
+//  `PearlSpriteManifestTests`. `PearlSpriteSheetTests` goes one step further
+//  and checks those rectangles against the real sheet's pixels.
 //
 
 import Foundation

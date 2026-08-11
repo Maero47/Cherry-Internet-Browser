@@ -16,12 +16,27 @@ final class PearlAssetTests: XCTestCase {
 
     // MARK: - Imagesets resolve by name
 
+    /// The wizard hero is chrome: it is drawn at whatever size the view asks
+    /// for, so the asset catalog's automatic 1x/2x selection is exactly right
+    /// for it. The runner's sprite sheet is not here on purpose — see
+    /// `testTheSpriteSheetShipsLooseBecauseTheManifestIndexesItsPixels`.
     func testPearlImagesetsResolveByName() {
-        for name in ["PearlHero", "PearlHeroYellow", "PearlSprites"] {
+        for name in ["PearlHero", "PearlHeroYellow"] {
             let image = NSImage(named: name)
             XCTAssertNotNil(image, "imageset \(name) should resolve")
             XCTAssertGreaterThan(image?.size.width ?? 0, 0, "imageset \(name) should have a size")
         }
+    }
+
+    /// The sheet deliberately does NOT ship as an imageset: an imageset is
+    /// compiled into `Assets.car`, and `pearl-sprites.json` addresses pixel
+    /// rectangles in one specific bitmap that no file lookup could reach.
+    func testTheSpriteSheetShipsLooseBecauseTheManifestIndexesItsPixels() {
+        XCTAssertNil(
+            NSImage(named: "PearlSprites"),
+            "the sheet must not be an imageset; it ships as pearl-sprites.png"
+        )
+        XCTAssertNotNil(Bundle.main.url(forResource: "pearl-sprites", withExtension: "png"))
     }
 
     func testHeroReadsAtWizardSize() {
@@ -96,7 +111,11 @@ final class PearlAssetTests: XCTestCase {
 
     func testEveryFrameBoxLiesInsideTheSheet() throws {
         let frames = try loadManifest().frames
-        let sheet = try XCTUnwrap(NSImage(named: "PearlSprites"), "PearlSprites sheet missing")
+        let url = try XCTUnwrap(
+            Bundle.main.url(forResource: "pearl-sprites", withExtension: "png"),
+            "pearl-sprites.png must ship in the app bundle"
+        )
+        let sheet = try XCTUnwrap(NSImage(contentsOf: url), "the sprite sheet must decode")
         let width = Int(sheet.size.width), height = Int(sheet.size.height)
         var boxes: [(String, Box)] = [("ground", frames.ground), ("cloud", frames.cloud),
                                       ("moon", frames.moon), ("star", frames.star)]

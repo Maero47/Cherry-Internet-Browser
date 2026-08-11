@@ -128,15 +128,12 @@ final class PearlSpriteManifestTests: XCTestCase {
         let library = PearlSpriteLibrary(bundle: appBundle)
         XCTAssertNotNil(library.manifest, "the library must find and decode the shipped manifest")
         XCTAssertEqual(library.manifest?.conformanceIssues(), [])
-        if !library.hasArtwork {
-            // Placeholder era: no sheet yet, so no images — the renderer's
-            // flat-rectangle mode. This branch dies naturally when the art
-            // lands, which is correct: from then on images must resolve.
-            XCTAssertNil(library.image("run", frame: 0))
-        } else {
-            XCTAssertNotNil(library.image("run", frame: 0))
-            XCTAssertNotNil(library.image("gull", frame: 1))
-        }
+        // The art has landed, so the placeholder branch this test used to
+        // tolerate is gone: images must resolve. `PearlSpriteSheetTests`
+        // checks the pixels behind them.
+        XCTAssertTrue(library.hasArtwork, "the shipped sheet must slice")
+        XCTAssertNotNil(library.image("run", frame: 0))
+        XCTAssertNotNil(library.image("gull", frame: 1))
     }
 
     // MARK: - One geometry, shared
