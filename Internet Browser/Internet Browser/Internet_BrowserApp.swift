@@ -388,7 +388,16 @@ func loadExtensionFromOpenPanel() {
     Task { @MainActor in
         do {
             let loaded = try await ExtensionManager.shared.loadExtension(from: url)
-            presentExtensionAlert(title: "Extension Loaded", message: loaded.displayName, style: .informational)
+            // Loading and loading CLEANLY are different outcomes: WebKit
+            // drops manifest entries it can't use and runs the rest, and the
+            // one moment the user is looking is right now. The extension did
+            // load, so this stays the informational "loaded" alert — it just
+            // says what was dropped. The settings pane keeps saying it.
+            let dropped = ExtensionManager.droppedEntries(of: loaded.webExtension)
+            let status = ExtensionPackageStatus.of(hasPackage: true, droppedEntries: dropped, loadFailure: nil)
+            let message = ([loaded.displayName, status.summary].compactMap { $0 } + status.details)
+                .joined(separator: "\n\n")
+            presentExtensionAlert(title: "Extension Loaded", message: message, style: .informational)
         } catch {
             presentExtensionAlert(title: "Couldn't Load Extension", message: error.localizedDescription, style: .warning)
         }

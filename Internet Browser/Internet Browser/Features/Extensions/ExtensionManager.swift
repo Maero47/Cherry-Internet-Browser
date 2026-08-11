@@ -29,7 +29,29 @@ struct PersistedExtensionRecord: Codable {
 final class ExtensionManager: NSObject {
     static let shared = ExtensionManager()
 
-    let controller = WKWebExtensionController()
+    /// The controller every extension context is loaded into, built on the
+    /// DEFAULT (persistent, non-unique) configuration — exactly what plain
+    /// `WKWebExtensionController()` uses, so every extension's existing
+    /// WebKit-side storage stays where it was — with one thing added:
+    /// Cherry's user-agent product token.
+    ///
+    /// WebKit builds every extension popup, options page and background page
+    /// from `configuration.webViewConfiguration`, which is a SEPARATE
+    /// configuration from the one tabs get. Left untouched it carries no
+    /// `applicationNameForUserAgent` at all, so extension pages presented a
+    /// bare `AppleWebKit/605.1.15` user agent with no product token while
+    /// every tab in the same window presented Safari's. Extensions that sniff
+    /// the user agent to decide which browser they are running in matched
+    /// nothing and took their "unknown browser" path — measured on Bitwarden,
+    /// whose popup threw inside Angular's dependency injection and never left
+    /// its loading shell until the token was there.
+    ///
+    /// The configuration is read-modify-written rather than replaced: the
+    /// property is `copy`, so mutating the value the getter hands back is not
+    /// enough on its own, and building a blank `WKWebViewConfiguration`
+    /// instead would discard whatever else WebKit had defaulted into it.
+    /// `init(configuration:)` copies, so this is the only chance to set it.
+    let controller: WKWebExtensionController
 
     /// Every extension the app knows about, whether or not it's currently
     /// loaded into the controller — a disabled extension has `context ==
@@ -120,8 +142,27 @@ final class ExtensionManager: NSObject {
         var webExtension: WKWebExtension?
         var context: WKWebExtensionContext?
 
+        /// Why this extension's package could not be loaded at all, if it
+        /// could not. Set only by launch-time reload, which has no caller to
+        /// throw to — the interactive "Load Extension…" path throws instead,
+        /// and never produces an installed entry.
+        var loadFailure: String?
+
         var id: String { record.id }
         var enabled: Bool { record.enabled }
+
+        /// What Cherry can honestly say about this extension's package —
+        /// crucially, whether a manifest entry WebKit dropped is a warning
+        /// against a running extension or an actual load failure. See
+        /// `ExtensionPackageStatus`.
+        @MainActor
+        var packageStatus: ExtensionPackageStatus {
+            ExtensionPackageStatus.of(
+                hasPackage: webExtension != nil,
+                droppedEntries: webExtension.map(ExtensionManager.droppedEntries(of:)) ?? [],
+                loadFailure: loadFailure
+            )
+        }
 
         @MainActor
         var displayName: String { webExtension?.displayName ?? record.displayName }
@@ -134,8 +175,49 @@ final class ExtensionManager: NSObject {
     }
 
     private override init() {
+        controller = Self.makeController()
         super.init()
         controller.delegate = self
+    }
+
+    /// Builds `controller` — see the property's own documentation for why the
+    /// user agent has to be attached here and nowhere later.
+    private static func makeController() -> WKWebExtensionController {
+        let configuration = WKWebExtensionController.Configuration.default()
+        // `null_resettable`: the getter always hands back a configuration, but
+        // it imports as an optional, so the empty case is spelled out rather
+        // than force-unwrapped.
+        let webViewConfiguration = configuration.webViewConfiguration ?? WKWebViewConfiguration()
+        BrowserUserAgent.apply(to: webViewConfiguration)
+        configuration.webViewConfiguration = webViewConfiguration
+        return WKWebExtensionController(configuration: configuration)
+    }
+
+    // MARK: - What the parser dropped
+
+    /// The parts of `webExtension`'s manifest WebKit could not use, in its
+    /// own words — one string per entry in `WKWebExtension.errors`, which is
+    /// the parse-time list of pieces it skipped while loading the rest of the
+    /// extension. An extension with entries here is LOADED; see
+    /// `ExtensionPackageStatus`.
+    @MainActor
+    static func droppedEntries(of webExtension: WKWebExtension) -> [String] {
+        webExtension.errors.map(describe(_:))
+    }
+
+    /// A user-readable account of one WebKit error. WebKit puts the specific
+    /// part ("content_scripts entry has no specified matches") sometimes in
+    /// the description and sometimes in the failure reason or the debug
+    /// description, so all three are gathered — a warning that doesn't say
+    /// WHAT was dropped isn't worth showing.
+    static func describe(_ error: any Error) -> String {
+        let nsError = error as NSError
+        var parts = [nsError.localizedDescription]
+        for extra in [nsError.localizedFailureReason, nsError.userInfo[NSDebugDescriptionErrorKey] as? String] {
+            guard let extra, !extra.isEmpty, !parts.contains(where: { $0.contains(extra) }) else { continue }
+            parts.append(extra)
+        }
+        return parts.joined(separator: " ")
     }
 
     // MARK: - Persistence
@@ -146,7 +228,9 @@ final class ExtensionManager: NSObject {
     /// file/folder, which may move or be deleted before the next launch),
     /// plus one shared `index.json` listing every installed extension's
     /// `PersistedExtensionRecord`.
-    private static let extensionsDirectory: URL = {
+    /// Internal rather than private so tests can check that a FAILED load
+    /// leaves nothing behind in it.
+    static let extensionsDirectory: URL = {
         let fileManager = FileManager.default
         let base = (try? fileManager.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true))
             ?? fileManager.temporaryDirectory
@@ -245,8 +329,23 @@ final class ExtensionManager: NSObject {
     func loadExtension(from fileURL: URL) async throws -> LoadedExtension {
         let id = UUID().uuidString
         let packageURL = try copyIntoManagedDirectory(from: fileURL, id: id)
-        let webExtension = try await WKWebExtension(resourceBaseURL: packageURL)
-        let context = try makeLoadedContext(for: webExtension, id: id)
+
+        // The managed copy is made BEFORE WebKit is asked to parse it, so a
+        // package WebKit refuses would otherwise leave its copy in the
+        // extensions directory forever with no record in `index.json`
+        // pointing at it — an orphan nothing can enable, disable or remove.
+        // A failed load leaves nothing behind.
+        let webExtension: WKWebExtension
+        let context: WKWebExtensionContext
+        do {
+            webExtension = try await WKWebExtension(resourceBaseURL: packageURL)
+            context = try makeLoadedContext(for: webExtension, id: id)
+        } catch {
+            try? FileManager.default.removeItem(
+                at: Self.extensionsDirectory.appendingPathComponent(id, isDirectory: true)
+            )
+            throw error
+        }
 
         let record = PersistedExtensionRecord(
             id: id,
@@ -310,7 +409,20 @@ final class ExtensionManager: NSObject {
             // even got to it. Not load-bearing for correctness — the
             // re-resolve below is — just avoids wasted work.
             guard installedExtensions.contains(where: { $0.id == record.id }) else { continue }
-            guard let webExtension = try? await WKWebExtension(resourceBaseURL: Self.managedPackageURL(for: record)) else { continue }
+
+            let webExtension: WKWebExtension
+            do {
+                webExtension = try await WKWebExtension(resourceBaseURL: Self.managedPackageURL(for: record))
+            } catch {
+                // Nobody to throw to here (this runs at launch, not from a
+                // user action), and a silently blank row would look exactly
+                // like an extension that loaded — so the reason is recorded
+                // on the entry and the settings pane says it.
+                if let index = installedExtensions.firstIndex(where: { $0.id == record.id }) {
+                    installedExtensions[index].loadFailure = Self.describe(error)
+                }
+                continue
+            }
 
             // Re-resolve by id AFTER the await, never reuse an index from
             // before it (see doc comment above).

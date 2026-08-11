@@ -371,7 +371,7 @@ final class TabManager {
 
         let settings = SettingsManager.shared
         let configuration = WKWebViewConfiguration()
-        configuration.applicationNameForUserAgent = "Version/18.3 Safari/605.1.15"
+        BrowserUserAgent.apply(to: configuration)
         configuration.defaultWebpagePreferences.allowsContentJavaScript = settings.enableJavaScript
         if settings.httpsOnlyMode {
             configuration.upgradeKnownHostsToHTTPS = true
