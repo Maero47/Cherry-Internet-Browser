@@ -35,6 +35,22 @@ struct BookmarkBarView: View {
         )
     }
 
+    /// What the contrast guard measures for this bar: the ONE tone every
+    /// title and fallback glyph is drawn in, and the colours the bar paints
+    /// between the theme's header artwork and them — the same convention as
+    /// `NavigationBarView.legibility`, because it is the same guard. Nil
+    /// unthemed and in private windows, which switches the guard off and is
+    /// what keeps the stock bar impossible to move from here.
+    var legibility: ThemeLegibility? {
+        guard !isPrivateMode, FirefoxThemeManager.shared.activeTheme != nil else { return nil }
+        let manager = FirefoxThemeManager.shared
+        // Only the header-backdrop path layers `toolbar` over artwork; the
+        // flat-fill path IS the toolbar colour and the sampler reads it as
+        // the base, so listing it again would darken the measurement twice.
+        let overlays = manager.hasHeaderBackdrop ? [manager.toolbarColor].compactMap(\.self) : []
+        return ThemeLegibility(foreground: themedToolbarText ?? Color.primary, overlays: overlays)
+    }
+
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
@@ -59,11 +75,30 @@ struct BookmarkBarView: View {
             }
             .padding(.horizontal, 8)
         }
-        .frame(height: 28)
+        // The bar IS a toolbar row — stating the shared constant rather than
+        // its value is what entitles it to the row's shared surface geometry
+        // below.
+        .frame(height: AppConstants.ToolbarSurface.height)
         // Hierarchical styles (.secondary) on the items resolve against this,
         // so bookmark titles/icons follow the theme's toolbar_text;
         // Color.primary is the stock look when unthemed.
         .foregroundStyle(themedToolbarText ?? Color.primary)
+        // The last chrome surface brought inside the guard: ONE measured
+        // surface behind the WHOLE bar, never one per entry — per-control
+        // treatment produced the patchwork the toolbar round rejected, so
+        // every entry shares this span and this plan. Titles are body-size
+        // text, so the bar asks at the 4.5:1 text floor; the same tone
+        // cleared at 4.5 carries the favicons' 3:1 non-text floor with it.
+        // The surface takes the row's shared height, centre line and corner
+        // (`AppConstants.ToolbarSurface`) through the plate's defaults, and
+        // 40pt — a favicon plus a few characters, the shortest real entry —
+        // is the window no entry can be averaged out of. Unthemed and
+        // private bars hand the guard nil and keep their stock look.
+        .themeLegibilityPlate(
+            legibility,
+            floor: ThemeContrast.textFloor,
+            windowPoints: 40
+        )
         .background {
             ZStack {
                 if !isPrivateMode && FirefoxThemeManager.shared.hasHeaderBackdrop {
