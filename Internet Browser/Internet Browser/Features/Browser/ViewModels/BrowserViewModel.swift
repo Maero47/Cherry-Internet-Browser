@@ -49,9 +49,22 @@ final class BrowserViewModel {
     /// session (`SetupWizardPresenter`). Called by `BrowserView.init` only
     /// for windows built by `openBrowserWindow`; the never-presented
     /// `WindowGroup` scene and tear-off windows must not consume the claim.
+    ///
+    /// The claim is taken here, synchronously — bookkeeping only — but the
+    /// flag that presents the sheet flips on the NEXT main-runloop turn.
+    /// This runs during `BrowserView.init`, i.e. at the top of
+    /// `openBrowserWindow`, BEFORE the window's frame → configure → show;
+    /// setting the flag now would hand SwiftUI a sheet to present during the
+    /// bring-up itself, and geometry activity on a window that is coming up
+    /// is exactly what strands hosted content (see `openBrowserWindow`).
+    /// A main-queue hop cannot run until the current callout — the whole of
+    /// `openBrowserWindow`, `makeKeyAndOrderFront` included — has returned,
+    /// so the sheet only ever presents over an already-shown window, the
+    /// same footing as every user-invoked sheet in the app.
     func attachSetupWizardIfEligible() {
-        if SetupWizardPresenter.shared.claimPresentation(isPrivate: isPrivateMode) {
-            showSetupWizard = true
+        guard SetupWizardPresenter.shared.claimPresentation(isPrivate: isPrivateMode) else { return }
+        DispatchQueue.main.async { [weak self] in
+            self?.showSetupWizard = true
         }
     }
     var showDownloadToast: Bool = false

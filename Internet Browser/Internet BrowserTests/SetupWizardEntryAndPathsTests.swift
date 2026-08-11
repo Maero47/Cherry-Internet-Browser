@@ -47,7 +47,27 @@ final class SetupWizardEntryAndPathsTests: XCTestCase {
     func testFirstWindowViewModelPresentsTheWizard() {
         let vm = BrowserViewModel()
         vm.attachSetupWizardIfEligible()
+        pump()
         XCTAssertTrue(vm.showSetupWizard)
+    }
+
+    /// The bring-up ordering pin: `attachSetupWizardIfEligible` runs during
+    /// `BrowserView.init`, BEFORE `openBrowserWindow` has configured and
+    /// shown the window — so the flag must NOT flip in that same runloop
+    /// callout. It flips on the next turn, by which time frame → configure →
+    /// show has completed and the sheet lands on an already-shown window.
+    /// Dies on: the deferral being removed — presenting a sheet mid-bring-up
+    /// is the exact geometry-on-a-fresh-window activity that used to strand
+    /// the launch homepage's glyphs (`LaunchWindowLayoutTests`).
+    func testWizardDoesNotPresentInTheBringUpTurn() {
+        let vm = BrowserViewModel()
+        vm.attachSetupWizardIfEligible()
+        XCTAssertFalse(
+            vm.showSetupWizard,
+            "the sheet was requested during the window bring-up callout"
+        )
+        pump()
+        XCTAssertTrue(vm.showSetupWizard, "the deferred presentation never arrived")
     }
 
     /// Dies on: the once-per-session claim being bypassed at the view-model
@@ -57,6 +77,8 @@ final class SetupWizardEntryAndPathsTests: XCTestCase {
         first.attachSetupWizardIfEligible()
         let second = BrowserViewModel()
         second.attachSetupWizardIfEligible()
+        pump()
+        XCTAssertTrue(first.showSetupWizard, "precondition: the first window won the claim")
         XCTAssertFalse(second.showSetupWizard)
     }
 
@@ -65,6 +87,7 @@ final class SetupWizardEntryAndPathsTests: XCTestCase {
         let vm = BrowserViewModel()
         vm.isPrivateMode = true
         vm.attachSetupWizardIfEligible()
+        pump()
         XCTAssertFalse(vm.showSetupWizard)
     }
 
@@ -75,6 +98,7 @@ final class SetupWizardEntryAndPathsTests: XCTestCase {
     func testDismissingTheWizardWritesTheMarker() {
         let vm = BrowserViewModel()
         vm.attachSetupWizardIfEligible()
+        pump()
         XCTAssertTrue(vm.showSetupWizard, "precondition: this window presented the wizard")
 
         vm.showSetupWizard = false
@@ -98,6 +122,7 @@ final class SetupWizardEntryAndPathsTests: XCTestCase {
     func testQuittingMidWizardLeavesTheMarkerSaneAndTheWizardReofferable() {
         let vm = BrowserViewModel()
         vm.attachSetupWizardIfEligible()
+        pump()
         XCTAssertTrue(vm.showSetupWizard, "precondition: the wizard was up when the app quit")
 
         // No dismissal — the process ends here. "Relaunch":
@@ -114,6 +139,8 @@ final class SetupWizardEntryAndPathsTests: XCTestCase {
     func testBrowserViewInitAttachesTheWizard() throws {
         let view = BrowserView(isPrivate: false, presentsSetupWizardIfFirstRun: true)
         let vm = try XCTUnwrap(viewModel(of: view))
+        XCTAssertFalse(vm.showSetupWizard, "the sheet must wait for the window to be shown")
+        pump()
         XCTAssertTrue(vm.showSetupWizard)
     }
 
@@ -124,12 +151,14 @@ final class SetupWizardEntryAndPathsTests: XCTestCase {
     func testSceneStyleBrowserViewDoesNotConsumeTheClaim() throws {
         let sceneView = BrowserView()
         let sceneVM = try XCTUnwrap(viewModel(of: sceneView))
+        pump()
         XCTAssertFalse(sceneVM.showSetupWizard)
         XCTAssertFalse(SetupWizardPresenter.shared.hasClaimedThisSession)
 
         // The claim is still there for the window that IS presented.
         let presented = BrowserView(isPrivate: false, presentsSetupWizardIfFirstRun: true)
         let presentedVM = try XCTUnwrap(viewModel(of: presented))
+        pump()
         XCTAssertTrue(presentedVM.showSetupWizard)
     }
 
@@ -151,11 +180,31 @@ final class SetupWizardEntryAndPathsTests: XCTestCase {
         XCTAssertFalse(SetupWizardPresenter.shared.hasClaimedThisSession)
     }
 
+    /// A default-configured presenter must refuse to claim inside a test
+    /// host, however early it is asked: the unit-test host launches the real
+    /// app through the real `openBrowserWindow`, and a wizard sheet over the
+    /// launch window is what regressed the window-geometry tests on the one
+    /// machine where the (previously class-loading-based) guard came up too
+    /// late. Dies on: the guard being removed, or being narrowed back to
+    /// only `NSClassFromString` — the environment half is checked by
+    /// construction here because this process carries the XCTest variables.
+    func testDefaultPresenterRefusesToClaimInATestHost() {
+        let presenter = SetupWizardPresenter(defaults: defaults)
+        XCTAssertFalse(presenter.claimPresentation(isPrivate: false))
+        XCTAssertFalse(presenter.hasClaimedThisSession)
+    }
+
     private func viewModel(of view: BrowserView) -> BrowserViewModel? {
         Mirror(reflecting: view).children
             .first { $0.label == "_viewModel" }
             .flatMap { $0.value as? State<BrowserViewModel> }?
             .wrappedValue
+    }
+
+    /// One short main-runloop spin — enough for the deferred presentation
+    /// hop (`attachSetupWizardIfEligible`) to land.
+    private func pump() {
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
     }
 
     // MARK: - Same settings, same paths

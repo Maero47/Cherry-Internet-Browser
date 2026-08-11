@@ -50,11 +50,13 @@ struct BrowserView: View {
         configuredLayout
             // The first-run setup wizard, over the launch window only (the
             // one window whose view model won the presentation claim). A
-            // sheet cannot re-open the window bring-up bug: it is presented
-            // after this window is already configured and shown, and it never
-            // touches this window's frame. Dismissing it by ANY route funnels
-            // through `showSetupWizard`'s didSet, which writes the first-run
-            // marker — so Escape is a skip, not a loophole.
+            // sheet cannot re-open the window bring-up bug: the flag below
+            // flips a runloop turn AFTER `openBrowserWindow` has completed
+            // frame → configure → show (`attachSetupWizardIfEligible`), so
+            // the sheet only ever presents over an already-shown window, and
+            // it never touches this window's frame. Dismissing it by ANY
+            // route funnels through `showSetupWizard`'s didSet, which writes
+            // the first-run marker — so Escape is a skip, not a loophole.
             .sheet(isPresented: $viewModel.showSetupWizard) {
                 SetupWizardView(onFinish: { viewModel.showSetupWizard = false })
             }

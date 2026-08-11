@@ -58,16 +58,32 @@ enum SetupWizardFirstRun {
 /// refuse theming (`HomepageBackgroundResolver`), so the appearance step
 /// would be previewing choices the window it sits on refuses to show.
 ///
-/// The XCTest guard exists because the unit-test host launches the real app
-/// through the real `openBrowserWindow` path: without it, a test run on a
-/// machine whose defaults lack the marker would present a sheet over the
+/// The test-host guard exists because the unit-test host launches the real
+/// app through the real `openBrowserWindow` path: without it, a test run on
+/// a machine whose defaults lack the marker would present a sheet over the
 /// launch window that the window-geometry tests are measuring. Tests that
 /// exercise the claim itself construct their own presenter with the guard
 /// off and swap it into `shared`.
 final class SetupWizardPresenter {
     static var shared = SetupWizardPresenter()
 
-    private static let isTestHost = NSClassFromString("XCTestCase") != nil
+    /// Whether this process is hosting XCTest. The environment variables are
+    /// the load-bearing half: Xcode sets them on the host process from exec,
+    /// so they are visible however early this runs — whereas
+    /// `NSClassFromString("XCTestCase")` only answers true once the XCTest
+    /// dylib is actually loaded, which on some runner configurations happens
+    /// AFTER `applicationDidFinishLaunching` has already opened the launch
+    /// window. A guard that depends on that timing presents the wizard over
+    /// the launch window on exactly the machines where the dylib comes late,
+    /// which is how the geometry tests regressed on one machine while
+    /// passing on another.
+    private static let isTestHost: Bool = {
+        let environment = ProcessInfo.processInfo.environment
+        return environment["XCTestConfigurationFilePath"] != nil
+            || environment["XCTestBundlePath"] != nil
+            || environment["XCTestSessionIdentifier"] != nil
+            || NSClassFromString("XCTestCase") != nil
+    }()
 
     private let defaults: UserDefaults
     private let respectsTestHost: Bool
