@@ -94,6 +94,11 @@ final class PearlRunnerController: ObservableObject {
     /// once per tick. Not published: keys must not trigger extra renders.
     var input = PearlInput()
 
+    /// The milestone sound, and every rule about when it may not be heard.
+    /// Owned here rather than by the view because the milestone is a fact
+    /// about the simulation, and this is the only place a step happens.
+    let chime: PearlRunnerChime
+
     private let driver: PearlFrameDriving
     private let clock: () -> TimeInterval
     private let store: PearlHighScoreStore
@@ -103,7 +108,8 @@ final class PearlRunnerController: ObservableObject {
         seed: UInt64 = UInt64(bitPattern: Int64(Date().timeIntervalSinceReferenceDate * 1000)),
         driver: PearlFrameDriving? = nil,
         clock: @escaping () -> TimeInterval = { Date().timeIntervalSinceReferenceDate },
-        store: PearlHighScoreStore = PearlHighScoreStore()
+        store: PearlHighScoreStore = PearlHighScoreStore(),
+        chime: PearlRunnerChime? = nil
     ) {
         self.game = PearlRunnerGame(seed: seed)
         // Not a default argument: those are evaluated in the caller's
@@ -111,6 +117,7 @@ final class PearlRunnerController: ObservableObject {
         self.driver = driver ?? PearlFrameTimerDriver()
         self.clock = clock
         self.store = store
+        self.chime = chime ?? PearlRunnerChime()
         self.highScore = store.load()
     }
 
@@ -185,9 +192,29 @@ final class PearlRunnerController: ObservableObject {
     }
 
     /// The surface is going away. After this returns the driver is not
-    /// running — the guarantee `PearlRunnerLifecycleTests` pins.
+    /// running — the guarantee `PearlRunnerLifecycleTests` pins — and nothing
+    /// can make a sound again.
     func shutDown() {
         pause()
+        chime.tearDown()
+    }
+
+    /// Test seam, and the same kind `PearlRunnerGame.place` already is: the
+    /// milestone chime fires a hundred points in, which is fifteen seconds of
+    /// real running, and a test that had to earn them would be a test of the
+    /// spawn stream instead of a test of the sound. `game` is otherwise
+    /// read-only to everything outside this class, which is the property this
+    /// keeps by being the one door.
+    func windForTesting(_ change: (inout PearlRunnerGame) -> Void) {
+        change(&game)
+    }
+
+    /// M, from the runner's keyboard slot.
+    func toggleMute() {
+        chime.toggleMute()
+        // The overlay says whether the game is muted, and the overlay is drawn
+        // from a published value, so the switch has to announce itself.
+        objectWillChange.send()
     }
 
     private func tick() {
@@ -195,7 +222,17 @@ final class PearlRunnerController: ObservableObject {
         let elapsed = lastTickTime.map { now - $0 } ?? PearlWorld.frameDuration
         lastTickTime = now
 
+        // Either side of the step, because `advance` can cross a hundred in
+        // any of the frames it runs and the chime is owed once per crossing,
+        // not once per tick.
+        let milestonesBefore = game.milestonesPassed
         game.advance(by: elapsed, input: input)
+        if game.milestonesPassed > milestonesBefore {
+            // `gameIsRunning` is asked of the state AFTER the step: a run that
+            // crossed a hundred and hit a tree in the same batch of frames is
+            // over, and a game that is over does not ring.
+            chime.milestoneReached(gameIsRunning: game.phase == .running)
+        }
 
         if game.phase == .crashed {
             if game.score > highScore {

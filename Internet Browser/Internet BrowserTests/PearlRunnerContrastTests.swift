@@ -72,8 +72,12 @@ final class PearlRunnerContrastTests: XCTestCase {
         PearlSpriteLibrary(bundle: Bundle(for: PearlSpriteLibrary.self))
     }
 
+    /// All four skies, not two. Every state the field can be in owes the same
+    /// measurement, and the two new ones (dusk at 350, dawn at 1050) are
+    /// measured here for the first time rather than argued from the fact that
+    /// they sit between the old two.
     private var fields: [(name: String, canvas: PearlRunnerCanvas)] {
-        [("the day field", canvas(night: false)), ("the night field", canvas(night: true))]
+        PearlSky.allCases.map { ("the \($0) field", canvas(sky: $0)) }
     }
 
     // MARK: - The cast
@@ -261,12 +265,45 @@ final class PearlRunnerContrastTests: XCTestCase {
     /// the ink being flipped back with the sky, which is the Chrome-runner
     /// move this palette gave up.
     func testNightMovesTheFieldAndLeavesTheInkAlone() {
-        let day = canvas(night: false)
-        let night = canvas(night: true)
+        let day = canvas(sky: .day)
+        let night = canvas(sky: .night)
         XCTAssertNotEqual(NSColor(day.background), NSColor(night.background),
                           "nightfall no longer changes the sky")
         XCTAssertEqual(NSColor(day.ink), NSColor(night.ink),
                        "the ink flips with the sky again; the field no longer crosses the middle")
+    }
+
+    /// Four skies, four tones — and the point of adding two of them was that
+    /// the player can SEE the run has got somewhere, so no two of them may be
+    /// the same colour.
+    ///
+    /// Dies on a new phase being added to `PearlSky` without a tone of its
+    /// own (the palette's `switch` would have to fall back to an existing
+    /// one), and on dusk or dawn being quietly aliased to day or night.
+    func testEverySkyIsADifferentTone() {
+        let tones = PearlSky.allCases.map { NSColor(canvas(sky: $0).background) }
+        for (index, tone) in tones.enumerated() {
+            for other in tones[(index + 1)...] {
+                XCTAssertNotEqual(tone, other, "two of the four skies are the same colour")
+            }
+        }
+    }
+
+    /// The change between consecutive skies is carried by HUE, not by
+    /// brightness — because brightness is the axis this artwork has already
+    /// spent (see `PearlRunnerPalette`'s 0.139–0.183 window, which is 0.044
+    /// wide in total). Stated as a bound so a later reader who "fixes" the
+    /// dusk tone by darkening it fails here rather than in the sprite bars.
+    ///
+    /// Dies on any sky leaving the window, in either direction.
+    func testNoSkyLeavesTheWindowTheArtworkWasSolvedFor() {
+        for (name, canvas) in fields {
+            let measured = luminance(canvas.background)
+            XCTAssertGreaterThanOrEqual(measured, 0.139,
+                                        "\(name) is at \(measured); below 0.139 the trees go")
+            XCTAssertLessThanOrEqual(measured, 0.183,
+                                     "\(name) is at \(measured); above 0.183 the score stops reading")
+        }
     }
 
     // MARK: - The arithmetic itself
@@ -313,7 +350,9 @@ final class PearlRunnerContrastTests: XCTestCase {
     /// The same guard `FailureContrastTests` keeps over its own comment.
     func testTheNumbersTheHeaderQuotesAreTheRealOnes() throws {
         XCTAssertEqual(luminance(PearlRunnerPalette.day), 0.170, accuracy: 0.001)
+        XCTAssertEqual(luminance(PearlRunnerPalette.dusk), 0.163, accuracy: 0.001)
         XCTAssertEqual(luminance(PearlRunnerPalette.night), 0.152, accuracy: 0.001)
+        XCTAssertEqual(luminance(PearlRunnerPalette.dawn), 0.159, accuracy: 0.001)
 
         let paper = luminance(NSColor(srgbRed: 0.97, green: 0.97, blue: 0.96, alpha: 1))
         XCTAssertEqual(percentile(of: try outlineLuminances(of: "gull", frame: 0), on: paper),
@@ -330,14 +369,18 @@ final class PearlRunnerContrastTests: XCTestCase {
 
     // MARK: - Building the thing under test
 
-    /// A canvas around a real game, moved to a distance either side of the 700
-    /// point nightfall. The assertion is part of the fixture: a day canvas
-    /// that is quietly a night one would measure the same field twice.
-    private func canvas(night: Bool) -> PearlRunnerCanvas {
+    /// A canvas around a real game, moved to a score inside the sky asked for.
+    /// The assertion is part of the fixture: a dusk canvas that is quietly a
+    /// day one would measure the same field twice and report four passes for
+    /// two tones.
+    private func canvas(sky: PearlSky) -> PearlRunnerCanvas {
+        let score = PearlSky.allCases.firstIndex(of: sky)! * PearlTuning.skyPhaseScore
         var game = PearlRunnerGame(seed: 1)
-        game.distance = (night ? 700.0 : 0.0) / PearlTuning.pointsPerDistance
-        XCTAssertEqual(game.isNight, night, "the fixture did not reach \(night ? "night" : "day")")
-        return PearlRunnerCanvas(game: game, highScore: 0, isTicking: true, reduceMotion: false)
+        game.distance = Double(score) / PearlTuning.pointsPerDistance
+        XCTAssertEqual(game.sky, sky, "the fixture did not reach \(sky)")
+        return PearlRunnerCanvas(
+            game: game, highScore: 0, isTicking: true, isMuted: false, reduceMotion: false
+        )
     }
 
     // MARK: - Measuring

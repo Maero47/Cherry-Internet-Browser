@@ -38,9 +38,11 @@ final class PearlRunnerGameTests: XCTestCase {
     private func survivesJump(
         over kind: PearlObstacleKind,
         holdFrames: Int,
-        pressDistance: Double
+        pressDistance: Double,
+        atSpeed speed: Double? = nil
     ) -> Bool {
         var game = quietGame()
+        if let speed { game.speed = speed }
         game.place(kind, at: 400)
 
         let nose = PearlWorld.pearlX + PearlSpriteContract.run.width
@@ -93,6 +95,46 @@ final class PearlRunnerGameTests: XCTestCase {
             }
         }
         XCTAssertEqual(first, second)
+    }
+
+    /// The same seed and the same INPUTS, fed through wall-clock time in
+    /// wildly uneven slices instead of whole frames, still lands on exactly
+    /// the same run. This is what says the ramp, the jump's scale and the
+    /// milestone count are functions of the simulation and not of when a timer
+    /// happened to fire.
+    ///
+    /// Dies on the fixed-timestep accumulator in `advance` going — one step
+    /// per call instead of one per frame owed — which is the mutation that
+    /// makes the ramp, the sky and the milestone count all functions of how
+    /// often a timer happened to fire.
+    func testUnevenWallClockSlicesReachTheIdenticalRun() {
+        func input(at frame: Int) -> PearlInput {
+            PearlInput(jump: frame % 90 < 12, duck: frame % 210 >= 150 && frame % 210 < 190)
+        }
+
+        // Held per lump on both sides, because a key held across five frames
+        // is what a lump of wall-clock time actually delivers. The field is
+        // empty so the run reaches all fifty seconds instead of ending in the
+        // first tree — what is under test is the curve, not the trees.
+        var stepped = quietGame(seed: 41)
+        for lump in 0..<600 {
+            for _ in 0..<5 { stepped.step(input: input(at: lump * 5)) }
+        }
+
+        // The same 3000 frames delivered as 1/12th-second lumps of wall clock,
+        // which is nothing like a 60Hz tick.
+        var advanced = quietGame(seed: 41)
+        for lump in 0..<600 {
+            advanced.advance(by: 5 * PearlWorld.frameDuration, input: input(at: lump * 5))
+        }
+
+        XCTAssertEqual(advanced.frame, 3000, "the accumulator lost or invented frames")
+        XCTAssertEqual(advanced.speed, stepped.speed, accuracy: 1e-12,
+                       "the ramp is not a function of frames")
+        XCTAssertEqual(advanced.milestonesPassed, stepped.milestonesPassed)
+        XCTAssertEqual(advanced.sky, stepped.sky)
+        XCTAssertEqual(advanced.feetY, stepped.feetY, accuracy: 1e-12,
+                       "the jump's scale drifted with the clock")
     }
 
     func testDifferentSeedsProduceDifferentRuns() {
@@ -209,21 +251,225 @@ final class PearlRunnerGameTests: XCTestCase {
     // Literal numbers on purpose: a test that compares against
     // `PearlTuning.acceleration` moves when the constant moves and catches
     // nothing. These are the tuned values themselves.
-    func testSpeedRampsLinearlyFromSix() {
+
+    /// The opening. 4.2 is Chrome's own slow-mode starting speed, and the
+    /// whole point of the change: the game used to begin at 6.0, which is
+    /// where Chrome's NORMAL mode begins, so there was no opening at all.
+    ///
+    /// Dies on `initialSpeed` going back to 6.0, and on the first frame
+    /// accelerating out of the opening at anything but 0.001.
+    func testTheRunOpensAtChromesSlowModeSpeed() {
         var game = quietGame()
-        XCTAssertEqual(game.speed, 6.0)
+        XCTAssertEqual(game.speed, 4.2)
         step(&game, frames: 80)
-        XCTAssertEqual(game.speed, 6.08, accuracy: 1e-9)
+        XCTAssertEqual(game.speed, 4.28, accuracy: 1e-9)
+    }
+
+    /// The curve at four points along it, by frame count and by the score the
+    /// player is actually looking at when they get there. One acceleration all
+    /// the way — 4.2 + 0.001 × frame — so the whole ramp is these four rows.
+    ///
+    /// Dies on a second ramp being bolted under the first (any two-rate curve
+    /// misses at least one row), on `acceleration` moving, and on the ceiling
+    /// moving.
+    func testTheWholeCurveIsOneLineFromFourPointTwoToThirteen() {
+        var game = quietGame()
+        // frame, expected speed, expected score
+        let curve: [(Int, Double, Int)] = [
+            (600, 4.8, 67),      // ten seconds in
+            (1800, 6.0, 229),    // thirty seconds: what used to be frame zero
+            (5400, 9.6, 931),    // ninety seconds
+            (8800, 13.0, 1892),  // the ceiling, 146.7 seconds in
+        ]
+        var frame = 0
+        for (target, speed, score) in curve {
+            step(&game, frames: target - frame)
+            frame = target
+            XCTAssertEqual(game.speed, speed, accuracy: 1e-9,
+                           "the curve is wrong at frame \(target)")
+            XCTAssertEqual(game.score, score, "the score is wrong at frame \(target)")
+        }
     }
 
     func testSpeedTopsOutAtThirteenAndStaysThere() {
         var game = quietGame()
-        step(&game, frames: 6900)
+        step(&game, frames: 8700)
         XCTAssertLessThan(game.speed, 13.0, "the ceiling must not arrive early")
         step(&game, frames: 200)
         XCTAssertEqual(game.speed, 13.0)
         step(&game, frames: 900)
         XCTAssertEqual(game.speed, 13.0)
+    }
+
+    /// The grace before the first obstacle, in seconds rather than in points,
+    /// because seconds is what Chrome's `clearTime: 3000` is measured in and
+    /// what the player experiences. It used to be 1.4 seconds.
+    ///
+    /// Dies on `firstObstacleDistance` going back to 500, and on the opening
+    /// speed rising underneath it (which would shorten the same distance).
+    func testNothingIsSpawnedForChromesThreeSecondsOfGrace() throws {
+        var game = PearlRunnerGame(seed: 3)
+        game.nextCloudDistance = .infinity
+        var firstSpawnFrame: Int?
+        for _ in 0..<600 where firstSpawnFrame == nil {
+            game.step(input: PearlInput())
+            if !game.obstacles.isEmpty { firstSpawnFrame = game.frame }
+        }
+        let frame = try XCTUnwrap(firstSpawnFrame, "nothing spawned in ten seconds")
+        let seconds = Double(frame) * PearlWorld.frameDuration
+        XCTAssertEqual(seconds, 3.0, accuracy: 0.1,
+                       "the first obstacle enters after \(seconds)s, not Chrome's 3")
+    }
+
+    // MARK: - The jump, over the whole opening ramp
+    //
+    // A jump is a fixed number of FRAMES in the air, so a slower world is a
+    // harder one: the same tree spends more frames beside Pearl. Left alone,
+    // the tuned claim "a tap clears a small tree" simply stops being true
+    // below about 4.27pt per frame — which is above the new opening speed.
+    //
+    // `PearlTuning.jumpScale` is the answer, and it is Chrome's answer too
+    // (its slow mode swaps gravity 0.6 → 0.25 and take-off -10 → -20). These
+    // are what say it worked: the tuned contract, re-asked at every speed the
+    // opening ramp passes through rather than only at the one it used to
+    // start at.
+
+    /// Dies on `jumpScale` returning a constant 1 (the tap stops clearing a
+    /// small tree at the bottom of the ramp) and on it being applied to
+    /// take-off without being squared into gravity (the arc stops being the
+    /// same shape and the clearance drifts).
+    func testATapStillClearsASmallTreeEverywhereOnTheOpeningRamp() {
+        for speed in stride(from: 4.2, through: 6.0, by: 0.1) {
+            XCTAssertTrue(
+                survivesJump(over: .smallTrees(1), holdFrames: 1,
+                             pressDistance: 38, atSpeed: speed),
+                "a tap no longer clears a small tree at speed \(speed)"
+            )
+        }
+    }
+
+    /// The other half of the same contract, which a stronger jump would break
+    /// in the opposite direction. Dies on the scale being applied to gravity
+    /// but not to the tap cap, which lets a tap float over a large tree at the
+    /// bottom of the ramp.
+    func testATapStillNeverClearsALargeTreeAnywhereOnTheOpeningRamp() {
+        for speed in stride(from: 4.2, through: 6.0, by: 0.2) {
+            for pressDistance in stride(from: 10.0, through: 110.0, by: 8.0) {
+                XCTAssertFalse(
+                    survivesJump(over: .largeTrees(1), holdFrames: 1,
+                                 pressDistance: pressDistance, atSpeed: speed),
+                    "a tap cleared a large tree at speed \(speed), pressed \(pressDistance)pt out"
+                )
+            }
+        }
+    }
+
+    func testAHeldJumpStillClearsALargeTreeEverywhereOnTheOpeningRamp() {
+        for speed in stride(from: 4.2, through: 6.0, by: 0.1) {
+            XCTAssertTrue(
+                survivesJump(over: .largeTrees(1), holdFrames: 40,
+                             pressDistance: 38, atSpeed: speed),
+                "a held jump no longer clears a large tree at speed \(speed)"
+            )
+        }
+    }
+
+    /// What the scaling is FOR, stated directly: the arc covers the same
+    /// ground whatever the world speed, and takes proportionally longer to do
+    /// it. Dies on the scale being dropped, and on it being applied to gravity
+    /// linearly instead of squared.
+    func testTheJumpCoversTheSameGroundAtEverySpeedAndOnlyTakesLonger() {
+        func arc(atSpeed speed: Double) -> (apex: Double, airborneFrames: Int) {
+            var game = quietGame()
+            game.speed = speed
+            var top = PearlWorld.feetLine
+            var frames = 0
+            for frame in 0..<200 {
+                game.step(input: PearlInput(jump: frame < 40))
+                top = min(top, game.feetY)
+                if game.isAirborne { frames += 1 }
+                if frame > 2 && !game.isAirborne { break }
+            }
+            return (PearlWorld.feetLine - top, frames)
+        }
+        let slow = arc(atSpeed: 4.2)
+        let tuned = arc(atSpeed: 6.0)
+        XCTAssertEqual(slow.apex, tuned.apex, accuracy: 2.0,
+                       "the arc changed height, not just duration")
+        XCTAssertEqual(
+            Double(slow.airborneFrames) * 4.2,
+            Double(tuned.airborneFrames) * 6.0,
+            accuracy: 6.0,
+            "the arc no longer covers the same ground at the two speeds"
+        )
+        XCTAssertGreaterThan(slow.airborneFrames, tuned.airborneFrames,
+                             "a slower world should give a longer-lasting jump")
+    }
+
+    /// Above the reference speed nothing was touched at all. Dies on the
+    /// scale being applied upwards as well, which would make the late game a
+    /// different game from the one that shipped.
+    func testTheJumpIsUntouchedAtAndAboveTheSpeedItWasTunedAt() {
+        for speed in [6.0, 8.5, 13.0] {
+            XCTAssertEqual(PearlTuning.jumpScale(atSpeed: speed), 1.0)
+        }
+        XCTAssertEqual(PearlTuning.jumpScale(atSpeed: 4.2), 0.7, accuracy: 1e-9)
+    }
+
+    // MARK: - Groups, gated by speed the way Chrome gates them
+    //
+    // Chrome's `multipleSpeed`: a drawn group of two or three is planted as
+    // one until the world is fast enough to jump it. Cherry never had it, and
+    // the slower opening is exactly where it matters — two large trees need
+    // 80pt of clearance and a held jump buys 11.3 frames of it, so below
+    // 7.07pt per frame they are a wall. Chrome's gate is 7.0.
+
+    /// The gate that matters, at both ends of the range it covers: the whole
+    /// opening ramp, and one frame under Chrome's 7.0. Dies on the large
+    /// gate going, and on it being shared with the small one.
+    func testNoPairOfLargeTreesBeforeTheWorldCanJumpThem() {
+        for speed in [4.2, 4.5, 6.9] {
+            for kind in harvestSpawns(seed: 31, speed: speed, count: 150) {
+                if case .largeTrees(let count) = kind {
+                    XCTAssertEqual(count, 1, "a pair of large trees spawned at speed \(speed)")
+                }
+                if case .gull = kind { XCTFail("a gull spawned far below its own gate") }
+            }
+        }
+    }
+
+    /// And small groups are NOT gated with them: they are jumpable from the
+    /// opening speed (three small trees need 81pt of clearance and a held jump
+    /// buys 151pt at 4.2), so gating them too would have made the opening
+    /// emptier than it needed to be. Chrome draws the same line — its small
+    /// gate is 4.0 and its large one is 7.0.
+    func testSmallGroupsAreAllowedFromTheOpeningSpeed() {
+        var sawSmallGroup = false
+        for kind in harvestSpawns(seed: 31, speed: PearlTuning.initialSpeed, count: 200) {
+            if case .smallTrees(let count) = kind, count > 1 { sawSmallGroup = true }
+        }
+        XCTAssertTrue(sawSmallGroup, "small groups should already be allowed at 4.2")
+    }
+
+    /// The small gate itself, asked below a speed the ramp never reaches —
+    /// Cherry opens at 4.2 and Chrome's small gate is 4.0, so this one never
+    /// binds in a real run. It is here because the gate exists, and a gate
+    /// that is never exercised is a gate that quietly stops working before
+    /// the opening speed is ever lowered again.
+    func testTheSmallGateWouldStillBiteBelowTheOpeningSpeed() {
+        for kind in harvestSpawns(seed: 31, speed: 3.9, count: 120) {
+            if case .smallTrees(let count) = kind {
+                XCTAssertEqual(count, 1, "a group of \(count) small trees spawned at speed 3.9")
+            }
+        }
+    }
+
+    func testLargeGroupsArriveOnceTheWorldCanJumpThem() {
+        let kinds = harvestSpawns(seed: 31, speed: PearlTuning.maxSpeed, count: 200)
+        XCTAssertTrue(
+            kinds.contains { if case .largeTrees(let n) = $0 { return n > 1 } else { return false } },
+            "at top speed two hundred spawns should include a pair of large trees"
+        )
     }
 
     // MARK: - Score, day and night
@@ -258,6 +504,98 @@ final class PearlRunnerGameTests: XCTestCase {
         XCTAssertFalse(game.isNight)
         game.step(input: PearlInput())
         XCTAssertTrue(game.isNight, "one more frame of distance should cross 700 points")
+    }
+
+    // MARK: - The four skies
+    //
+    // Dies when `skyPhaseScore` moves, when the phase order is rotated, and
+    // when `isNight` stops agreeing with the 700 it has always been.
+
+    /// Every boundary, named. The first colour change now happens at 350,
+    /// halfway to a nightfall that has not moved.
+    func testTheSkyTurnsAtEveryThreeHundredAndFifty() {
+        let expected: [(Int, PearlSky)] = [
+            (0, .day), (349, .day),
+            (350, .dusk), (699, .dusk),
+            (700, .night), (1049, .night),
+            (1050, .dawn), (1399, .dawn),
+            (1400, .day), (1750, .dusk), (2100, .night),
+        ]
+        for (score, sky) in expected {
+            XCTAssertEqual(PearlSky.at(score: score), sky, "score \(score) got the wrong sky")
+        }
+    }
+
+    /// The new states may not have moved the old one. Checked as arithmetic
+    /// over a whole three cycles rather than at a handful of points, because
+    /// "night is still exactly the second 700" is the claim, not "night still
+    /// happens somewhere".
+    ///
+    /// Dies on `skyPhaseScore` becoming anything but half of `nightFlipScore`,
+    /// and on the phase order being rotated so dawn lands in daylight.
+    func testNightIsStillExactlyTheSameSevenHundredItAlwaysWas() {
+        for score in 0...2100 {
+            XCTAssertEqual(
+                PearlSky.at(score: score).isNight,
+                (score / 700) % 2 == 1,
+                "score \(score) disagrees with the old day/night arithmetic"
+            )
+        }
+    }
+
+    /// The sky is a function of the simulation and of nothing else — set the
+    /// distance, get the sky, with no frames stepped and no clock consulted.
+    func testTheSkyIsReadStraightOffTheScore() {
+        var game = quietGame()
+        for (score, sky) in [(0, PearlSky.day), (350, .dusk), (700, .night), (1050, .dawn)] {
+            game.distance = Double(score) / PearlTuning.pointsPerDistance
+            XCTAssertEqual(game.score, score)
+            XCTAssertEqual(game.sky, sky)
+        }
+    }
+
+    // MARK: - Milestones
+    //
+    // Dies when `milestoneScore` moves off Chrome's 100, and when
+    // `milestonesPassed` starts counting something other than crossings.
+
+    func testEveryHundredPointsIsOneMilestoneAndNoMore() {
+        var game = quietGame()
+        XCTAssertEqual(game.milestonesPassed, 0)
+        for (score, passed) in [(99, 0), (100, 1), (199, 1), (200, 2), (1000, 10)] {
+            game.distance = Double(score) / PearlTuning.pointsPerDistance
+            XCTAssertEqual(game.score, score)
+            XCTAssertEqual(game.milestonesPassed, passed, "score \(score)")
+        }
+    }
+
+    /// Stepping over a hundred raises the count exactly once, on the frame
+    /// that crosses it. Dies on the count being derived from the frame or
+    /// from elapsed time instead of from the score.
+    func testTheCountRisesOnTheFrameThatCrossesTheHundred() {
+        var game = quietGame()
+        game.distance = 100 / PearlTuning.pointsPerDistance - 3
+        XCTAssertEqual(game.milestonesPassed, 0)
+        game.step(input: PearlInput())
+        XCTAssertEqual(game.milestonesPassed, 1)
+        var raised = 0
+        for _ in 0..<200 {
+            let before = game.milestonesPassed
+            game.step(input: PearlInput())
+            if game.milestonesPassed > before { raised += 1 }
+        }
+        XCTAssertEqual(raised, 0, "200 more frames should not reach another hundred yet")
+    }
+
+    /// A restart puts the milestones back too, so the second run rings from
+    /// its own first hundred rather than never ringing again.
+    func testResettingPutsTheMilestonesBack() {
+        var game = quietGame()
+        game.distance = 450 / PearlTuning.pointsPerDistance
+        XCTAssertEqual(game.milestonesPassed, 4)
+        game.reset()
+        XCTAssertEqual(game.milestonesPassed, 0)
+        XCTAssertEqual(game.sky, .day)
     }
 
     // MARK: - The spawn schedule

@@ -93,10 +93,26 @@ nonisolated enum PearlWorld {
 nonisolated enum PearlTuning {
 
     // ## The run
-    /// Start/ceiling/ramp carried over from the Chrome runner (6 / 13 /
-    /// 0.001), whose pacing a decade of stranded commuters has already
-    /// play-tested. Top speed arrives at frame 7000, just under two minutes in.
-    static let initialSpeed = 6.0
+    //
+    // ONE linear ramp, at the Chrome runner's own acceleration, between two
+    // speeds Chrome itself ships. Chrome has two modes, and Cherry's curve
+    // runs from the start of one to the ceiling of the other:
+    //
+    //     Chrome normal mode   speed 6.0   acceleration 0.001   max 13
+    //     Chrome slow mode     speed 4.2   acceleration 0.0005  max  9
+    //
+    // The runner used to open at 6.0, which is where Chrome's *normal* mode
+    // opens — and the report of the game "starting fast all at once" is
+    // exactly that: no opening at all, full pace from the first frame. So the
+    // start moves to 4.2, the speed Chrome ships for players who find 6 too
+    // fast, and the ramp is still the single `acceleration` below rather than
+    // a second curve bolted under the first.
+    //
+    //     4.2 → 6.0 (what used to be frame zero)   1800 frames,  30 s
+    //     6.0 → 13.0 (the ceiling, unchanged)      7000 frames, 117 s
+    //
+    /// Chrome's slow-mode starting speed. See above.
+    static let initialSpeed = 4.2
     static let maxSpeed = 13.0
     static let acceleration = 0.001
 
@@ -114,18 +130,66 @@ nonisolated enum PearlTuning {
     /// a jump can be cancelled into a duck instead of floating into a gull.
     static let fastFallMultiplier = 3.0
 
+    /// The speed the jump above was tuned at, and the speed the opening ramp
+    /// converges on.
+    static let jumpReferenceSpeed = 6.0
+
+    /// How the jump is scaled below that speed — and why the opening could not
+    /// simply be slower with the jump left alone.
+    ///
+    /// A jump is a fixed number of FRAMES in the air. Slow the world down and
+    /// the same obstacle spends more frames beside Pearl, so a slower world is
+    /// a *harder* one: measured against the shipped geometry, a tap clears
+    /// 66pt of travel over a small tree at speed 6.0 and a small tree needs
+    /// 47pt of it — but at 4.2, unscaled, the tap clears only 46.2pt and the
+    /// tuned claim "a tap clears a small tree" stops being true.
+    ///
+    /// Chrome hit the same wall and answered it the same way: its slow mode
+    /// does not just lower the speed, it swaps the whole jump (gravity 0.6 →
+    /// 0.25, take-off -10 → -20). Cherry does the same thing but derives the
+    /// factor instead of picking one. Scaling take-off by `k` and gravity by
+    /// `k²` leaves the arc's SHAPE in world space exactly unchanged — same
+    /// apex, same ground covered — and scales only how long it takes:
+    ///
+    ///     y(t) = v₀kt + ½gk²t²,  x(t) = 6kt   ⇒  substituting τ = kt gives
+    ///     y(τ) = v₀τ + ½gτ²,     x(τ) = 6τ    — the same curve, every k.
+    ///
+    /// So every clearance the tuning claims survives the slower opening: over
+    /// the whole 4.2 → 6.0 ramp a tap clears at worst 58pt over a small tree
+    /// (needs 47) and never any part of a large one, and a held jump clears at
+    /// worst 118pt over a large tree (needs 55). `PearlRunnerGameTests` sweeps
+    /// the ramp rather than trusting those numbers.
+    ///
+    /// At and above the reference speed `k` is 1 and the arithmetic is
+    /// bit-for-bit what it has always been.
+    static func jumpScale(atSpeed speed: Double) -> Double {
+        min(1.0, speed / jumpReferenceSpeed)
+    }
+
     // ## Scoring, day and night
-    /// Score is distance × this: ~9 points per second at starting speed,
-    /// matching the cadence dino players expect.
+    /// Score is distance × this: ~6 points per second at the new starting
+    /// speed and ~9 once the ramp reaches Chrome's, matching the cadence dino
+    /// players expect.
     static let pointsPerDistance = 0.025
     /// The sky flips at every multiple of 700 points, the Chrome runner's
     /// milestone.
     static let nightFlipScore = 700
+    /// The sky's tone changes twice as often as it flips: 700 gives day and
+    /// night, and the half-step gives the dusk that falls into one and the
+    /// dawn that comes up out of the other. Half of `nightFlipScore` exactly,
+    /// so `isNight` is still the same fact about the same 700.
+    static let skyPhaseScore = nightFlipScore / 2
+    /// The score interval that earns a chime. The Chrome runner's
+    /// `ACHIEVEMENT_DISTANCE`, which is also what its score flash uses.
+    static let milestoneScore = 100
 
     // ## The spawn schedule
-    /// The first obstacle enters at 500pt of scroll — with the crossing time
-    /// from the right edge that is just under three seconds of grace.
-    static let firstObstacleDistance = 500.0
+    /// The first obstacle enters at 770pt of scroll, which at the opening
+    /// speed is three seconds — the Chrome runner's `clearTime` of 3000ms,
+    /// during which it adds no obstacles at all. It used to be 500, which at
+    /// the old opening speed was 1.4s: half the grace, and the other half of
+    /// why the game felt like it started at a sprint.
+    static let firstObstacleDistance = 770.0
     /// Gap after an obstacle: its width × speed + this base × 0.6, then a
     /// random stretch up to 1.5×. Faster world, longer gaps, same reaction
     /// time — the Chrome runner's formula and constants.
@@ -133,8 +197,20 @@ nonisolated enum PearlTuning {
     static let gullGapBase = 150.0
     static let gapCoefficient = 0.6
     static let maxGapStretch = 1.5
-    /// Gulls join at 8.5, once the player has proven they can steer.
+    /// Gulls join at 8.5, once the player has proven they can steer. The
+    /// Chrome runner's `minSpeed` for the pterodactyl, unchanged.
     static let gullMinimumSpeed = 8.5
+    /// And the same idea for GROUPS, which is the Chrome runner's other gate
+    /// (`multipleSpeed`) and the one Cherry never had: below these speeds a
+    /// drawn group of two or three is planted as one tree instead.
+    ///
+    /// Chrome's numbers, and Cherry's own geometry agrees with them: measured
+    /// against the shipped sprites, two large trees side by side need 80pt of
+    /// clearance and a held jump buys 11.3 frames of it, so they only become
+    /// jumpable at 80/11.3 = 7.07pt per frame. Chrome gates its double cactus
+    /// at 7.0. Below it, an unlucky spawn on the opening ramp was a wall.
+    static let smallTreeGroupMinimumSpeed = 4.0
+    static let largeTreeGroupMinimumSpeed = 7.0
     /// A gull flies at world speed ± this, so two gulls never feel identical.
     static let gullSpeedOffset = 0.8
     /// No more than two consecutive obstacles of the same type.
@@ -273,6 +349,44 @@ nonisolated struct PearlObstacle: Equatable {
     }
 }
 
+// MARK: - The sky
+
+/// How far round the day the run has got. Derived from the score and nothing
+/// else — no timer, no wall clock — so a replay reaches the same sky on the
+/// same frame, and a test can ask for a tone by setting a distance.
+///
+/// The Chrome runner has two states and reaches them differently: it inverts
+/// the page at every multiple of 700 points and inverts it BACK 12 seconds
+/// later (`invertDistance: 700`, `invertFadeDuration: 12000`), so its night is
+/// a twelve-second event on a wall clock, not a half of the run. Cherry's is
+/// a half of the run, because a night that ends on a timer is a night that
+/// ends at a different score every time it is played, and this game is one
+/// that has to replay exactly.
+///
+/// So 700 still divides day from night, exactly as it did, and the half-step
+/// at 350 gives the two the sky was missing:
+///
+///     score      0 ── 350 ── 700 ── 1050 ── 1400 ── …
+///     phase      day  dusk   night  dawn    day
+///     isNight    no   no     yes    yes     no
+nonisolated enum PearlSky: Equatable, CaseIterable {
+    case day
+    case dusk
+    case night
+    case dawn
+
+    /// The 350-point step. `score` is never negative, so the modulo is safe.
+    static func at(score: Int) -> PearlSky {
+        allCases[(score / PearlTuning.skyPhaseScore) % allCases.count]
+    }
+
+    /// Whether the moon and the stars are out. Deliberately identical to the
+    /// old `(score / 700) % 2 == 1` — night and dawn are the second 700.
+    var isNight: Bool {
+        self == .night || self == .dawn
+    }
+}
+
 /// Scenery. Takes no part in collision, but spawns from the same seeded
 /// generator so a replay reproduces the sky along with everything else.
 nonisolated struct PearlCloud: Equatable {
@@ -326,6 +440,11 @@ nonisolated struct PearlRunnerGame: Equatable {
     var nextCloudDistance = PearlTuning.firstCloudDistance
 
     private(set) var frame = 0
+    /// The jump's scale, latched at take-off rather than read each frame, so
+    /// the arc a player committed to is the arc they get even though the world
+    /// keeps accelerating underneath it. The Chrome runner latches its own
+    /// speed-dependent take-off the same way, in `startJump(speed)`.
+    private var jumpScale = 1.0
     private var rng: PearlRNG
     private var previousInput = PearlInput()
     /// The same-type-run guard: which kind came last, and how many in a row.
@@ -344,9 +463,24 @@ nonisolated struct PearlRunnerGame: Equatable {
         Int(distance * PearlTuning.pointsPerDistance)
     }
 
-    /// Night after 700, day again after 1400, and so on.
+    /// How far round the day the run has got. Day, dusk, night, dawn, day.
+    var sky: PearlSky {
+        PearlSky.at(score: score)
+    }
+
+    /// Night after 700, day again after 1400, and so on. Still the same fact
+    /// about the same 700 — `PearlSky` splits each half in two without moving
+    /// the line between them.
     var isNight: Bool {
-        (score / PearlTuning.nightFlipScore) % 2 == 1
+        sky.isNight
+    }
+
+    /// How many hundreds the run has passed. The chime's whole trigger: the
+    /// controller compares this either side of a step, so the milestone is a
+    /// fact about the simulation rather than about when a timer happened to
+    /// fire. `score` never decreases within a run, so neither does this.
+    var milestonesPassed: Int {
+        score / PearlTuning.milestoneScore
     }
 
     var isAirborne: Bool {
@@ -403,17 +537,21 @@ nonisolated struct PearlRunnerGame: Equatable {
 
         // ## Pearl
         if !isAirborne && jumpPressed {
-            verticalVelocity = PearlTuning.jumpVelocity
+            // The arc is the same shape in world space at every speed; what
+            // the scale buys is the time to fly it. See `PearlTuning.jumpScale`.
+            jumpScale = PearlTuning.jumpScale(atSpeed: speed)
+            verticalVelocity = PearlTuning.jumpVelocity * jumpScale
         }
         if isAirborne || verticalVelocity != 0 {
             // Let go early and the rise is capped: tap for a short hop, hold
             // for the full arc.
-            if jumpReleased && verticalVelocity < PearlTuning.tapJumpVelocityCap {
-                verticalVelocity = PearlTuning.tapJumpVelocityCap
+            let cap = PearlTuning.tapJumpVelocityCap * jumpScale
+            if jumpReleased && verticalVelocity < cap {
+                verticalVelocity = cap
             }
-            let gravity = input.duck
+            let gravity = (input.duck
                 ? PearlTuning.gravity * PearlTuning.fastFallMultiplier
-                : PearlTuning.gravity
+                : PearlTuning.gravity) * jumpScale * jumpScale
             verticalVelocity += gravity
             feetY += verticalVelocity
             if feetY >= PearlWorld.feetLine {
@@ -462,6 +600,7 @@ nonisolated struct PearlRunnerGame: Equatable {
         verticalVelocity = 0
         isDucking = false
         speed = PearlTuning.initialSpeed
+        jumpScale = 1
         distance = 0
         obstacles = []
         clouds = []
@@ -516,11 +655,25 @@ nonisolated struct PearlRunnerGame: Equatable {
             lastKindTag = tag
             sameKindRun = 1
         }
+        // The group size is always drawn, and only then cut down to one if the
+        // world is too slow to jump the group — the Chrome runner's own order
+        // (`getRandomNum` first, `if (this.size > 1 && multipleSpeed > speed)`
+        // second), which keeps the generator's stream the same shape at every
+        // speed.
         switch tag {
-        case 0: return .smallTrees(rng.int(in: 1...3))
-        case 1: return .largeTrees(rng.int(in: 1...2))
-        default: return .gull(PearlGullLane.allCases[rng.int(in: 0...2)])
+        case 0:
+            return .smallTrees(group(rng.int(in: 1...3),
+                                     above: PearlTuning.smallTreeGroupMinimumSpeed))
+        case 1:
+            return .largeTrees(group(rng.int(in: 1...2),
+                                     above: PearlTuning.largeTreeGroupMinimumSpeed))
+        default:
+            return .gull(PearlGullLane.allCases[rng.int(in: 0...2)])
         }
+    }
+
+    private func group(_ count: Int, above minimumSpeed: Double) -> Int {
+        count > 1 && speed < minimumSpeed ? 1 : count
     }
 
     private mutating func spawnCloud() {

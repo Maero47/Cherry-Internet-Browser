@@ -68,6 +68,26 @@
 //  for one — so it is carried by hue (an overcast blue-grey going to indigo)
 //  and by the moon and stars the renderer already only draws after 700.
 //
+//  ## Four tones, not two
+//
+//  The sky now moves twice as often as it flips (see `PearlSky`): day, dusk,
+//  night, dawn, at every 350 points. The two new tones are held to exactly the
+//  same window, and they are the same argument carried further — the change is
+//  in hue, because brightness is the one axis this artwork has already spent.
+//
+//      phase   score      sRGB              luminance   what it is
+//      day     0    350   #68747F           0.170       overcast blue-grey
+//      dusk    350  700   #866B58           0.163       the light going warm
+//      night   700  1050  #6C6A84           0.152       indigo
+//      dawn    1050 1400  #866676           0.159       cold rose, coming up
+//
+//  All four sit between the 0.139 floor and the 0.183 ceiling, so no drawn
+//  thing and no line of text is closer to its bar in dusk or dawn than it
+//  already was in day or night — the darkest field is still `night` and the
+//  brightest is still `day`, and those two were what the window was solved
+//  for. `PearlRunnerContrastTests` measures all four rather than reasoning
+//  about it.
+//
 //  Every number above is re-measured against the shipped sheet and the
 //  shipped colours by `PearlRunnerContrastTests`; nothing here is trusted
 //  from this comment.
@@ -80,14 +100,25 @@ nonisolated enum PearlRunnerPalette {
     /// Daylight, hazy. 0.170 relative luminance.
     static let day = Color(.sRGB, red: 104 / 255, green: 116 / 255, blue: 127 / 255, opacity: 1)
 
-    /// After 700 points: the same sky at dusk. 0.152.
+    /// After 350 points: the same sky with the light going warm. 0.163.
+    static let dusk = Color(.sRGB, red: 134 / 255, green: 107 / 255, blue: 88 / 255, opacity: 1)
+
+    /// After 700 points: indigo. 0.152.
     static let night = Color(.sRGB, red: 108 / 255, green: 106 / 255, blue: 132 / 255, opacity: 1)
 
-    /// The field for a run, which is the only thing `isNight` still decides
-    /// about colour — the ink no longer flips with it, because the field no
-    /// longer crosses the middle.
-    static func field(isNight: Bool) -> Color {
-        isNight ? night : day
+    /// After 1050: still night to the moon and the stars, but the sky has
+    /// started to come up cold and rose. 0.159.
+    static let dawn = Color(.sRGB, red: 134 / 255, green: 102 / 255, blue: 118 / 255, opacity: 1)
+
+    /// The field for a run — the only thing the sky decides about colour. The
+    /// ink does not follow it, because the field never crosses the middle.
+    static func field(_ sky: PearlSky) -> Color {
+        switch sky {
+        case .day: return day
+        case .dusk: return dusk
+        case .night: return night
+        case .dawn: return dawn
+        }
     }
 
     /// The score, the overlay line, and the bright half of the placeholder

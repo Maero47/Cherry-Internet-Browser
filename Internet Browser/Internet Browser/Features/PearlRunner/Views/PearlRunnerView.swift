@@ -60,9 +60,17 @@
 //  press the rule calls `notOurs` is returned `.ignored`, so it goes on up
 //  the responder chain to the scroll view exactly as it did before.
 //
+//  ## Sound
+//
+//  Cherry has never made one before this file's game did. It is one system
+//  `Tink` every hundred points, and it is `PearlRunnerChime` that decides
+//  whether it may be heard at all — this file contributes exactly two things
+//  to that: the M key that silences it, and the `MUTED` the canvas draws when
+//  it has been. Nothing here plays anything.
+//
 //  ## Keys
 //
-//  Space and ↑ jump, ↓ ducks — but only while the runner's own slot holds
+//  Space and ↑ jump, ↓ ducks, M mutes — but only while the runner's own slot holds
 //  keyboard focus. The handlers hang off that slot, so an unfocused game
 //  cannot see, let alone steal, keys from the browser; losing focus pauses the
 //  driver the same tick. There is exactly one slot, and it belongs to the
@@ -206,6 +214,16 @@ struct PearlRunnerSection: View {
             controller.input.duck = press.phase == .down
             return .handled
         }
+        .onKeyPress(keys: ["m"], phases: [.down]) { _ in
+            // The silencer, and it is deliberately in the game rather than in
+            // Settings: the person who wants the noise to stop is holding the
+            // keyboard, looking at the thing making it. Like ↑ and ↓ it does
+            // nothing before a run exists, so `m` still reaches whatever the
+            // offline screen would otherwise have done with it.
+            guard controller.hasStarted else { return .ignored }
+            controller.toggleMute()
+            return .handled
+        }
         .onTapGesture {
             // A click is the other way in, and it is allowed to take the
             // keyboard from anywhere — the user pointed at the game. It still
@@ -234,9 +252,9 @@ struct PearlRunnerSection: View {
         // answer can arrive either side of `onAppear`, the second of the two
         // places the keyboard is asked for.
         .background {
-            PearlKeyboardWindowReader(handover: handover, windowKnown: claimKeyboardIfAllowed)
+            PearlKeyboardWindowReader(handover: handover, windowKnown: windowBecameKnown)
         }
-        .onAppear(perform: claimKeyboardIfAllowed)
+        .onAppear(perform: windowBecameKnown)
         .onDisappear {
             // The failure screen is gone — the page came back, or the tab did.
             // Whatever held the keyboard before the runner asked for it gets
@@ -255,6 +273,14 @@ struct PearlRunnerSection: View {
                 ? -PearlField.bleed(availableWidth: available.width, availableHeight: available.height)
                 : 0
         )
+    }
+
+    /// The window arrived — from either side of the same instant, see below.
+    /// Two things want it: the keyboard claim, and the chime, which will not
+    /// make a sound unless that window is the one holding the keyboard.
+    private func windowBecameKnown() {
+        controller.chime.observe(window: handover.window)
+        claimKeyboardIfAllowed()
     }
 
     /// Ask for the keyboard, if this screen is allowed to have it.
@@ -295,7 +321,7 @@ struct PearlRunnerSection: View {
     private var idleCaption: String {
         controller.highScore > 0
             ? "Space to run while you wait. Best \(controller.highScore)."
-            : "Space to run while you wait. ↓ ducks."
+            : "Space to run while you wait. ↓ ducks, M mutes."
     }
 }
 
@@ -376,6 +402,7 @@ private struct PearlRunnerSurface: View {
             game: controller.game,
             highScore: controller.highScore,
             isTicking: controller.isTicking,
+            isMuted: controller.chime.isMuted,
             reduceMotion: reduceMotion
         )
         // The field's own size, not the column's. Exact rather than an aspect
@@ -404,7 +431,7 @@ private struct PearlRunnerSurface: View {
         .accessibilityElement()
         .accessibilityLabel("Pearl’s Runner")
         .accessibilityValue("Score \(controller.game.score)")
-        .accessibilityHint("Space jumps, down arrow ducks")
+        .accessibilityHint("Space jumps, down arrow ducks, M mutes the milestone sound")
     }
 }
 
@@ -426,15 +453,19 @@ struct PearlRunnerCanvas: View {
     let game: PearlRunnerGame
     let highScore: Int
     let isTicking: Bool
+    /// Drawn, not just obeyed: a game that has gone quiet has to say so, or
+    /// the next player assumes it is broken.
+    let isMuted: Bool
     let reduceMotion: Bool
 
     private var sprites: PearlSpriteLibrary { .shared }
 
     /// The field. Never the page's colour: the sheet's cast runs from a
-    /// near-black cat to a near-white gull, and only a dusk tone in the middle
-    /// leaves both of them visible — see `PearlRunnerPalette`. `isNight` moves
-    /// it within that band; the appearance does not move it at all.
-    var background: Color { PearlRunnerPalette.field(isNight: game.isNight) }
+    /// near-black cat to a near-white gull, and only a tone in the middle
+    /// leaves both of them visible — see `PearlRunnerPalette`. The sky moves
+    /// it within that band, four times round; the appearance does not move it
+    /// at all.
+    var background: Color { PearlRunnerPalette.field(game.sky) }
 
     /// Text, and the bright half of the placeholder cast. One tone now, in day
     /// and night alike, because the field no longer crosses the middle.
@@ -673,12 +704,25 @@ struct PearlRunnerCanvas: View {
             .font(.system(size: 11, weight: .medium, design: .monospaced))
             .foregroundStyle(scoreInk(blinkedOut: blinkedOut))
         context.draw(text, at: CGPoint(x: PearlWorld.width - 10, y: 10), anchor: .topTrailing)
+
+        guard isMuted else { return }
+        // The mute state, opposite the score and in the score's own tone, so
+        // it is one measured piece of text rather than a second one.
+        let muted = Text("MUTED")
+            .font(.system(size: 11, weight: .medium, design: .monospaced))
+            .foregroundStyle(scoreInk(blinkedOut: false))
+        context.draw(muted, at: CGPoint(x: 10, y: 10), anchor: .topLeading)
     }
 
     private func drawOverlayText(in context: inout GraphicsContext) {
         let message: String?
         if game.phase == .crashed {
-            message = "Game over — Space to run again"
+            // The crash screen is where the key is advertised, because it is
+            // the first moment the player has definitely heard the sound and
+            // is not busy dodging a tree.
+            message = isMuted
+                ? "Game over — Space to run again · M unmutes"
+                : "Game over — Space to run again · M mutes"
         } else if !isTicking {
             message = "Click to run"
         } else {
