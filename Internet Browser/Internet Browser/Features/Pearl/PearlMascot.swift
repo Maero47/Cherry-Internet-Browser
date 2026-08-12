@@ -357,6 +357,22 @@ struct PearlHeartBurst: View {
     /// her feet or the air over her ears.
     static let origin: CGFloat = 0.70
 
+    /// How long one heart's flight lasts once its stagger is over.
+    ///
+    /// Here rather than inline in the keyframe because the desktop pet runs
+    /// the same rise through Core Animation, and a duration that agreed by
+    /// coincidence is a duration that stops agreeing the first time either
+    /// side is tuned.
+    static let travelDuration: Double = 0.71
+
+    /// The burst itself, and the ONE place these numbers live.
+    ///
+    /// Both of Pearl's reactions read this table: the wizard's SwiftUI
+    /// keyframes below, and the pet's Core Animation layers
+    /// (`PearlPetBurst`). They differ in technology and in the span they are
+    /// given — hers is her drawn height, the pet's is the view she must stay
+    /// inside — and in nothing else. `PearlPetHeartTests` is what fails if a
+    /// second copy of these fractions appears.
     static let hearts: [Heart] = [
         Heart(size: 0.12, rise: 0.28, drift: -0.10, delay: 0.00),
         Heart(size: 0.16, rise: 0.36, drift: 0.02, delay: 0.07),
@@ -426,7 +442,7 @@ struct PearlHeartBurst: View {
                 }
                 KeyframeTrack(\.travel) {
                     LinearKeyframe(0, duration: heart.delay)
-                    CubicKeyframe(1, duration: 0.71)
+                    CubicKeyframe(1, duration: Self.travelDuration)
                 }
             }
     }

@@ -407,7 +407,8 @@ final class PearlPetView: NSView {
 
     /// Three hearts, rising and gone in under a second — the same drawing the
     /// setup wizard's Pearl reacts with (`PearlHeartShape`), in the same tint,
-    /// under the same rule about Reduce Motion (`PearlMascot.heartsMayFly`).
+    /// under the same rule about Reduce Motion (`PearlMascot.heartsMayFly`),
+    /// and — see `PearlPetBurst` — the same three hearts.
     ///
     /// Core Animation runs them, so the main thread's entire involvement is
     /// building three small layers.
@@ -420,43 +421,41 @@ final class PearlPetView: NSView {
         effectiveAppearance.performAsCurrentDrawingAppearance {
             heartTint = PearlMascot.heartNSTint.cgColor
         }
-        let rect = spriteRect
-        let launch = CGPoint(x: rect.midX, y: rect.maxY - 6)
 
-        for (size, drift, delay, rise) in [
-            (11.0, -13.0, 0.00, 30.0),
-            (15.0, 2.0, 0.07, 37.0),
-            (9.0, 12.0, 0.15, 27.0),
-        ] {
+        for flight in PearlPetBurst.flights(span: bounds.height, centreX: spriteRect.midX) {
             let heart = CAShapeLayer()
-            let box = CGRect(x: 0, y: 0, width: size, height: size)
+            let box = CGRect(x: 0, y: 0, width: flight.size, height: flight.size)
             heart.path = CGPath.pearlHeart(in: box)
             heart.fillColor = heartTint
             heart.bounds = box
-            heart.position = launch
+            heart.position = flight.start
             heart.opacity = 0
             layer?.addSublayer(heart)
 
+            let duration = PearlHeartBurst.travelDuration
+
             let travel = CABasicAnimation(keyPath: "position.y")
-            travel.fromValue = launch.y
-            travel.toValue = launch.y + rise
-            travel.beginTime = CACurrentMediaTime() + delay
-            travel.duration = 0.71
+            travel.fromValue = flight.start.y
+            travel.toValue = flight.end.y
+            travel.beginTime = CACurrentMediaTime() + flight.delay
+            travel.duration = duration
             travel.timingFunction = CAMediaTimingFunction(name: .easeOut)
             travel.fillMode = .backwards
 
+            // The same shape as the wizard's opacity track, whose four
+            // segments are 0, 0.10, 0.32 and 0.29 of the same 0.71 seconds.
             let fade = CAKeyframeAnimation(keyPath: "opacity")
             fade.values = [0, 1, 1, 0]
             fade.keyTimes = [0, 0.14, 0.59, 1]
-            fade.beginTime = CACurrentMediaTime() + delay
-            fade.duration = 0.71
+            fade.beginTime = CACurrentMediaTime() + flight.delay
+            fade.duration = duration
             fade.fillMode = .backwards
 
             let sidle = CABasicAnimation(keyPath: "position.x")
-            sidle.fromValue = launch.x
-            sidle.toValue = launch.x + drift
-            sidle.beginTime = CACurrentMediaTime() + delay
-            sidle.duration = 0.71
+            sidle.fromValue = flight.start.x
+            sidle.toValue = flight.end.x
+            sidle.beginTime = CACurrentMediaTime() + flight.delay
+            sidle.duration = duration
             sidle.fillMode = .backwards
 
             CATransaction.begin()
@@ -467,6 +466,68 @@ final class PearlPetView: NSView {
             heart.add(fade, forKey: "fade")
             heart.add(sidle, forKey: "drift")
             CATransaction.commit()
+        }
+    }
+}
+
+// MARK: - The burst, in the pet's own coordinates
+
+/// `PearlHeartBurst`'s three hearts, resolved for Core Animation.
+///
+/// Pearl reacts in two places and in two technologies, and the wizard's file
+/// is where the burst is described: three hearts, each a `size`, a `rise` and
+/// a `drift` given as FRACTIONS OF A SPAN, plus a stagger. That is not a
+/// stylistic choice over there — it is the fix for a burst that painted its
+/// whole ascent outside the thing it was drawn over and was never once seen.
+///
+/// The pet used to carry those numbers again, in points, and they were the
+/// points the wizard's own file had by then replaced. So this reads the one
+/// table instead. The only thing the pet decides is the SPAN, and it decides
+/// it the same way `PearlPortrait` does: the span is the height of the frame
+/// the burst must not leave, which here is `PearlPetView`'s own bounds — her
+/// sprite plus `PearlPetPlacement.heartHeadroom`. Containment is then the same
+/// arithmetic in both places, and `PearlPetHeartTests` checks it here the way
+/// `PearlHeartContainmentTests` checks it there.
+enum PearlPetBurst {
+
+    /// One heart's flight, in the pet view's coordinates: y counts UP from her
+    /// feet, where `PearlHeartBurst.origin` counts down from the top.
+    struct Flight: Equatable {
+        /// The side of the heart.
+        let size: CGFloat
+        /// Its centre when it appears.
+        let start: CGPoint
+        /// Its centre at the top of the rise.
+        let end: CGPoint
+        /// Its stagger, in seconds — the one thing in the table measured in a
+        /// unit, and taken from the table all the same.
+        let delay: Double
+    }
+
+    static func flights(span: CGFloat, centreX: CGFloat) -> [Flight] {
+        let launchY = span * (1 - PearlHeartBurst.origin)
+        return PearlHeartBurst.hearts.map { heart in
+            let start = CGPoint(x: centreX, y: launchY)
+            return Flight(
+                size: span * heart.size,
+                start: start,
+                end: CGPoint(x: start.x + span * heart.drift, y: start.y + span * heart.rise),
+                delay: heart.delay
+            )
+        }
+    }
+
+    /// Everything the burst paints, as one rectangle. The pet's answer to
+    /// `PearlHeartBurst.paintedBand`, and what a test can hold against the
+    /// view's own bounds.
+    static func paintedRect(span: CGFloat, centreX: CGFloat) -> CGRect {
+        flights(span: span, centreX: centreX).reduce(CGRect.null) { union, flight in
+            let half = flight.size / 2
+            return union
+                .union(CGRect(x: flight.start.x - half, y: flight.start.y - half,
+                              width: flight.size, height: flight.size))
+                .union(CGRect(x: flight.end.x - half, y: flight.end.y - half,
+                              width: flight.size, height: flight.size))
         }
     }
 }
