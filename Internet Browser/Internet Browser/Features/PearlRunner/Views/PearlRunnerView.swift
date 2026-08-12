@@ -27,6 +27,22 @@
 //  down — but by then the user is playing rather than reading, and every word
 //  of the failure, the address and Retry are intact directly below it.
 //
+//  ## How big it gets
+//
+//  As big as the window allows, up to twice the world's own measure: a run on
+//  a full-screen window is drawn 1120×300 rather than 560×150. The field is
+//  wider than the reading column it is a row of, so it reports the column's
+//  width to the layout and bleeds past both edges — centred on the same axis
+//  as the copy, stopping at the same 40pt margin the copy keeps.
+//
+//  The size is one number, `PearlField`'s magnification, applied by the
+//  canvas's own `scaleBy`. Nothing in the simulation is told about it: the
+//  world is still 560×150, the collision boxes are still the sprite
+//  contract's, and a jump still clears exactly what it cleared. What grows is
+//  everything drawn — Pearl, the trees, the gulls, the ground, the score.
+//  What does not grow is the idle mark: it stands in for the failure symbol
+//  and has to stay the symbol's height, or the copy below it moves.
+//
 //  ## Starting
 //
 //  The game still never starts itself: no frame is simulated, and no driver
@@ -68,6 +84,10 @@ struct PearlRunnerSection: View {
     /// instruction screen still cannot make space start a game there.
     let offersRunner: Bool
 
+    /// The whole surface the failure screen was given, not the column's share
+    /// of it. A run's field is sized against this; the idle mark ignores it.
+    @Environment(\.failureContainerSize) private var available
+
     @StateObject private var controller = PearlRunnerController()
     @FocusState private var isFocused: Bool
 
@@ -77,6 +97,7 @@ struct PearlRunnerSection: View {
                 PearlRunnerSurface(
                     controller: controller,
                     offersRunner: offersRunner,
+                    available: available,
                     isFocused: $isFocused
                 )
             } else {
@@ -166,9 +187,14 @@ private struct PearlRunnerSurface: View {
 
     @ObservedObject var controller: PearlRunnerController
     let offersRunner: Bool
+    let available: CGSize
     var isFocused: FocusState<Bool>.Binding
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var metrics: PearlField.Metrics {
+        PearlField.metrics(availableWidth: available.width, availableHeight: available.height)
+    }
 
     var body: some View {
         PearlRunnerCanvas(
@@ -177,8 +203,10 @@ private struct PearlRunnerSurface: View {
             isTicking: controller.isTicking,
             reduceMotion: reduceMotion
         )
-        .aspectRatio(PearlWorld.width / PearlWorld.height, contentMode: .fit)
-        .frame(maxWidth: PearlWorld.width)
+        // The field's own size, not the column's. Exact rather than an aspect
+        // ratio inside a maximum: the magnification is `PearlField`'s answer,
+        // and the canvas is drawn at precisely it.
+        .frame(width: metrics.width, height: metrics.height)
         .overlay(LibraryShape.rowShape.stroke(FailurePalette.hairline, lineWidth: 1))
         .contentShape(Rectangle())
         .focusable()
@@ -251,6 +279,15 @@ private struct PearlRunnerSurface: View {
             // may keep running behind it.
             controller.shutDown()
         }
+        // Full bleed. The field is wider than the reading column it is a row
+        // of, so it reports the column's width to the layout and draws past
+        // both edges of it — centred on the same axis as the copy below,
+        // stopping at the same margin the copy keeps. A field that already
+        // fits inside the column bleeds by zero and this does nothing.
+        .padding(
+            .horizontal,
+            -PearlField.bleed(availableWidth: available.width, availableHeight: available.height)
+        )
         .accessibilityLabel("Pearl’s Runner")
         .accessibilityValue("Score \(controller.game.score)")
         .accessibilityHint("Space jumps, down arrow ducks")

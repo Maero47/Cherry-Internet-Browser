@@ -35,6 +35,14 @@
 //  nothing was demoted: the first *text* is still the 22pt title, and the
 //  runner's own caption is 11pt in the body tone beside the mark.
 //
+//  A started run is the one row on either of these screens that is sized
+//  against the window rather than the column: it grows to as much as twice
+//  the world's own measure and hangs past the column's edges, centred on the
+//  same axis, stopping at the same margin (`PearlField`). That is why the
+//  column publishes its container size through the environment. The copy is
+//  unaffected — it keeps `FailureLayout.measure` at every window width, and
+//  the mark it sits under while nobody is playing never changes size at all.
+//
 
 import SwiftUI
 
@@ -54,7 +62,10 @@ struct NavigationFailureView: View {
                 // The wait screen's game, where Chrome puts the dino: above
                 // the failure text, in the slot the symbol holds elsewhere.
                 // At rest it is a still mark of the symbol's height, so no
-                // word below it moved; it starts nothing on its own.
+                // word below it moved; it starts nothing on its own. Once a
+                // run starts the field is sized against the window rather
+                // than this column, and bleeds past its measure — see
+                // `PearlField`.
                 PearlRunnerSection(offersRunner: failure.offersPearlRunner)
             } else {
                 Image(systemName: failure.symbolName)
