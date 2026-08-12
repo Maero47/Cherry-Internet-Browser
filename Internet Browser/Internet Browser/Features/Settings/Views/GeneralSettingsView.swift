@@ -191,12 +191,12 @@ struct GeneralSettingsView: View {
 
             SettingsCard(
                 icon: "pawprint",
-                title: "Pearl",
+                title: PearlVoice.name,
                 subtitle: "Cherry's cat. She has a game on the offline page and, if you like, "
                     + "a spot on the pages you browse."
             ) {
                 SettingsToggleRow(
-                    title: "Keep Pearl on Web Pages",
+                    title: "Keep \(PearlVoice.name) on Web Pages",
                     subtitle: "She sits in the corner of the page — drag her anywhere on it, "
                         + "click her for hearts, right-click her to change her size, send her "
                         + "back to her corner, or ask her for a screenshot, a web search or a "

@@ -33,6 +33,23 @@
 //      person and named, because a placeholder that says "ask me anything" is
 //      furniture pretending to be a person.
 //
+//  The desktop pet is entirely in the second register and has nothing in the
+//  first. She has no words at all — she is a sprite — so everything the user
+//  reads with her name on it is the app labelling a control: "Give Pearl a
+//  Fish", "Send Pearl Home". That is why she needs only the name from here
+//  and none of the sentences, and it is the reason the two halves of her can
+//  share one file without one of them having to be rewritten.
+//
+//  It also settles the one thing that looks like a contradiction between
+//  them. `identity` tells the model it cannot open pages, click or search;
+//  the pet's menu takes a screenshot and runs a web search. Both are true,
+//  because the pet is never the AGENT of those rows — the user is, and the
+//  browser does the work (`PearlPetMenu`: "Nothing here implements a browser
+//  feature"). Her name appears only on the rows that act on HER. A row that
+//  both named her and reached the browser would be her claiming to have
+//  browsed, which is the exact claim `identity` exists to stop; that is a
+//  test, not a convention (`PearlOneVoiceTests`).
+//
 //  ## She does not lie about herself
 //
 //  She is a small model running on this Mac that can read the page in front of
@@ -48,7 +65,20 @@ import Foundation
 enum PearlVoice {
 
     /// Her name, and the only spelling of it. Everything user-facing that
-    /// names the assistant builds from this.
+    /// names the assistant builds from this — and so, since the combine, does
+    /// everything user-facing that names the **pet**: her menu, her
+    /// accessibility label, and the Settings card that switches her on.
+    ///
+    /// That is the one part of this file which is not only the assistant's.
+    /// The pet and the assistant are the same cat, and a rename that reached
+    /// one of them and not the other would put two names for her in one app —
+    /// "Ask Pearl" in the toolbar over a menu that still said "Put Iris Away".
+    /// `PearlOneVoiceTests` is what fails when a second spelling appears.
+    ///
+    /// Everything else here stays the assistant's. The pet has no words of
+    /// her own to unify: she never speaks, so she has no greeting, no limit
+    /// and no identity paragraph — see the register note below, and the
+    /// division of labour `PearlOneVoiceTests` holds her to.
     static let name = "Pearl"
 
     /// What the action is called wherever the app offers it — the toolbar

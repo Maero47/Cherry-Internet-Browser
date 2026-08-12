@@ -223,4 +223,112 @@ final class PearlSharedSheetTests: XCTestCase {
             }
         }
     }
+
+    // MARK: - Two magnifications of one set of pixels
+
+    /// Since `pearl-pet-plus` the two features magnify the shared sheet by
+    /// different rules, and this is where they agree that that is safe.
+    ///
+    /// The runner scales its whole canvas by `PearlField`'s magnification,
+    /// which comes in HALVES (0.5 … 2.0). The pet scales one layer by
+    /// `PearlPetSize`'s multiple, which is a WHOLE number (1, 2, 3) because
+    /// nearest-neighbour at a fraction makes her one-pixel eye glint flicker
+    /// as she breathes. Both are legitimate; they are different because the
+    /// runner is a moving field seen at speed and she is a still cat you look
+    /// at.
+    ///
+    /// What makes them independent is that neither magnification is stored in
+    /// the library: `slice` hands back the raw crop, the SAME object every
+    /// time, and each consumer magnifies its own copy. `PearlPetSizeTests`
+    /// checks the pet's arithmetic against the contract; this checks it
+    /// against the pixels the runner's sheet actually delivers.
+    ///
+    /// Dies on: the sheet being re-authored at 2x (`"scale": 2`), which the
+    /// runner absorbs correctly through `image(_:frame:)`'s `scale:` argument
+    /// and the pet does not — she would silently start drawing at 0.5x, 1x and
+    /// 1.5x, and the fractional two of those are the flicker `PearlPetSize`
+    /// exists to prevent.
+    func testThePetsSizesAreWholeMultiplesOfTheRealSlicedPixels() throws {
+        for pose in PearlPetPose.allCases {
+            let slice = try XCTUnwrap(
+                library.slice(pose.frameName, frame: 0),
+                "\(pose.frameName) does not slice, so nothing below is measuring art"
+            )
+            for size in PearlPetSize.allCases {
+                let drawn = size.spriteSize(for: pose)
+                let magnification = drawn.width / CGFloat(slice.width)
+                XCTAssertEqual(
+                    magnification, CGFloat(size.multiple), accuracy: 0.0001,
+                    "\(pose.frameName) at \(size) magnifies the sheet by \(magnification), "
+                        + "not by her multiple of \(size.multiple)"
+                )
+                XCTAssertEqual(
+                    drawn.height / CGFloat(slice.height), CGFloat(size.multiple), accuracy: 0.0001,
+                    "\(pose.frameName) at \(size) is stretched: it magnifies differently "
+                        + "across than down"
+                )
+                XCTAssertEqual(
+                    magnification.truncatingRemainder(dividingBy: 1), 0,
+                    "\(pose.frameName) at \(size) lands on a fraction of a source pixel"
+                )
+            }
+        }
+    }
+
+    /// The library is a cache of RAW crops, not of rendered ones. That is the
+    /// whole reason two consumers can magnify the same frame differently at
+    /// the same moment without one of them getting the other's answer.
+    ///
+    /// Dies on: `slice` growing a size or scale parameter while the cache key
+    /// stays the frame name — at which point whichever feature asked first
+    /// decides what the other one draws.
+    func testTheLibraryHandsBothFeaturesTheSameUnmagnifiedPixels() throws {
+        let manifest = try XCTUnwrap(library.manifest)
+        XCTAssertEqual(manifest.scale, 1, "the sheet is no longer authored at 1x")
+
+        for (name, count) in PearlSpriteContract.frameCounts.sorted(by: { $0.key < $1.key }) {
+            for index in 0..<count {
+                let rect = manifest.frames(name)[index]
+                let first = try XCTUnwrap(library.slice(name, frame: index))
+                let second = try XCTUnwrap(library.slice(name, frame: index))
+                XCTAssertTrue(
+                    first === second,
+                    "\(name)[\(index)] is re-made per call, so it can be re-made per scale"
+                )
+                XCTAssertEqual(first.width, rect.w, "\(name)[\(index)] came back magnified")
+                XCTAssertEqual(first.height, rect.h, "\(name)[\(index)] came back magnified")
+            }
+        }
+    }
+
+    /// And the two magnifications have no way to hear about each other: the
+    /// field's arithmetic never mentions the pet's size and hers never
+    /// mentions the field or the world. Same shape as the runner branch's own
+    /// `testTheSimulationHasNoWayToHearAboutTheField`, one level up.
+    ///
+    /// Dies on: a helpful "make Pearl match the field" that reads
+    /// `PearlField.metrics` inside the pet, or a field scale derived from her
+    /// chosen size — either of which makes one feature's window resize change
+    /// how the other one is drawn.
+    func testTheTwoMagnificationsCannotHearAboutEachOther() throws {
+        let field = try AppSourceTree.read("Features/PearlRunner/Models/PearlField.swift")
+        for name in ["PearlPetSize", "PearlPetPose", "PearlPetPlacement"] {
+            XCTAssertFalse(field.contains(name), "the runner's field now reads \(name)")
+        }
+
+        for path in [
+            "Features/PearlPet/Models/PearlPetSize.swift",
+            "Features/PearlPet/Models/PearlPetPlacement.swift",
+            "Features/PearlPet/Views/PearlPetView.swift",
+            "Features/PearlPet/Views/PearlPetOverlay.swift",
+        ] {
+            let source = try AppSourceTree.read(path)
+            for name in ["PearlField", "PearlWorld", "PearlRunnerGame"] {
+                let code = source.split(separator: "\n", omittingEmptySubsequences: false)
+                    .map { String($0).components(separatedBy: "//").first ?? "" }
+                    .joined(separator: "\n")
+                XCTAssertFalse(code.contains(name), "\(path) now reads \(name)")
+            }
+        }
+    }
 }

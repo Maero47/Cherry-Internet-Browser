@@ -169,7 +169,7 @@ final class PearlPetView: NSView {
 
         setAccessibilityElement(true)
         setAccessibilityRole(.button)
-        setAccessibilityLabel("Pearl")
+        setAccessibilityLabel(PearlVoice.name)
         // Deliberately no `toolTip` and no cursor rect: both are rectangular,
         // and a tooltip that appears while the pointer is over the page beside
         // her ear is the same intrusion as a stolen click, in slow motion.
@@ -538,13 +538,13 @@ final class PearlPetView: NSView {
             )
         }
         items.append(
-            .action("Give Pearl a Fish", systemImage: "fish") { [weak self] in
+            .action("Give \(PearlVoice.name) a Fish", systemImage: "fish") { [weak self] in
                 self?.feed()
             }
         )
         items.append(.separator)
         items.append(
-            .submenu("Pearl's Size", systemImage: "arrow.up.left.and.arrow.down.right") {
+            .submenu("\(PearlVoice.name)'s Size", systemImage: "arrow.up.left.and.arrow.down.right") {
                 PearlPetSize.allCases.map { choice -> CherryMenuItem in
                     CherryMenuItem.action(choice.title, on: choice == size) { [weak self] in
                         self?.resize(to: choice)
@@ -556,14 +556,14 @@ final class PearlPetView: NSView {
             // Disabled rather than absent when she is already there: the row
             // is the answer to "how do I undo this", and a row that vanishes
             // once you no longer need it is a row you cannot learn.
-            .action("Send Pearl Home", systemImage: "arrow.uturn.backward",
+            .action("Send \(PearlVoice.name) Home", systemImage: "arrow.uturn.backward",
                     enabled: !spot.isHome) { [weak self] in
                 self?.sendHome()
             }
         )
         items.append(.separator)
         items.append(
-            .action("Put Pearl Away", systemImage: "moon.zzz") { [weak self] in
+            .action("Put \(PearlVoice.name) Away", systemImage: "moon.zzz") { [weak self] in
                 self?.onPutAway?()
             }
         )
