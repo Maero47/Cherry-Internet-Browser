@@ -334,32 +334,20 @@ final class ExtensionRuntimeTests: XCTestCase {
 
     // MARK: - Reading the app's own sources
 
-    /// `…/Internet Browser/Internet Browser` — the app source root, reached
-    /// from this file rather than from any bundle, because the claim is about
-    /// the SOURCE tree (same approach as `TabStripUntouchedTests`).
-    private var appSourceRoot: URL {
-        URL(fileURLWithPath: #filePath)   // …/Internet BrowserTests/ExtensionRuntimeTests.swift
-            .deletingLastPathComponent()  // …/Internet BrowserTests
-            .deletingLastPathComponent()  // …/Internet Browser (project dir)
-            .appendingPathComponent("Internet Browser")
-    }
-
+    /// Both source-level tests above go through `AppSourceTree`, which reads
+    /// the tree under a deadline. Reading it directly is what used to hang
+    /// this whole target: the checkout lives under `~/Documents`, macOS gates
+    /// that read behind a permission dialog nobody can answer during
+    /// `xcodebuild test`, and `open(2)` never returns. See `AppSourceTree`.
     private func appSource(_ relativePath: String) throws -> String {
-        try String(contentsOf: appSourceRoot.appendingPathComponent(relativePath), encoding: .utf8)
+        try AppSourceTree.read(relativePath)
     }
 
     /// Visits every Swift file under the app source root, handing the callback
     /// the path relative to that root and the file's contents.
     private func forEachAppSourceFile(_ body: (String, String) throws -> Void) throws {
-        let root = appSourceRoot
-        let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil)
-        var visited = 0
-        while let url = enumerator?.nextObject() as? URL {
-            guard url.pathExtension == "swift" else { continue }
-            let relative = url.path.replacingOccurrences(of: root.path + "/", with: "")
-            try body(relative, try String(contentsOf: url, encoding: .utf8))
-            visited += 1
-        }
-        XCTAssertGreaterThan(visited, 100, "app source tree not found — the scan below proves nothing")
+        let files = try AppSourceTree.swiftFiles()
+        for file in files { try body(file.path, file.contents) }
+        XCTAssertGreaterThan(files.count, 100, "app source tree not found — the scan below proves nothing")
     }
 }

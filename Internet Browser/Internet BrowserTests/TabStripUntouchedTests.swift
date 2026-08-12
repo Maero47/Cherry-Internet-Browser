@@ -22,26 +22,12 @@ import XCTest
 
 final class TabStripUntouchedTests: XCTestCase {
 
-    /// `…/Internet Browser/Internet Browser` — the app source root, reached
-    /// from this file's own location rather than from any bundle, because the
-    /// claim is about the SOURCE tree.
-    private var sourceRoot: URL {
-        URL(fileURLWithPath: #filePath)              // …/Internet BrowserTests/TabStripUntouchedTests.swift
-            .deletingLastPathComponent()             // …/Internet BrowserTests
-            .deletingLastPathComponent()             // …/Internet Browser (project dir)
-            .appendingPathComponent("Internet Browser")
-    }
-
+    /// The app source root — and the reads of it — come from `AppSourceTree`,
+    /// which holds them to a deadline. Reading the tree directly is what used
+    /// to hang the whole test target when the checkout sits somewhere macOS
+    /// gates behind a Files-and-Folders dialog; see `AppSourceTree`.
     func testTheRejectedWidthModelDoesNotExist() throws {
-        let enumerator = FileManager.default.enumerator(
-            at: sourceRoot, includingPropertiesForKeys: nil
-        )
-        var found: [String] = []
-        while let url = enumerator?.nextObject() as? URL {
-            if url.lastPathComponent == "TabStripMetrics.swift" {
-                found.append(url.path)
-            }
-        }
+        let found = try AppSourceTree.paths(named: "TabStripMetrics.swift")
         XCTAssertEqual(found, [], "TabStripMetrics was rejected and must not be in this branch")
     }
 
@@ -62,8 +48,7 @@ final class TabStripUntouchedTests: XCTestCase {
              "b7be556ddc99c230b32b9a168d48e5ca87ec36c0230680daa4a24547a9d20816"),
         ]
         for pin in pins {
-            let url = sourceRoot.appendingPathComponent(pin.path)
-            let data = try Data(contentsOf: url)
+            let data = try AppSourceTree.bytes(of: pin.path)
             let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
             XCTAssertEqual(digest, pin.sha256, "\(pin.path) moved — the tab strip must not change on this branch")
         }
