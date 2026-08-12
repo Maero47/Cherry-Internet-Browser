@@ -82,6 +82,52 @@ final class PearlRunnerOfferTests: XCTestCase {
             )
         }
     }
+
+    // MARK: Placement — above the failure text, not below it
+
+    // Presence is not placement. `FailureColumn`'s content is a tuple in
+    // source order, and `Mirror` walks a tuple in that order, so "the runner
+    // is reached before the title" is exactly "the runner is drawn above the
+    // title". This is what dies if the section is moved back under the
+    // actions, or under the address, or anywhere below the copy.
+
+    private enum ColumnLandmark: Equatable {
+        case runner
+        case title
+    }
+
+    private func landmarks(in value: Any, title: String, depth: Int = 0) -> [ColumnLandmark] {
+        if value is PearlRunnerSection { return [.runner] }
+        if let text = value as? Text {
+            return String(describing: text).contains(title) ? [.title] : []
+        }
+        guard depth < 60 else { return [] }
+        return Mirror(reflecting: value).children.flatMap {
+            landmarks(in: $0.value, title: title, depth: depth + 1)
+        }
+    }
+
+    func testTheGameSitsAboveTheFailureCopy() {
+        let offline = failure(.offline)
+        let view = NavigationFailureView(
+            failure: offline,
+            isRetrying: false,
+            canGoBack: false,
+            onRetry: {},
+            onBack: {}
+        )
+
+        let order = landmarks(in: view.body, title: offline.title)
+
+        XCTAssertEqual(
+            order.first, .runner,
+            "the runner must be reached before the title: Chrome puts the dino above the copy"
+        )
+        XCTAssertTrue(
+            order.contains(.title),
+            "the title must still be in the column — a placement test that cannot see it proves nothing"
+        )
+    }
 }
 
 // MARK: - Lifecycle: nothing runs behind a page that came back
@@ -269,6 +315,200 @@ final class PearlRunnerLifecycleTests: XCTestCase {
         XCTAssertTrue(driver.isRunning)
         controller.shutDown()
         XCTAssertFalse(driver.isRunning)
+    }
+}
+
+// MARK: - Space starts the run, and only where it is allowed to
+
+/// The Chrome-dino path, tested where it can actually be tested. The host
+/// cannot activate the app or post a trusted key event, so the rule for who
+/// owns the space bar lives in `PearlSpaceKey` and is driven here through the
+/// controller — the same call the key handler makes, with the same arguments.
+@MainActor
+final class PearlSpaceToStartTests: XCTestCase {
+
+    private var suiteName: String!
+    private var defaults: UserDefaults!
+
+    private let allFamilies: [NavigationFailure.Family] = [
+        .offline, .hostNotFound, .connectionRefused, .connectionLost, .timedOut,
+        .tooManyRedirects, .cancelled, .unsupportedScheme, .blockedPort,
+        .secureConnectionFailed, .unrecognised,
+    ]
+
+    override func setUp() {
+        super.setUp()
+        suiteName = "PearlSpaceToStartTests-\(UUID().uuidString)"
+        defaults = UserDefaults(suiteName: suiteName)
+    }
+
+    override func tearDown() {
+        defaults.removePersistentDomain(forName: suiteName)
+        super.tearDown()
+    }
+
+    private func makeController(driver: PearlFrameDriving, clock: TestClock) -> PearlRunnerController {
+        PearlRunnerController(
+            seed: 42,
+            driver: driver,
+            clock: { clock.now },
+            store: PearlHighScoreStore(defaults: defaults)
+        )
+    }
+
+    private func offersRunner(_ family: NavigationFailure.Family) -> Bool {
+        NavigationFailure(
+            family: family,
+            url: URL(string: "https://example.invalid/"),
+            systemDescription: "system sentence",
+            domain: NSURLErrorDomain,
+            code: -1
+        ).offersPearlRunner
+    }
+
+    /// One space bar and Pearl is running. No button was pressed first, and
+    /// the press that started the run is not also her first jump.
+    func testSpaceStartsARunOnTheOfflineSurface() {
+        let driver = SpyDriver()
+        let controller = makeController(driver: driver, clock: TestClock())
+        XCTAssertFalse(controller.hasStarted)
+        XCTAssertFalse(driver.isRunning)
+
+        let meaning = controller.spacePressed(
+            offersRunner: offersRunner(.offline),
+            runnerHasKeyboardFocus: true
+        )
+
+        XCTAssertEqual(meaning, .start)
+        XCTAssertTrue(controller.hasStarted, "space must be enough to ask for a run")
+        XCTAssertTrue(driver.isRunning, "and the run must actually be ticking")
+        XCTAssertFalse(controller.input.jump, "the starting press is not a held jump")
+    }
+
+    /// Every other family is an instruction screen. Space there belongs to the
+    /// scroll view and comes back untouched.
+    func testSpaceStartsNothingOnAnyOtherFailureFamily() {
+        for family in allFamilies where family != .offline {
+            let driver = SpyDriver()
+            let controller = makeController(driver: driver, clock: TestClock())
+
+            let meaning = controller.spacePressed(
+                offersRunner: offersRunner(family),
+                runnerHasKeyboardFocus: true
+            )
+
+            XCTAssertEqual(meaning, .notOurs, "\(family) claimed the space bar")
+            XCTAssertFalse(controller.hasStarted, "\(family) started a game")
+            XCTAssertFalse(driver.isRunning, "\(family) started ticking")
+        }
+    }
+
+    /// The other half of the rule: a runner that does not hold the keyboard
+    /// cannot take a keystroke that belongs to the omnibox, a sheet, the find
+    /// bar or the page.
+    func testSpaceIsNotOursWhenSomethingElseHoldsTheKeyboard() {
+        let driver = SpyDriver()
+        let controller = makeController(driver: driver, clock: TestClock())
+
+        let meaning = controller.spacePressed(
+            offersRunner: offersRunner(.offline),
+            runnerHasKeyboardFocus: false
+        )
+
+        XCTAssertEqual(meaning, .notOurs)
+        XCTAssertFalse(controller.hasStarted, "an unfocused runner must not start on someone else's key")
+        XCTAssertFalse(driver.isRunning)
+    }
+
+    /// Once the run is going, space is the jump. It must not restart, reset or
+    /// re-begin anything: the run in flight survives it, and Pearl leaves the
+    /// ground.
+    func testARunningGameTreatsSpaceAsJumpNotRestart() {
+        let driver = SpyDriver()
+        let clock = TestClock()
+        let controller = makeController(driver: driver, clock: clock)
+        controller.spacePressed(offersRunner: true, runnerHasKeyboardFocus: true)
+
+        for _ in 0..<60 {
+            clock.tick()
+            driver.tick?()
+        }
+        let frameBefore = controller.game.frame
+        let scoreBefore = controller.game.score
+        XCTAssertGreaterThan(frameBefore, 0)
+        XCTAssertGreaterThan(scoreBefore, 0)
+        XCTAssertEqual(controller.game.phase, .running)
+
+        let meaning = controller.spacePressed(offersRunner: true, runnerHasKeyboardFocus: true)
+
+        XCTAssertEqual(meaning, .jump)
+        XCTAssertTrue(controller.input.jump, "the press must reach the simulation as a jump")
+        XCTAssertEqual(controller.game.frame, frameBefore, "a running game must not be restarted by space")
+        XCTAssertEqual(controller.game.score, scoreBefore, "and must not lose the score it had")
+
+        for _ in 0..<10 {
+            clock.tick()
+            driver.tick?()
+        }
+        XCTAssertTrue(controller.game.isAirborne, "space on a running game jumps")
+
+        controller.spaceReleased()
+        XCTAssertFalse(controller.input.jump, "releasing must let a tap jump be a tap")
+    }
+
+    /// The crash screen keeps its own meaning, and the press that clears it
+    /// does not carry into the new run as a held jump.
+    func testSpaceOnTheCrashScreenRunsAgain() {
+        let driver = SpyDriver()
+        let clock = TestClock()
+        let controller = makeController(driver: driver, clock: clock)
+        controller.spacePressed(offersRunner: true, runnerHasKeyboardFocus: true)
+
+        var safety = 0
+        while driver.isRunning && safety < 5000 {
+            clock.tick()
+            driver.tick?()
+            safety += 1
+        }
+        XCTAssertEqual(controller.game.phase, .crashed)
+
+        let meaning = controller.spacePressed(offersRunner: true, runnerHasKeyboardFocus: true)
+
+        XCTAssertEqual(meaning, .restart)
+        XCTAssertEqual(controller.game.phase, .running)
+        XCTAssertEqual(controller.game.score, 0)
+        XCTAssertTrue(driver.isRunning)
+        XCTAssertFalse(controller.input.jump)
+    }
+
+    /// The rule itself, read straight: every combination that is not "offline,
+    /// focused" is somebody else's key.
+    func testTheRuleRefusesEverythingButTheFocusedOfflineSurface() {
+        XCTAssertEqual(
+            PearlSpaceKey.meaning(offersRunner: false, runnerHasKeyboardFocus: true,
+                                  hasStarted: false, phase: .running),
+            .notOurs
+        )
+        XCTAssertEqual(
+            PearlSpaceKey.meaning(offersRunner: true, runnerHasKeyboardFocus: false,
+                                  hasStarted: false, phase: .running),
+            .notOurs
+        )
+        XCTAssertEqual(
+            PearlSpaceKey.meaning(offersRunner: true, runnerHasKeyboardFocus: true,
+                                  hasStarted: false, phase: .running),
+            .start
+        )
+        XCTAssertEqual(
+            PearlSpaceKey.meaning(offersRunner: true, runnerHasKeyboardFocus: true,
+                                  hasStarted: true, phase: .running),
+            .jump
+        )
+        XCTAssertEqual(
+            PearlSpaceKey.meaning(offersRunner: true, runnerHasKeyboardFocus: true,
+                                  hasStarted: true, phase: .crashed),
+            .restart
+        )
     }
 }
 

@@ -73,6 +73,44 @@ nonisolated enum FailurePalette {
 
 // MARK: - Shared layout
 
+/// The column's own numbers, in one place because something outside the column
+/// now needs them: the runner's field is sized against this measure and these
+/// margins (`PearlField`), so a change here has to reach it rather than be
+/// copied into it.
+nonisolated enum FailureLayout {
+    /// The reading measure. A failure sentence wider than this stops being a
+    /// sentence and starts being a wall.
+    static let measure = 560.0
+    /// Kept on each side of the column, at every window width.
+    static let horizontalMargin = 40.0
+    static let verticalMargin = 56.0
+    /// Between the column's rows.
+    static let rowSpacing = 16.0
+}
+
+/// The size of the whole surface a failure screen was given — the window's
+/// content area, not the column's share of it.
+///
+/// Published through the environment rather than handed to the column's
+/// content builder, and that is deliberate twice over. A builder taking the
+/// size would be a closure, and `PearlRunnerSurfaceTests` proves the runner is
+/// drawn above the failure copy by walking the column's content with `Mirror`
+/// — which can see a stored view tree and cannot see into a closure. It is
+/// also the smaller change: only the one row that cares reads it.
+private struct FailureContainerSizeKey: EnvironmentKey {
+    /// Zero until a `FailureColumn` measures itself. Anything sized against
+    /// this must therefore be sensible at zero; `PearlField` answers with its
+    /// floor.
+    static let defaultValue = CGSize.zero
+}
+
+extension EnvironmentValues {
+    var failureContainerSize: CGSize {
+        get { self[FailureContainerSizeKey.self] }
+        set { self[FailureContainerSizeKey.self] = newValue }
+    }
+}
+
 /// The column both failure screens are laid out in: one measure, one set of
 /// margins, so the error surface and the certificate interstitial do not read
 /// as two different products.
@@ -87,14 +125,17 @@ struct FailureColumn<Content: View>: View {
         // stack has.
         GeometryReader { geometry in
             ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
+                VStack(alignment: .leading, spacing: FailureLayout.rowSpacing) {
                     content
                 }
-                .frame(maxWidth: 560, alignment: .leading)
-                .padding(.horizontal, 40)
-                .padding(.vertical, 56)
+                .frame(maxWidth: FailureLayout.measure, alignment: .leading)
+                .padding(.horizontal, FailureLayout.horizontalMargin)
+                .padding(.vertical, FailureLayout.verticalMargin)
                 .frame(maxWidth: .infinity, minHeight: geometry.size.height, alignment: .center)
             }
+            // What the runner's field is sized against. The column's own copy
+            // ignores it and keeps its measure.
+            .environment(\.failureContainerSize, geometry.size)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(FailurePalette.surface)

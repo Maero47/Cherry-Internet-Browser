@@ -12,20 +12,55 @@
 //  collides, when night falls — already happened in the model, where tests
 //  can see it.
 //
-//  ## The offer
+//  ## Where it sits, and why the copy still reads first
 //
-//  The game never starts itself. `NavigationFailureView` is a screen for
-//  reading what went wrong, and the failure copy, the address and Retry stay
-//  exactly as they were; below them, on the offline family only, sits one
-//  quiet line with a button. Only choosing it builds the game surface or
-//  starts a single frame of simulation.
+//  Pearl stands at the top of the offline screen, in the slot the failure
+//  symbol holds on every other family — which is where Chrome puts the dino,
+//  and it is above the failure text without having pushed any of it down: the
+//  mark is wordless artwork the same height as the symbol it replaces, and
+//  the button-and-caption offer that used to sit under the actions is gone.
+//  So the title is still the first *text* on the screen, still 22pt semibold
+//  against an 11pt dimmed caption, and the address and Retry have not moved
+//  at all.
+//
+//  Once a run starts the canvas does grow into that slot and the copy moves
+//  down — but by then the user is playing rather than reading, and every word
+//  of the failure, the address and Retry are intact directly below it.
+//
+//  ## How big it gets
+//
+//  As big as the window allows, up to twice the world's own measure: a run on
+//  a full-screen window is drawn 1120×300 rather than 560×150. The field is
+//  wider than the reading column it is a row of, so it reports the column's
+//  width to the layout and bleeds past both edges — centred on the same axis
+//  as the copy, stopping at the same 40pt margin the copy keeps.
+//
+//  The size is one number, `PearlField`'s magnification, applied by the
+//  canvas's own `scaleBy`. Nothing in the simulation is told about it: the
+//  world is still 560×150, the collision boxes are still the sprite
+//  contract's, and a jump still clears exactly what it cleared. What grows is
+//  everything drawn — Pearl, the trees, the gulls, the ground, the score.
+//  What does not grow is the idle mark: it stands in for the failure symbol
+//  and has to stay the symbol's height, or the copy below it moves.
+//
+//  ## Starting
+//
+//  The game still never starts itself: no frame is simulated, and no driver
+//  exists, until the player asks. What changed is how they ask. On the
+//  offline surface a space bar starts the run outright — no button first —
+//  and `PearlSpaceKey` is the rule for when that is allowed to happen. A
+//  press the rule calls `notOurs` is returned `.ignored`, so it goes on up
+//  the responder chain to the scroll view exactly as it did before.
 //
 //  ## Keys
 //
-//  Space and ↑ jump, ↓ ducks — but only while the game surface itself holds
+//  Space and ↑ jump, ↓ ducks — but only while the runner's own slot holds
 //  keyboard focus. The handlers hang off the focused view, so an unfocused
 //  game cannot see, let alone steal, keys from the browser; losing focus
-//  pauses the driver the same tick.
+//  pauses the driver the same tick. The idle mark takes focus through
+//  `defaultFocus` at automatic priority, which yields to anything the user
+//  has already focused — the offline screen asks for the keyboard, it does
+//  not take it off the omnibox.
 //
 //  ## Motion
 //
@@ -39,36 +74,110 @@
 
 import SwiftUI
 
-// MARK: - The offer
+// MARK: - The mark, and the run it becomes
 
 struct PearlRunnerSection: View {
+
+    /// Whether this failure screen offers the runner at all. Passed in rather
+    /// than assumed: the same fact the layout branched on is the fact the key
+    /// rule is evaluated with, so a mistake that builds this section on an
+    /// instruction screen still cannot make space start a game there.
+    let offersRunner: Bool
+
+    /// The whole surface the failure screen was given, not the column's share
+    /// of it. A run's field is sized against this; the idle mark ignores it.
+    @Environment(\.failureContainerSize) private var available
 
     @StateObject private var controller = PearlRunnerController()
     @FocusState private var isFocused: Bool
 
     var body: some View {
-        if controller.hasStarted {
-            PearlRunnerSurface(controller: controller, isFocused: $isFocused)
-        } else {
-            HStack(spacing: 10) {
-                Button("Play Pearl’s Runner") {
-                    controller.begin()
-                    isFocused = true
-                }
-                .buttonStyle(.bordered)
-
-                Text(offerCaption)
-                    .font(.system(size: 12))
-                    .foregroundStyle(FailurePalette.body)
+        Group {
+            if controller.hasStarted {
+                PearlRunnerSurface(
+                    controller: controller,
+                    offersRunner: offersRunner,
+                    available: available,
+                    isFocused: $isFocused
+                )
+            } else {
+                idleMark
             }
-            .padding(.top, 2)
         }
+        // Automatic priority: this asks for the keyboard when the offline
+        // screen appears and nothing else has claimed it, and yields when
+        // something has. The runner never pulls focus off the omnibox.
+        .defaultFocus($isFocused, true)
     }
 
-    private var offerCaption: String {
+    /// Pearl standing still, where the failure symbol stands on every other
+    /// screen. Artwork, not a control: there is no button, nothing animates,
+    /// and no frame is simulated until space arrives.
+    private var idleMark: some View {
+        HStack(spacing: 10) {
+            PearlStillMark()
+
+            Text(idleCaption)
+                .font(.system(size: 11))
+                .foregroundStyle(FailurePalette.body)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .contentShape(Rectangle())
+        .focusable()
+        .focused($isFocused)
+        .focusEffectDisabled()
+        .onKeyPress(keys: [.space], phases: [.down, .up]) { press in
+            guard press.phase == .down else {
+                controller.spaceReleased()
+                return .handled
+            }
+            let meaning = controller.spacePressed(
+                offersRunner: offersRunner,
+                runnerHasKeyboardFocus: isFocused
+            )
+            // A press that was never ours goes back up the responder chain,
+            // where space still scrolls the failure column.
+            return meaning == .notOurs ? .ignored : .handled
+        }
+        .onTapGesture {
+            isFocused = true
+            controller.begin()
+        }
+        .accessibilityElement()
+        .accessibilityLabel("Pearl’s Runner")
+        .accessibilityHint("Press space to run while you wait")
+    }
+
+    private var idleCaption: String {
         controller.highScore > 0
-            ? "While you wait. Best \(controller.highScore)."
-            : "While you wait. Space to jump, ↓ to duck."
+            ? "Space to run while you wait. Best \(controller.highScore)."
+            : "Space to run while you wait. ↓ ducks."
+    }
+}
+
+/// Pearl at rest, at the optical size of the symbol she stands in for. Drawn
+/// from the sprite the game itself runs on, so the mark and the runner are
+/// visibly the same cat; in placeholder mode it is the same silhouette the
+/// canvas draws.
+private struct PearlStillMark: View {
+
+    /// Matches the 26pt symbol's drawn height closely enough that the copy
+    /// below sits where it sits on every other failure screen.
+    private static let height = 30.0
+
+    var body: some View {
+        Group {
+            if let image = PearlSpriteLibrary.shared.image("run", frame: 0) {
+                image.resizable()
+            } else {
+                RoundedRectangle(cornerRadius: 4).fill(FailurePalette.body)
+            }
+        }
+        .frame(
+            width: Self.height * PearlSpriteContract.run.width / PearlSpriteContract.run.height,
+            height: Self.height
+        )
+        .accessibilityHidden(true)
     }
 }
 
@@ -77,9 +186,15 @@ struct PearlRunnerSection: View {
 private struct PearlRunnerSurface: View {
 
     @ObservedObject var controller: PearlRunnerController
+    let offersRunner: Bool
+    let available: CGSize
     var isFocused: FocusState<Bool>.Binding
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var metrics: PearlField.Metrics {
+        PearlField.metrics(availableWidth: available.width, availableHeight: available.height)
+    }
 
     var body: some View {
         PearlRunnerCanvas(
@@ -88,8 +203,10 @@ private struct PearlRunnerSurface: View {
             isTicking: controller.isTicking,
             reduceMotion: reduceMotion
         )
-        .aspectRatio(PearlWorld.width / PearlWorld.height, contentMode: .fit)
-        .frame(maxWidth: PearlWorld.width)
+        // The field's own size, not the column's. Exact rather than an aspect
+        // ratio inside a maximum: the magnification is `PearlField`'s answer,
+        // and the canvas is drawn at precisely it.
+        .frame(width: metrics.width, height: metrics.height)
         .overlay(LibraryShape.rowShape.stroke(FailurePalette.hairline, lineWidth: 1))
         .contentShape(Rectangle())
         .focusable()
@@ -106,7 +223,23 @@ private struct PearlRunnerSurface: View {
                 controller.restart()
             }
         }
-        .onKeyPress(keys: [.space, .upArrow], phases: [.down, .up]) { press in
+        .onKeyPress(keys: [.space], phases: [.down, .up]) { press in
+            guard press.phase == .down else {
+                controller.spaceReleased()
+                return .handled
+            }
+            // A run is in flight or crashed, so this can only come back as
+            // jump or restart — but it goes through the same rule as the
+            // press that started the run, not a second copy of it.
+            let meaning = controller.spacePressed(
+                offersRunner: offersRunner,
+                runnerHasKeyboardFocus: isFocused.wrappedValue
+            )
+            return meaning == .notOurs ? .ignored : .handled
+        }
+        .onKeyPress(keys: [.upArrow], phases: [.down, .up]) { press in
+            // ↑ is the jump's second key. It never starts a run: the offline
+            // screen promises one key for that, and it is space.
             if press.phase == .down {
                 if controller.game.phase == .crashed {
                     controller.input.jump = false
@@ -135,10 +268,10 @@ private struct PearlRunnerSurface: View {
             }
         }
         .onAppear {
-            // The surface exists because the player clicked Play; hand it the
-            // keyboard immediately so the first space bar is a jump. If the
-            // window declines, the overlay says "Click to run" and the tap
-            // gesture takes the same path.
+            // The surface exists because the player asked for a run, with a
+            // key or a click; keep the keyboard on it so the next space bar is
+            // a jump. If the window declines, the overlay says "Click to run"
+            // and the tap gesture takes the same path.
             isFocused.wrappedValue = true
         }
         .onDisappear {
@@ -146,6 +279,15 @@ private struct PearlRunnerSurface: View {
             // may keep running behind it.
             controller.shutDown()
         }
+        // Full bleed. The field is wider than the reading column it is a row
+        // of, so it reports the column's width to the layout and draws past
+        // both edges of it — centred on the same axis as the copy below,
+        // stopping at the same margin the copy keeps. A field that already
+        // fits inside the column bleeds by zero and this does nothing.
+        .padding(
+            .horizontal,
+            -PearlField.bleed(availableWidth: available.width, availableHeight: available.height)
+        )
         .accessibilityLabel("Pearl’s Runner")
         .accessibilityValue("Score \(controller.game.score)")
         .accessibilityHint("Space jumps, down arrow ducks")

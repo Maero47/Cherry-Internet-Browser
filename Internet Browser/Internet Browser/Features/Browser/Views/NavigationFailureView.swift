@@ -21,9 +21,27 @@
 //  `accessibilityReduceMotion` replaces even that with the word.
 //
 //  The one exception is chosen, not shown: the offline family — and only it,
-//  see `NavigationFailure.offersPearlRunner` — appends a one-line offer of
-//  Pearl's runner below the actions. The offer itself is as still as the
-//  rest of the screen; nothing moves unless the user starts the game.
+//  see `NavigationFailure.offersPearlRunner` — puts Pearl's runner in the top
+//  slot, in place of the symbol. It is as still as the rest of the screen;
+//  nothing moves unless the user starts the game.
+//
+//  ## Why the game is above the copy and the copy still reads first
+//
+//  The runner does not sit between the reader and anything. It takes the one
+//  slot on this screen that never held a word — the symbol's — and at rest it
+//  is the same wordless mark at the same height, so the title, the
+//  explanation, the address and Retry are at the exact distance from the top
+//  they are on every other failure family. Nothing was pushed down and
+//  nothing was demoted: the first *text* is still the 22pt title, and the
+//  runner's own caption is 11pt in the body tone beside the mark.
+//
+//  A started run is the one row on either of these screens that is sized
+//  against the window rather than the column: it grows to as much as twice
+//  the world's own measure and hangs past the column's edges, centred on the
+//  same axis, stopping at the same margin (`PearlField`). That is why the
+//  column publishes its container size through the environment. The copy is
+//  unaffected — it keeps `FailureLayout.measure` at every window width, and
+//  the mark it sits under while nobody is playing never changes size at all.
 //
 
 import SwiftUI
@@ -40,10 +58,21 @@ struct NavigationFailureView: View {
 
     var body: some View {
         FailureColumn {
-            Image(systemName: failure.symbolName)
-                .font(.system(size: 26, weight: .regular))
-                .foregroundStyle(FailurePalette.body)
-                .accessibilityHidden(true)
+            if failure.offersPearlRunner {
+                // The wait screen's game, where Chrome puts the dino: above
+                // the failure text, in the slot the symbol holds elsewhere.
+                // At rest it is a still mark of the symbol's height, so no
+                // word below it moved; it starts nothing on its own. Once a
+                // run starts the field is sized against the window rather
+                // than this column, and bleeds past its measure — see
+                // `PearlField`.
+                PearlRunnerSection(offersRunner: failure.offersPearlRunner)
+            } else {
+                Image(systemName: failure.symbolName)
+                    .font(.system(size: 26, weight: .regular))
+                    .foregroundStyle(FailurePalette.body)
+                    .accessibilityHidden(true)
+            }
 
             Text(verbatim: failure.title)
                 .font(.system(size: 22, weight: .semibold))
@@ -67,14 +96,6 @@ struct NavigationFailureView: View {
             }
 
             actions
-
-            if failure.offersPearlRunner {
-                // The wait screen's game. The failure copy, the address and
-                // Retry above keep their place and their prominence; this is
-                // an offer at the bottom, and it starts nothing on its own.
-                PearlRunnerSection()
-                    .padding(.top, 8)
-            }
 
             if let diagnostic = failure.diagnosticLine {
                 // Only the unrecognised family gets here. The domain and code
