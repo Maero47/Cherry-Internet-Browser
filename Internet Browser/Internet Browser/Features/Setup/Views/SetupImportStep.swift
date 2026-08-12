@@ -50,8 +50,7 @@ struct SetupImportStep: View {
         VStack(alignment: .leading, spacing: SetupMetrics.betweenCards) {
             SetupStepMasthead(
                 number: 3, total: SetupWizardModel.questionCount,
-                question: "Anything to bring over?",
-                subtitle: "Bookmarks and history from another browser on this Mac."
+                question: "Anything to bring over?"
             )
             .padding(.bottom, SetupMetrics.mastheadToControls - SetupMetrics.betweenCards)
 

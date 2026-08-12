@@ -96,11 +96,12 @@ final class SetupWizardModel {
         return Double(stepIndex) / Double(Self.steps.count - 1)
     }
 
-    /// Whether the small Pearl belongs in the footer on this step. She is
-    /// there for the four question steps in the middle and nowhere else: on
-    /// the welcome and on the last step she is already on the page at full
-    /// size, and two Pearls at once is a mascot with no idea where it lives.
-    var showsFooterCompanion: Bool { !isFirstStep && !isLastStep }
+    // Whether Pearl is on a given step is no longer a question this model
+    // answers. She used to be a permanent small tenant of the footer on the
+    // middle steps, which was a fact about the flow; she now ARRIVES once per
+    // step and is spent when the user skips her or moves on, which is a fact
+    // about her — so `PearlIntroDirector` holds it, next to `PearlReactions`,
+    // and this model keeps holding navigation and nothing else.
 
     func advance() {
         if isLastStep {

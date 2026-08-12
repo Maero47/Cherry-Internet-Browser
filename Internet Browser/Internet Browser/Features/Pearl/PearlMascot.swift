@@ -12,13 +12,18 @@
 //
 //  ## Where she is, and where she deliberately is not
 //
-//  She earns four places:
+//  She earns three places:
 //
 //    - the wizard's welcome, where she introduces herself and is the page;
-//    - the wizard's footer on the four question steps, small, where she is
-//      the thing the hearts come out of when a choice is made;
-//    - the wizard's last step, where she signs off;
+//    - the top of each of the wizard's five question steps, where she ARRIVES
+//      once, large, says what the step is for in a speech bubble, and is gone
+//      the moment the user skips her or moves on;
 //    - the three "you have none of these yet" library screens, asleep.
+//
+//  She used to sit small in the footer for the whole run instead of arriving.
+//  That is retired: a 34pt cat parked under four consecutive screens is a
+//  resident, and a resident is furniture. The hearts went with her, and see
+//  `PearlHeartBurst` for why they were never seen from down there.
 //
 //  She is deliberately absent from: the homepage (a mascot on a surface the
 //  user sees on every new tab, over a picture they chose, is wallpaper); the
@@ -52,10 +57,10 @@ enum PearlMascot {
         case waving = "PearlWave"
         /// Up on her back legs, paws lifted, mid-celebration. The last step.
         case delighted = "PearlDelighted"
-        /// Compact, front-on, tail wrapped — drawn to survive being 34pt
-        /// tall, which is why it is a separate drawing and not the hero
-        /// shrunk down: the hero's raised paw and long tail turn to mush at
-        /// that size.
+        /// Compact, front-on, tail wrapped. A separate drawing and not the
+        /// hero re-used: she sits BESIDE her speech bubble on the question
+        /// steps, and the hero's raised paw and long tail make a tall narrow
+        /// silhouette that would take the bubble's width away from it.
         case sitting = "PearlSitting"
         /// Curled up asleep. The library screens that have nothing in them.
         case curled = "PearlCurled"
@@ -80,14 +85,20 @@ enum PearlMascot {
     /// what pays for that, not the paragraph's breathing room.
     static let heroHeight: CGFloat = 196
 
-    /// The wizard footer on the question steps. Small enough to be a
-    /// companion rather than a participant, big enough that her ears and eyes
-    /// still separate.
-    static let companionHeight: CGFloat = 34
-
-    /// The last step, where she comes back on stage to sign off beside the
-    /// one card that step has.
-    static let farewellHeight: CGFloat = 132
+    /// Her arrival at the top of a question step, beside her speech bubble.
+    ///
+    /// This number is the whole difference between a mascot and a character.
+    /// At the 34pt she used to be drawn at in the footer she was a decoration
+    /// somebody put in the corner; at 120 she is the first thing on the step
+    /// and the reason you read the next line. It is also what makes her
+    /// hearts visible at all — they are sized and contained relative to THIS
+    /// (see `PearlHeartBurst`), so a bigger Pearl is literally bigger hearts
+    /// with room to fly inside her own frame.
+    ///
+    /// Bounded above by the step still being answerable: at 120 plus the gap
+    /// under her, the step's question is on screen and the first card breaks
+    /// the fold rather than starting below it.
+    static let introHeight: CGFloat = 120
 
     /// A library screen with nothing in it yet.
     static let restingHeight: CGFloat = 104
@@ -196,6 +207,17 @@ struct PearlPortrait: View {
     /// itself identically five times is noise.
     let label: String
 
+    /// `PearlReactions.pulse`, or 0 where she does not react at all.
+    ///
+    /// Her hearts hang off the PORTRAIT and not off the call site, which is
+    /// the load-bearing part: the burst is sized in fractions of the span it
+    /// is handed, and this is the only place in the codebase that hands it
+    /// one — always `height`, never anything a caller picked. The previous
+    /// version let each site build its own `.overlay(alignment:)`, and one of
+    /// the two sites chose an anchor from which the entire ascent was painted
+    /// outside its own container. There is now no anchor to choose.
+    let pulse: Int
+
     /// Her artwork, already decoded and already wrapped — nil only if the
     /// catalog has no such imageset, a branch nobody should ever see since
     /// these are compiled into the same bundle by the same build, and one that
@@ -208,10 +230,11 @@ struct PearlPortrait: View {
     let artwork: Image?
 
     @MainActor
-    init(pose: PearlMascot.Pose, height: CGFloat, label: String) {
+    init(pose: PearlMascot.Pose, height: CGFloat, label: String, pulse: Int = 0) {
         self.pose = pose
         self.height = height
         self.label = label
+        self.pulse = pulse
         self.artwork = pose.image.map { Image(nsImage: $0) }
     }
 
@@ -222,6 +245,14 @@ struct PearlPortrait: View {
                 .scaledToFit()
                 .frame(height: height)
                 .accessibilityLabel(label)
+                // No layout footprint and no clip: an overlay the size of her
+                // own frame, inside which the burst is guaranteed to stay.
+                .overlay {
+                    if pulse > 0 {
+                        PearlHeartBurst(span: height)
+                            .id(pulse)
+                    }
+                }
         }
     }
 }
@@ -252,12 +283,41 @@ struct PearlHeartShape: Shape {
     }
 }
 
-/// Three hearts, rising and gone in under a second.
+/// Three hearts, rising and gone in under a second — **inside Pearl's own
+/// frame, and never one point outside it.**
 ///
-/// Always used as an `.overlay`, so it takes its geometry from whatever it is
-/// over and contributes none of its own: nothing on screen moves when Pearl
-/// reacts. Non-hit-testable, so it can never intercept a click meant for the
-/// control the user is actually using. Callers `.id` it on
+/// ## Why that sentence is the whole type
+///
+/// The first version of this burst was anchored to the TOP of the 34pt Pearl
+/// who sat in the wizard's footer, offset another 6pt up, and its tallest
+/// heart travelled 37pt further. So its topmost painted pixel was 43pt above
+/// her head — and her head was only 13pt below the footer's own top edge.
+/// Thirty of those forty-three points were painted outside the footer
+/// entirely.
+///
+/// That is not a near miss, it is the whole ascent, and on macOS it does not
+/// survive. Hosting `SetupWizardView` and walking the AppKit tree it becomes
+/// shows the sheet has exactly one real subview over that region — a
+/// `PlatformContainer` at (0, 3, 620, 502) wrapping the SwiftUI
+/// `HostingScrollView`. The footer contributes no AppKit view at all: Pearl,
+/// the divider and the hearts are painted into `NSHostingView`'s own backing
+/// layer, and a layer's own content composites BENEATH its sublayers. Every
+/// heart therefore flew up out of the footer and straight in behind the scroll
+/// view, whose own edge treatment (`NSScrollPocket`, a 28pt `CABackdropLayer`
+/// band, installed the moment a step's content is tall enough to scroll) sits
+/// in exactly that band. What was left on screen was a rose smudge on the
+/// crown of a small cat in the bottom-left corner, for about a third of a
+/// second, three hundred points from the swatch the user had just clicked.
+///
+/// So the fix is not "bigger". It is that the burst is now defined entirely in
+/// FRACTIONS OF THE SPAN IT IS GIVEN, `PearlPortrait` is the only thing that
+/// gives it one, and it always gives it its own height. The burst cannot be
+/// anchored over something too small for it, because it has no size of its own
+/// to be too big — and `PearlHeartContainmentTests` fails if these fractions
+/// ever add up to a heart that would leave the frame.
+///
+/// Non-hit-testable, so it can never intercept a click meant for the control
+/// the user is actually using. `PearlPortrait` `.id`s it on
 /// `PearlReactions.pulse`, which is what makes a second reaction build a fresh
 /// set of hearts and re-run them rather than being swallowed.
 ///
@@ -265,20 +325,72 @@ struct PearlHeartShape: Shape {
 /// `PearlReactions.fire`, and this view is only ever built from a pulse that
 /// got past it. One rule, one place.
 struct PearlHeartBurst: View {
+
+    /// One heart, in fractions of the span. Nothing here is a point value:
+    /// that is what makes the containment claim checkable as arithmetic
+    /// instead of as a hope about a particular layout.
+    struct Heart {
+        /// Side of the heart, as a fraction of the span.
+        let size: CGFloat
+        /// How far it travels up, as a fraction of the span.
+        let rise: CGFloat
+        /// Sideways drift at the top of the arc, as a fraction of the span.
+        let drift: CGFloat
+        /// Its stagger, in seconds. The only thing here measured in a unit.
+        let delay: Double
+    }
+
+    /// Where the hearts start, as a fraction down the span — a bit above her
+    /// middle, which on every pose she is drawn in is her chest rather than
+    /// her feet or the air over her ears.
+    static let origin: CGFloat = 0.70
+
+    static let hearts: [Heart] = [
+        Heart(size: 0.12, rise: 0.28, drift: -0.10, delay: 0.00),
+        Heart(size: 0.16, rise: 0.36, drift: 0.02, delay: 0.07),
+        Heart(size: 0.09, rise: 0.24, drift: 0.09, delay: 0.15),
+    ]
+
+    /// The band the burst actually paints in, as fractions of the span: the
+    /// top of the highest heart at the end of its rise, down to the bottom of
+    /// the lowest at the start of its own. `0...1` is the frame; anything
+    /// outside that is a heart nobody can be sure gets drawn.
+    static var paintedBand: ClosedRange<CGFloat> {
+        let top = hearts.map { origin - $0.rise - $0.size / 2 }.min() ?? 0
+        let bottom = hearts.map { origin + $0.size / 2 }.max() ?? 1
+        return top...bottom
+    }
+
+    /// The same question sideways, measured from the centre line.
+    static var widestReachFromCentre: CGFloat {
+        hearts.map { abs($0.drift) + $0.size / 2 }.max() ?? 0
+    }
+
+    /// The height of the thing she is drawn at. Everything above is a fraction
+    /// of this, so the burst is exactly as big as Pearl is and no bigger.
+    let span: CGFloat
+
     var body: some View {
-        ZStack {
-            heart(size: 11, drift: -13, delay: 0.00, rise: 30)
-            heart(size: 15, drift: 2, delay: 0.07, rise: 37)
-            heart(size: 9, drift: 12, delay: 0.15, rise: 27)
+        ZStack(alignment: .top) {
+            ForEach(Array(Self.hearts.enumerated()), id: \.offset) { _, heart in
+                self.heart(heart)
+            }
         }
+        .frame(width: span, height: span, alignment: .top)
         .allowsHitTesting(false)
         .accessibilityHidden(true)
     }
 
-    private func heart(size: CGFloat, drift: CGFloat, delay: Double, rise: CGFloat) -> some View {
-        PearlHeartShape()
+    private func heart(_ heart: Heart) -> some View {
+        let size = span * heart.size
+        let rise = span * heart.rise
+        let drift = span * heart.drift
+        return PearlHeartShape()
             .fill(PearlMascot.heartTint)
             .frame(width: size, height: size)
+            // Placed from the TOP of the span rather than centred, so the
+            // arithmetic in `paintedBand` is the arithmetic on screen.
+            .offset(y: span * Self.origin - size / 2)
             .keyframeAnimator(initialValue: Phase(), repeating: false) { view, phase in
                 view
                     .opacity(phase.opacity)
@@ -290,18 +402,18 @@ struct PearlHeartBurst: View {
                 // the latest heart, which is short enough to be a reaction
                 // rather than an animation the user watches.
                 KeyframeTrack(\.opacity) {
-                    LinearKeyframe(0, duration: delay)
+                    LinearKeyframe(0, duration: heart.delay)
                     LinearKeyframe(1, duration: 0.10)
                     LinearKeyframe(1, duration: 0.32)
                     LinearKeyframe(0, duration: 0.29)
                 }
                 KeyframeTrack(\.scale) {
-                    LinearKeyframe(0.3, duration: delay)
+                    LinearKeyframe(0.3, duration: heart.delay)
                     SpringKeyframe(1.0, duration: 0.24, spring: .bouncy)
                     LinearKeyframe(0.86, duration: 0.47)
                 }
                 KeyframeTrack(\.travel) {
-                    LinearKeyframe(0, duration: delay)
+                    LinearKeyframe(0, duration: heart.delay)
                     CubicKeyframe(1, duration: 0.71)
                 }
             }

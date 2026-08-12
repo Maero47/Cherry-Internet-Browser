@@ -60,19 +60,19 @@ final class PearlPoseTests: XCTestCase {
         XCTAssertEqual(sizes.count, PearlMascot.Pose.allCases.count)
     }
 
-    /// The small pose is a SEPARATE drawing and not the hero shrunk down: at
-    /// 34pt the hero's raised paw and long tail turn to mush, so `.sitting`
-    /// was drawn compact on purpose. A drawing meant to survive that size is
-    /// squarer than a portrait; this is the cheapest honest way to say so.
+    /// The pose she arrives in is a SEPARATE, squarer drawing and not the hero
+    /// re-used. On the question steps she sits BESIDE a speech bubble, and the
+    /// hero's raised paw and long tail make a tall narrow silhouette that eats
+    /// the bubble's width for the same height of cat.
     /// Dies on: `.sitting` being repointed at a portrait asset.
-    func testTheFooterPoseIsDrawnCompactRatherThanBeingAPortrait() throws {
+    func testTheArrivalPoseIsDrawnSquarerThanTheHeroPortrait() throws {
         let sitting = try XCTUnwrap(NSImage(named: PearlMascot.Pose.sitting.assetName))
         let waving = try XCTUnwrap(NSImage(named: PearlMascot.Pose.waving.assetName))
 
         let sittingRatio = sitting.size.width / sitting.size.height
         let wavingRatio = waving.size.width / waving.size.height
         XCTAssertGreaterThan(sittingRatio, wavingRatio,
-                             "the footer pose is no squarer than the hero — it will not read at 34pt")
+                             "the arrival pose is no squarer than the hero — it will crowd her bubble")
         XCTAssertGreaterThan(sittingRatio, 0.4)
     }
 
@@ -83,21 +83,24 @@ final class PearlPoseTests: XCTestCase {
         XCTAssertGreaterThan(curled.size.width, curled.size.height)
     }
 
-    /// The sizes she is drawn at are a hierarchy, not five numbers: she leads
-    /// the welcome, signs off smaller, rests smaller still, and accompanies
-    /// smallest of all. Dies on: the footer companion growing into a
-    /// participant, or the hero shrinking into an icon.
+    /// The sizes she is drawn at are a hierarchy, not three numbers: she leads
+    /// the welcome, arrives smaller on a question step, and rests smaller
+    /// still on an empty library screen. Dies on: the hero shrinking into an
+    /// icon, or her arrival shrinking back toward the 34pt footer companion it
+    /// replaced — which is the size at which she stopped being looked at and
+    /// her hearts stopped being seen.
     func testHerDrawnSizesAreAHierarchy() {
-        XCTAssertGreaterThan(PearlMascot.heroHeight, PearlMascot.farewellHeight)
-        XCTAssertGreaterThan(PearlMascot.farewellHeight, PearlMascot.restingHeight)
-        XCTAssertGreaterThan(PearlMascot.restingHeight, PearlMascot.companionHeight)
+        XCTAssertGreaterThan(PearlMascot.heroHeight, PearlMascot.introHeight)
+        XCTAssertGreaterThan(PearlMascot.introHeight, PearlMascot.restingHeight)
 
         XCTAssertGreaterThanOrEqual(PearlMascot.heroHeight, 180,
                                     "at this size Pearl is decoration, not the welcome")
         XCTAssertLessThanOrEqual(PearlMascot.heroHeight, 260,
                                  "taller than this and the welcome page has to scroll")
-        XCTAssertLessThanOrEqual(PearlMascot.companionHeight, 44,
-                                 "a footer companion this big is a participant")
+        XCTAssertGreaterThanOrEqual(PearlMascot.introHeight, 100,
+                                    "she was asked to come up BIG; this is a footer companion again")
+        XCTAssertLessThanOrEqual(PearlMascot.introHeight, 150,
+                                 "any taller and the step's first card starts below the fold")
     }
 }
 
@@ -122,23 +125,38 @@ final class PearlInTheWizardTests: XCTestCase {
         XCTAssertEqual(portrait.height, PearlMascot.heroHeight)
     }
 
-    /// She is in the footer for the four questions in the middle and nowhere
-    /// else. Dies on: the footer companion appearing on the welcome or on the
-    /// last step, where she is already on the page at full size — two Pearls
-    /// at once is a mascot with no idea where it lives.
-    func testTheFooterCompanionIsOnTheMiddleStepsOnly() {
-        let model = SetupWizardModel(onFinish: {})
-        var shown: [SetupWizardStep: Bool] = [:]
-        for _ in SetupWizardModel.steps.indices {
-            shown[model.step] = model.showsFooterCompanion
-            if !model.isLastStep { model.advance() }
-        }
+    /// Never two of her on one screen. She arrives on every question step and
+    /// is deliberately silent on the welcome, where she already IS the page at
+    /// 196pt — a speech bubble there is her talking over herself.
+    ///
+    /// Dies on: the welcome growing a bubble; a question step losing its
+    /// arrival; the retired footer companion being reinstated alongside the
+    /// arrival, which would put a small Pearl and a large Pearl on the same
+    /// step.
+    func testSheArrivesOnEveryQuestionStepAndNeverOnTheWelcome() throws {
+        XCTAssertNil(PearlIntroScript.arrival(on: .welcome),
+                     "she is the welcome page; she does not also stand on it with a bubble")
 
-        XCTAssertEqual(shown[.welcome], false, "she is the welcome page; she is not also under it")
-        XCTAssertEqual(shown[.tabLayout], false, "she signs off on the last step; one of her is enough")
-        for step in [SetupWizardStep.appearance, .searchPrivacy, .importData, .extensions] {
-            XCTAssertEqual(shown[step], true, "\(step) has no Pearl in its footer")
+        for step in SetupWizardModel.steps where step != .welcome {
+            XCTAssertNotNil(PearlIntroScript.arrival(on: step),
+                            "\(step) gets no arrival from Pearl")
         }
+        XCTAssertEqual(PearlIntroScript.steps.count, SetupWizardModel.questionCount,
+                       "one bubble per question, no more and no fewer")
+
+        // And the real wizard puts exactly one of her on a question step.
+        let view = SetupWizardView(onFinish: {})
+        view.advance(reduceMotion: true)
+        let tree = view.body
+        // One hop through her arrival: a `Mirror` walk stops at a child view's
+        // boundary, and she is inside `PearlIntro` now rather than inline in
+        // the wizard's footer.
+        let pearls = collectValues(PearlPortrait.self, in: tree)
+            + collectValues(PearlIntro.self, in: tree)
+                .flatMap { collectValues(PearlPortrait.self, in: $0.body) }
+        XCTAssertEqual(pearls.count, 1,
+                       "a question step draws a number of Pearls that is not one")
+        XCTAssertEqual(pearls.first?.height, PearlMascot.introHeight)
     }
 
     /// The counter counts QUESTIONS, so it agrees with the welcome page's own
