@@ -48,3 +48,6 @@ playground.xcworkspace
 *.ipa
 *.dSYM.zip
 *.dSYM
+
+# Build artifacts from Tools/build-dmg.sh
+dist/
