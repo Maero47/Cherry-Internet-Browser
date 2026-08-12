@@ -544,17 +544,36 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// The scene never presents a window, so a Dock-icon click with every
-    /// browser window closed must bring one back itself — at the persisted
-    /// frame, through the one window path.
+    /// The scene never presents a window, so a Dock-icon click with no browser
+    /// window on screen must bring one back itself — at the persisted frame,
+    /// through the one window path.
+    ///
+    /// The question asked here is **"is any browser window actually
+    /// showing?"**, and it used to be "is the registry empty?". Those are not
+    /// the same question, and the difference is the whole value of this
+    /// method. `windowViewModels` holds a view model for as long as its window
+    /// object is alive, whether or not that window is on screen — so a window
+    /// that exists and is not displayed left this handler answering "there is
+    /// a window, nothing to do" to a user who can see that there is not. That
+    /// is an app with no way back: Cherry does not quit with its last window,
+    /// and the Dock click is the only recovery there is.
+    ///
+    /// A MINIATURIZED window is not lost, so it is not a reason to open a
+    /// second one — AppKit's own default reopen (what `true` asks for)
+    /// deminiaturizes it, which is what the user meant by clicking.
+    ///
+    /// `flag` is deliberately not consulted. It is AppKit's count of every
+    /// visible window the app owns, panels and sheets included, so it can be
+    /// true while the browser itself has nothing up.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        if !flag && BrowserViewModel.windowViewModels.isEmpty {
-            MainActor.assumeIsolated {
-                openBrowserWindow(isPrivate: false, frame: BrowserWindowFrameStore.restore())
+        MainActor.assumeIsolated {
+            let reachable = BrowserViewModel.detachedWindows.contains {
+                $0.isVisible || $0.isMiniaturized
             }
+            guard !reachable else { return true }
+            openBrowserWindow(isPrivate: false, frame: BrowserWindowFrameStore.restore())
             return false
         }
-        return true
     }
 
     // MARK: - Dock Menu
