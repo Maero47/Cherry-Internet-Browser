@@ -55,12 +55,24 @@
 //  ## Keys
 //
 //  Space and ↑ jump, ↓ ducks — but only while the runner's own slot holds
-//  keyboard focus. The handlers hang off the focused view, so an unfocused
-//  game cannot see, let alone steal, keys from the browser; losing focus
-//  pauses the driver the same tick. The idle mark takes focus through
-//  `defaultFocus` at automatic priority, which yields to anything the user
-//  has already focused — the offline screen asks for the keyboard, it does
-//  not take it off the omnibox.
+//  keyboard focus. The handlers hang off that slot, so an unfocused game
+//  cannot see, let alone steal, keys from the browser; losing focus pauses the
+//  driver the same tick. There is exactly one slot, and it belongs to the
+//  section rather than to the mark or the field, because a slot that is torn
+//  down when the mark becomes a field is a slot that loses the keyboard
+//  halfway through the first press (see `body`).
+//
+//  Which leaves the question that decides whether any of it works: how the
+//  slot comes to hold focus on a screen nobody has clicked. It asks, when it
+//  appears, and `PearlKeyboardClaim` is the rule for whether it may — the
+//  offline screen only, and never out of something being typed into. It used
+//  to ask through `defaultFocus`, and that ask never arrived: a default focus
+//  target is applied when its scope first takes focus, which for a window is
+//  long before a page has failed to load. The runner was drawn focusable,
+//  offering a space bar, holding nothing; the press ran off the end of the
+//  responder chain and macOS beeped. Taking focus is also given back — see
+//  `PearlKeyboardHandover` — so the page that comes back after Retry is not
+//  left deaf.
 //
 //  ## Motion
 //
@@ -88,26 +100,171 @@ struct PearlRunnerSection: View {
     /// of it. A run's field is sized against this; the idle mark ignores it.
     @Environment(\.failureContainerSize) private var available
 
-    @StateObject private var controller = PearlRunnerController()
+    @StateObject private var controller: PearlRunnerController
     @FocusState private var isFocused: Bool
 
+    /// Which window this is in, and who had the keyboard before the runner
+    /// asked for it.
+    @State private var handover = PearlKeyboardHandover()
+
+    /// The controller is injectable for exactly one reason: the tests that
+    /// press a real space bar at a real window need to see whether the run
+    /// started, and a `@StateObject` the section makes for itself is reachable
+    /// from nowhere. The app never passes one.
+    init(offersRunner: Bool, controller: PearlRunnerController? = nil) {
+        self.offersRunner = offersRunner
+        _controller = StateObject(wrappedValue: controller ?? PearlRunnerController())
+    }
+
+    private var metrics: PearlField.Metrics {
+        PearlField.metrics(availableWidth: available.width, availableHeight: available.height)
+    }
+
+    /// ONE keyboard slot, and it is the mark's.
+    ///
+    /// There used to be two — the mark was focusable, and so was the field
+    /// that replaced it — and the swap between them dropped the keyboard on
+    /// the floor: SwiftUI treats the two branches of an `if` as two different
+    /// views, so the focused one was torn down and the keyboard went back to
+    /// the window. `isFocused` went false, which paused the run in the same
+    /// breath that started it, and the space bar that should have been the
+    /// first jump was a beep again.
+    ///
+    /// So the mark is the base of the slot whether or not a run is going. It
+    /// is what sizes the idle row, it is hidden once the field is drawn over
+    /// it, and — the part that matters — it never goes away, so neither does
+    /// the keyboard. A view swapped inside an `overlay` does not disturb the
+    /// focus of the view it is drawn on; a view swapped by an `if` is the
+    /// focus.
     var body: some View {
-        Group {
+        idleMark
+        .opacity(controller.hasStarted ? 0 : 1)
+        .accessibilityHidden(controller.hasStarted)
+        // The run's own measure, taken over from the mark's. `nil` while the
+        // mark is what is showing, so the idle row is sized by the mark
+        // exactly as it always was.
+        .frame(
+            width: controller.hasStarted ? metrics.width : nil,
+            height: controller.hasStarted ? metrics.height : nil
+        )
+        .overlay {
             if controller.hasStarted {
                 PearlRunnerSurface(
                     controller: controller,
-                    offersRunner: offersRunner,
-                    available: available,
-                    isFocused: $isFocused
+                    metrics: metrics,
+                    isFocused: isFocused
                 )
-            } else {
-                idleMark
             }
         }
-        // Automatic priority: this asks for the keyboard when the offline
-        // screen appears and nothing else has claimed it, and yields when
-        // something has. The runner never pulls focus off the omnibox.
-        .defaultFocus($isFocused, true)
+        .contentShape(Rectangle())
+        .focusable()
+        .focused($isFocused)
+        .focusEffectDisabled()
+        .onKeyPress(keys: [.space], phases: [.down, .up]) { press in
+            guard press.phase == .down else {
+                controller.spaceReleased()
+                return .handled
+            }
+            // Start, jump or run again — one rule, asked the same way at every
+            // point of the run, because there is now one place that asks.
+            let meaning = controller.spacePressed(
+                offersRunner: offersRunner,
+                runnerHasKeyboardFocus: isFocused
+            )
+            // A press that was never ours goes back up the responder chain,
+            // where space still scrolls the failure column.
+            return meaning == .notOurs ? .ignored : .handled
+        }
+        .onKeyPress(keys: [.upArrow], phases: [.down, .up]) { press in
+            // ↑ is the jump's second key. It never starts a run: the offline
+            // screen promises one key for that, and it is space — so before
+            // there is a run, ↑ is the scroll view's, exactly as it was.
+            guard controller.hasStarted else { return .ignored }
+            if press.phase == .down {
+                if controller.game.phase == .crashed {
+                    controller.input.jump = false
+                    controller.restart()
+                } else {
+                    controller.input.jump = true
+                    controller.resume()
+                }
+            } else {
+                controller.input.jump = false
+            }
+            return .handled
+        }
+        .onKeyPress(keys: [.downArrow], phases: [.down, .up]) { press in
+            guard controller.hasStarted else { return .ignored }
+            controller.input.duck = press.phase == .down
+            return .handled
+        }
+        .onTapGesture {
+            // A click is the other way in, and it is allowed to take the
+            // keyboard from anywhere — the user pointed at the game. It still
+            // records what it took it from, so the page gets it back.
+            handover.take()
+            isFocused = true
+            if !controller.hasStarted {
+                controller.begin()
+            } else if controller.game.phase == .crashed {
+                controller.restart()
+            }
+        }
+        .onChange(of: isFocused) { _, focused in
+            // An unfocused game must neither hear keys (guaranteed by focus)
+            // nor keep simulating a run the player is no longer steering.
+            // Inert until a run exists: `resume()` and `pause()` both know
+            // there is nothing to drive.
+            if focused {
+                controller.resume()
+            } else {
+                controller.input = PearlInput()
+                controller.pause()
+            }
+        }
+        // How the handover learns which window it is in — and, because the
+        // answer can arrive either side of `onAppear`, the second of the two
+        // places the keyboard is asked for.
+        .background {
+            PearlKeyboardWindowReader(handover: handover, windowKnown: claimKeyboardIfAllowed)
+        }
+        .onAppear(perform: claimKeyboardIfAllowed)
+        .onDisappear {
+            // The failure screen is gone — the page came back, or the tab did.
+            // Whatever held the keyboard before the runner asked for it gets
+            // it back.
+            handover.giveBack()
+        }
+        // Full bleed. The field is wider than the reading column it is a row
+        // of, so it reports the column's width to the layout and draws past
+        // both edges of it — centred on the same axis as the copy below,
+        // stopping at the same margin the copy keeps. A field that already
+        // fits inside the column bleeds by zero, and the idle mark, which is
+        // narrower than the column to begin with, never bleeds at all.
+        .padding(
+            .horizontal,
+            controller.hasStarted
+                ? -PearlField.bleed(availableWidth: available.width, availableHeight: available.height)
+                : 0
+        )
+    }
+
+    /// Ask for the keyboard, if this screen is allowed to have it.
+    ///
+    /// Called twice, from either side of the same instant: SwiftUI's
+    /// `onAppear` and AppKit's `viewDidMoveToWindow` have no guaranteed order
+    /// between them, and the decision needs the window — a claim made while
+    /// the window is still unknown is a claim made without being able to see
+    /// the omnibox it must not interrupt. So whichever runs while the window
+    /// is unknown does nothing, and the other one does the work.
+    private func claimKeyboardIfAllowed() {
+        guard handover.window != nil, !handover.hasTakenKeyboard else { return }
+        guard PearlKeyboardClaim.mayClaim(
+            offersRunner: offersRunner,
+            textIsBeingEdited: handover.textIsBeingEdited
+        ) else { return }
+        handover.take()
+        isFocused = true
     }
 
     /// Pearl standing still, where the failure symbol stands on every other
@@ -121,27 +278,6 @@ struct PearlRunnerSection: View {
                 .font(.system(size: 11))
                 .foregroundStyle(FailurePalette.body)
                 .fixedSize(horizontal: false, vertical: true)
-        }
-        .contentShape(Rectangle())
-        .focusable()
-        .focused($isFocused)
-        .focusEffectDisabled()
-        .onKeyPress(keys: [.space], phases: [.down, .up]) { press in
-            guard press.phase == .down else {
-                controller.spaceReleased()
-                return .handled
-            }
-            let meaning = controller.spacePressed(
-                offersRunner: offersRunner,
-                runnerHasKeyboardFocus: isFocused
-            )
-            // A press that was never ours goes back up the responder chain,
-            // where space still scrolls the failure column.
-            return meaning == .notOurs ? .ignored : .handled
-        }
-        .onTapGesture {
-            isFocused = true
-            controller.begin()
         }
         .accessibilityElement()
         .accessibilityLabel("Pearl’s Runner")
@@ -183,18 +319,21 @@ private struct PearlStillMark: View {
 
 // MARK: - The game surface
 
+/// The field, once a run exists. It draws and it measures; it neither takes
+/// keys nor takes focus — the section around it holds the one keyboard slot,
+/// which is what keeps a run from starting deaf. What it still reads is
+/// whether that slot is focused, because the ring around the field is how the
+/// player can see it.
 private struct PearlRunnerSurface: View {
 
     @ObservedObject var controller: PearlRunnerController
-    let offersRunner: Bool
-    let available: CGSize
-    var isFocused: FocusState<Bool>.Binding
+    /// Handed down rather than recomputed: the section sizes its own slot
+    /// against these, and a second answer to the same question is how the
+    /// field and the row it is drawn in stop agreeing.
+    let metrics: PearlField.Metrics
+    let isFocused: Bool
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    private var metrics: PearlField.Metrics {
-        PearlField.metrics(availableWidth: available.width, availableHeight: available.height)
-    }
 
     var body: some View {
         PearlRunnerCanvas(
@@ -208,86 +347,17 @@ private struct PearlRunnerSurface: View {
         // and the canvas is drawn at precisely it.
         .frame(width: metrics.width, height: metrics.height)
         .overlay(LibraryShape.rowShape.stroke(FailurePalette.hairline, lineWidth: 1))
-        .contentShape(Rectangle())
-        .focusable()
-        .focused(isFocused)
-        .focusEffectDisabled()
         .overlay(
             LibraryShape.rowShape
                 .stroke(Color.accentColor.opacity(0.65), lineWidth: 1.5)
-                .opacity(isFocused.wrappedValue ? 1 : 0)
+                .opacity(isFocused ? 1 : 0)
         )
-        .onTapGesture {
-            isFocused.wrappedValue = true
-            if controller.game.phase == .crashed {
-                controller.restart()
-            }
-        }
-        .onKeyPress(keys: [.space], phases: [.down, .up]) { press in
-            guard press.phase == .down else {
-                controller.spaceReleased()
-                return .handled
-            }
-            // A run is in flight or crashed, so this can only come back as
-            // jump or restart — but it goes through the same rule as the
-            // press that started the run, not a second copy of it.
-            let meaning = controller.spacePressed(
-                offersRunner: offersRunner,
-                runnerHasKeyboardFocus: isFocused.wrappedValue
-            )
-            return meaning == .notOurs ? .ignored : .handled
-        }
-        .onKeyPress(keys: [.upArrow], phases: [.down, .up]) { press in
-            // ↑ is the jump's second key. It never starts a run: the offline
-            // screen promises one key for that, and it is space.
-            if press.phase == .down {
-                if controller.game.phase == .crashed {
-                    controller.input.jump = false
-                    controller.restart()
-                } else {
-                    controller.input.jump = true
-                    controller.resume()
-                }
-            } else {
-                controller.input.jump = false
-            }
-            return .handled
-        }
-        .onKeyPress(keys: [.downArrow], phases: [.down, .up]) { press in
-            controller.input.duck = press.phase == .down
-            return .handled
-        }
-        .onChange(of: isFocused.wrappedValue) { _, focused in
-            // An unfocused game must neither hear keys (guaranteed by focus)
-            // nor keep simulating a run the player is no longer steering.
-            if focused {
-                controller.resume()
-            } else {
-                controller.input = PearlInput()
-                controller.pause()
-            }
-        }
-        .onAppear {
-            // The surface exists because the player asked for a run, with a
-            // key or a click; keep the keyboard on it so the next space bar is
-            // a jump. If the window declines, the overlay says "Click to run"
-            // and the tap gesture takes the same path.
-            isFocused.wrappedValue = true
-        }
         .onDisappear {
             // The page came back, or the user navigated: nothing of the game
             // may keep running behind it.
             controller.shutDown()
         }
-        // Full bleed. The field is wider than the reading column it is a row
-        // of, so it reports the column's width to the layout and draws past
-        // both edges of it — centred on the same axis as the copy below,
-        // stopping at the same margin the copy keeps. A field that already
-        // fits inside the column bleeds by zero and this does nothing.
-        .padding(
-            .horizontal,
-            -PearlField.bleed(availableWidth: available.width, availableHeight: available.height)
-        )
+        .accessibilityElement()
         .accessibilityLabel("Pearl’s Runner")
         .accessibilityValue("Score \(controller.game.score)")
         .accessibilityHint("Space jumps, down arrow ducks")
