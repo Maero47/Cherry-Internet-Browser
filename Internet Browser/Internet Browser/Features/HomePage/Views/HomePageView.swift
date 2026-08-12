@@ -589,7 +589,7 @@ private struct AskAIButton: View {
     @FocusState private var isFocused: Bool
 
     private var actionName: String {
-        hasQuery ? "Ask Cherry AI about what you typed" : "Ask Cherry AI"
+        hasQuery ? "\(PearlVoice.askAction) about what you typed" : PearlVoice.askAction
     }
 
     var body: some View {

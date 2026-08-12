@@ -44,7 +44,7 @@ struct GeneralSettingsView: View {
             SettingsCard(
                 icon: "brain",
                 title: "AI",
-                subtitle: "Powers \"Ask This Page\" and \"All Tabs\" research."
+                subtitle: "The model behind \(PearlVoice.name), in the panel and in \"All Tabs\" research."
             ) {
                 SettingsLabeledRow(
                     title: "AI Engine",

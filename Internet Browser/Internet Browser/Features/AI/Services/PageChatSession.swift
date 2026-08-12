@@ -226,7 +226,7 @@ final class PageChatSession: ObservableObject {
         }
 
         guard engine != nil else {
-            turns.append(PageChatTurn(role: .error, text: "Ask This Page requires macOS 26 or later."))
+            turns.append(PageChatTurn(role: .error, text: PearlVoice.noModelReachable))
             return
         }
 
@@ -270,7 +270,7 @@ final class PageChatSession: ObservableObject {
     ) async {
         guard let engine else {
             removeTurn(id: assistantID)
-            turns.append(PageChatTurn(role: .error, text: "Ask This Page requires macOS 26 or later."))
+            turns.append(PageChatTurn(role: .error, text: PearlVoice.noModelReachable))
             return
         }
 
@@ -322,7 +322,7 @@ final class PageChatSession: ObservableObject {
         case .contextWindowExceeded where allowContextOverflowRetry:
             rebuildEngineForSlidingWindow(history: history)
             guard engine != nil else {
-                turns.append(PageChatTurn(role: .error, text: "Ask This Page requires macOS 26 or later."))
+                turns.append(PageChatTurn(role: .error, text: PearlVoice.noModelReachable))
                 return
             }
             let retryTurn = PageChatTurn(role: .assistant, text: "", isStreaming: true)
@@ -338,10 +338,10 @@ final class PageChatSession: ObservableObject {
             // message — a soft inline notice, never a hard block; the chat stays usable.
             turns.append(PageChatTurn(
                 role: .error,
-                text: "That reply didn't fit in the on-device model's memory even after trimming earlier context. Try a shorter question, or start a new chat."
+                text: PearlVoice.tooMuchToHold
             ))
         case .notAvailable, .generationFailed:
-            turns.append(PageChatTurn(role: .error, text: error.errorDescription ?? "Something went wrong."))
+            turns.append(PageChatTurn(role: .error, text: error.errorDescription ?? PearlVoice.somethingWentWrong))
         }
     }
 

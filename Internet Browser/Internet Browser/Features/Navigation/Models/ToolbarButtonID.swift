@@ -41,10 +41,12 @@ enum ToolbarButtonID: String, CaseIterable, Identifiable, Sendable {
     /// What Settings calls this button.
     var title: String {
         switch self {
-        // Named for the action, not the surface: the panel answers about the
-        // page when there is one and chats generally when there isn't, so
-        // "Ask This Page" was a promise it broke on the home page.
-        case .askThisPage: "Ask Cherry AI"
+        // Named for WHO you are talking to, which is also the only name
+        // that stays true on every surface: the panel answers about the page
+        // when there is one and chats generally when there isn't, so "Ask This
+        // Page" was a promise it broke on the home page. One spelling of her
+        // name, in `PearlVoice`.
+        case .askThisPage: PearlVoice.askAction
         case .home: "Home"
         case .bookmark: "Bookmark"
         case .savePDF: "Save PDF"

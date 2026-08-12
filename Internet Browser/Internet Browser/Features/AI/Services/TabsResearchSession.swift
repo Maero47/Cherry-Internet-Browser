@@ -282,7 +282,7 @@ final class TabsResearchSession: ObservableObject {
         guard !trimmed.isEmpty, canSend else { return }
 
         guard engine != nil else {
-            turns.append(PageChatTurn(role: .error, text: "Ask This Page requires macOS 26 or later."))
+            turns.append(PageChatTurn(role: .error, text: PearlVoice.noModelReachable))
             return
         }
 
@@ -302,13 +302,13 @@ final class TabsResearchSession: ObservableObject {
     private func performSend(message: String, assistantID: UUID) async {
         guard let engine else {
             removeTurn(id: assistantID)
-            turns.append(PageChatTurn(role: .error, text: "Ask This Page requires macOS 26 or later."))
+            turns.append(PageChatTurn(role: .error, text: PearlVoice.noModelReachable))
             return
         }
 
         guard let retrieved = await retriever.retrieve(query: message), !retrieved.isEmpty else {
             removeTurn(id: assistantID)
-            turns.append(PageChatTurn(role: .error, text: "Couldn't find anything relevant to that question in the open tabs."))
+            turns.append(PageChatTurn(role: .error, text: PearlVoice.nothingRelevantInTabs))
             return
         }
         let candidateSources = TabsResearchService.distinctSources(in: retrieved)
@@ -338,7 +338,7 @@ final class TabsResearchSession: ObservableObject {
         } catch let error as PageAIError {
             guard !Task.isCancelled else { return }
             removeTurn(id: assistantID)
-            turns.append(PageChatTurn(role: .error, text: error.errorDescription ?? "Something went wrong."))
+            turns.append(PageChatTurn(role: .error, text: error.errorDescription ?? PearlVoice.somethingWentWrong))
         } catch {
             guard !Task.isCancelled else { return }
             removeTurn(id: assistantID)

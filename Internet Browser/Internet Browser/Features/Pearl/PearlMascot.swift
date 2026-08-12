@@ -12,13 +12,19 @@
 //
 //  ## Where she is, and where she deliberately is not
 //
-//  She earns three places:
+//  She earns four places:
 //
 //    - the wizard's welcome, where she introduces herself and is the page;
 //    - the top of each of the wizard's five question steps, where she ARRIVES
 //      once, large, says what the step is for in a speech bubble, and is gone
 //      the moment the user skips her or moves on;
-//    - the three "you have none of these yet" library screens, asleep.
+//    - the three "you have none of these yet" library screens, asleep;
+//    - the on-device chat panel, where she is who you are talking to: once
+//      small in the header (`avatarHeight`, the portrait of whoever is on the
+//      other end) and once at full size over her greeting on an empty
+//      conversation. Never beside a message — a face on every bubble is the
+//      same face forty times, which is noise, not a character. Her words there
+//      live in `PearlVoice`, not here.
 //
 //  She used to sit small in the footer for the whole run instead of arriving.
 //  That is retired: a 34pt cat parked under four consecutive screens is a
@@ -102,6 +108,22 @@ enum PearlMascot {
 
     /// A library screen with nothing in it yet.
     static let restingHeight: CGFloat = 104
+
+    /// The chat panel's header — the ONE place she is deliberately small.
+    ///
+    /// This looks like the 34pt footer companion that was retired above, and
+    /// it is the opposite of it. That Pearl was a decoration parked under four
+    /// screens that were about something else; this one is the portrait of who
+    /// you are talking to, in the header of the surface where you talk to her,
+    /// beside her own name. An avatar is small on purpose — it identifies a
+    /// speaker rather than asking to be looked at — and it is why she does not
+    /// then also appear beside every message.
+    ///
+    /// 24pt inside a 50pt header bar: taller than the 12pt glyph it replaced,
+    /// and short enough that the header's two lines of text keep their own
+    /// baseline. She never reacts at this size (`PearlPortrait` is built with
+    /// no pulse here), because hearts scaled to 24pt are three dots.
+    static let avatarHeight: CGFloat = 24
 
     // MARK: - Compatibility with the wizard's first landing
 
