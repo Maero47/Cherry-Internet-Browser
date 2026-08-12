@@ -569,6 +569,21 @@ final class SettingsManager {
         didSet { UserDefaults.standard.set(restorePreviousSession, forKey: Keys.restorePreviousSession) }
     }
 
+    // MARK: - Pearl
+
+    /// Whether Pearl stands on the pages you browse (`Features/PearlPet`).
+    ///
+    /// **Off on a fresh install, and off has to mean off.** A cat on top of
+    /// live web content is the kind of thing a person either delights in or
+    /// wants gone within ten seconds, so nobody gets one they did not ask for
+    /// — and when this is false the overlay is never built at all: no view, no
+    /// layer, no tick, nothing to leak. The only trace she leaves behind is
+    /// `PearlPetHome`'s single number remembering which end of the floor she
+    /// was standing on when you put her away.
+    var showPearlPet: Bool {
+        didSet { UserDefaults.standard.set(showPearlPet, forKey: Keys.showPearlPet) }
+    }
+
     // MARK: - MCP Server
 
     /// Whether Cherry serves its MCP tools on loopback.
@@ -725,6 +740,10 @@ final class SettingsManager {
         self.tabSleepTimeout = defaults.object(forKey: Keys.tabSleepTimeout) as? Int ?? 30
         self.restorePreviousSession = defaults.object(forKey: Keys.restorePreviousSession) as? Bool ?? true
 
+        // Pearl. A missing key is false: she is opt-in, and an upgrade must
+        // not put a cat on anybody's pages.
+        self.showPearlPet = defaults.object(forKey: Keys.showPearlPet) as? Bool ?? false
+
         // MCP server. Off on a fresh `UserDefaults` is a security default, not
         // a style choice — see `mcpServerEnabled(from:)`.
         self.mcpServerEnabled = Self.mcpServerEnabled(from: defaults)
@@ -876,6 +895,7 @@ final class SettingsManager {
         static let passwordGeneratorLength = "passwordGeneratorLength"
         static let passwordGeneratorIncludeSymbols = "passwordGeneratorIncludeSymbols"
         static let restorePreviousSession = "restorePreviousSession"
+        static let showPearlPet = "showPearlPet"
         static let mcpServerEnabled = "mcpServerEnabled"
         static let mcpServerPort = "mcpServerPort"
     }

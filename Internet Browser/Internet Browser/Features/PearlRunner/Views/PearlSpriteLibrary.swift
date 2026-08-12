@@ -10,7 +10,9 @@
 //  Both `pearl-sprites.json` and `pearl-sprites.png` ship as LOOSE bundle
 //  resources from `Features/PearlRunner/Sprites/`, and that is a decision,
 //  not an accident. The manifest addresses pixel rectangles in one specific
-//  244x159 bitmap, so the delivery has to hand back that exact bitmap. An
+//  bitmap (244x245 as this is written; the runner's own frames occupy its
+//  first 159 rows and the desktop pet's the rest), so the delivery has to
+//  hand back that exact bitmap. An
 //  asset-catalog imageset cannot: it is compiled into `Assets.car` with no
 //  file to look up, and `NSImage(named:)` resolves to whichever 1x/2x
 //  representation the drawing context prefers — the manifest's coordinates
@@ -91,5 +93,42 @@ final class PearlSpriteLibrary {
         guard let slice = slice(name, frame: index) else { return nil }
         return Image(decorative: slice, scale: CGFloat(manifest?.scale ?? 1))
             .interpolation(.none)
+    }
+
+    // MARK: - Alpha
+
+    private var masks: [String: [UInt8]] = [:]
+
+    /// The alpha of every pixel of a frame, row-major from the TOP row, built
+    /// once and kept — empty in placeholder mode.
+    ///
+    /// This lives with the art rather than with the one view that wants it
+    /// (`PearlPetView.hitTest`, which asks "is this point one of Pearl's own
+    /// pixels?" for every mouse and wheel event that reaches her frame)
+    /// because it is a fact about the sheet, and because a cache kept beside
+    /// the consumer would be keyed by frame name alone — and would then answer
+    /// one library's question with another library's pixels.
+    func alphaMask(_ name: String, frame index: Int) -> [UInt8] {
+        let key = "\(name)#\(index)"
+        if let cached = masks[key] { return cached }
+        guard let slice = slice(name, frame: index) else {
+            masks[key] = []
+            return []
+        }
+
+        let width = slice.width, height = slice.height
+        var bytes = [UInt8](repeating: 0, count: width * height)
+        bytes.withUnsafeMutableBytes { buffer in
+            guard let context = CGContext(
+                data: buffer.baseAddress,
+                width: width, height: height,
+                bitsPerComponent: 8, bytesPerRow: width,
+                space: CGColorSpaceCreateDeviceGray(),
+                bitmapInfo: CGImageAlphaInfo.alphaOnly.rawValue
+            ) else { return }
+            context.draw(slice, in: CGRect(x: 0, y: 0, width: width, height: height))
+        }
+        masks[key] = bytes
+        return bytes
     }
 }

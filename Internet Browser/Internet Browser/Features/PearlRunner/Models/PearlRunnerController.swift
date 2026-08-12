@@ -30,10 +30,22 @@ protocol PearlFrameDriving: AnyObject {
 /// The production driver: a repeating `Timer` on the main run loop in
 /// `.common` mode, so the game does not freeze while a menu is open or the
 /// window is being resized.
+///
+/// The interval is a parameter because the desktop pet
+/// (`Features/PearlPet`) drives itself with this same class at 10 Hz: a
+/// sitting cat has nothing to say sixty times a second, and the reason to
+/// share the driver rather than write a second one is that the lifecycle
+/// below — `stop()`, and the `deinit` behind it — is the part that has
+/// already been made trustworthy.
 @MainActor
 final class PearlFrameTimerDriver: PearlFrameDriving {
 
     private var timer: Timer?
+    private let interval: TimeInterval
+
+    init(interval: TimeInterval = PearlWorld.frameDuration) {
+        self.interval = interval
+    }
 
     var isRunning: Bool {
         timer != nil
@@ -41,7 +53,7 @@ final class PearlFrameTimerDriver: PearlFrameDriving {
 
     func start(_ tick: @escaping () -> Void) {
         stop()
-        let timer = Timer(timeInterval: PearlWorld.frameDuration, repeats: true) { _ in
+        let timer = Timer(timeInterval: interval, repeats: true) { _ in
             // The timer is scheduled on the main run loop, so this closure
             // can only ever run on the main actor.
             MainActor.assumeIsolated(tick)

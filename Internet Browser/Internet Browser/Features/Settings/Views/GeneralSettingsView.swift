@@ -189,6 +189,21 @@ struct GeneralSettingsView: View {
 
             toolbarCard
 
+            SettingsCard(
+                icon: "pawprint",
+                title: "Pearl",
+                subtitle: "Cherry's cat. She has a game on the offline page and, if you like, "
+                    + "a spot on the pages you browse."
+            ) {
+                SettingsToggleRow(
+                    title: "Keep Pearl on Web Pages",
+                    subtitle: "She sits along the bottom of the page — drag her along it, click "
+                        + "her for hearts, right-click her for a screenshot, a web search, or a "
+                        + "fish. Never in incognito windows.",
+                    isOn: $settings.showPearlPet
+                )
+            }
+
             SettingsCard(icon: "macwindow", title: "Window Layout") {
                 SettingsToggleRow(title: "Show Bookmark Bar", isOn: $settings.showBookmarkBar)
                 Divider()
