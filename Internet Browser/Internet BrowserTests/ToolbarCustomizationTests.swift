@@ -237,21 +237,24 @@ final class ToolbarCustomizationTests: XCTestCase {
         XCTAssertEqual(overflow, [.readerMode, .askThisPage])
     }
 
-    // MARK: - Ask Cherry AI availability
+    // MARK: - Ask Pearl availability
 
     /// The whole rule, and the only thing that can still take the button away.
     /// It used to also demand `tab.url != nil && tab.internalPage == nil &&
     /// !tab.showHomePage`; any return of a surface condition has to change
     /// this signature, which is what makes this assertion able to fail.
-    func testAskCherryAIIsAvailableWheneverThereIsAnActionToInvoke() {
+    func testAskPearlIsAvailableWheneverThereIsAnActionToInvoke() {
         XCTAssertTrue(ToolbarLayout.askThisPageIsAvailable(hasAction: true))
         XCTAssertFalse(ToolbarLayout.askThisPageIsAvailable(hasAction: false))
     }
 
-    /// Settings and the `⋯` menu both print this. "Ask This Page" is a promise
-    /// the button breaks the moment it appears on the home page.
+    /// Settings and the `⋯` menu both print this. It names WHO the button
+    /// opens — one spelling of her, from `PearlVoice` — and never the surface:
+    /// "Ask This Page" was a promise the button broke the moment it appeared
+    /// on the home page, and the panel answers with no page at all.
     func testTheCatalogueTitleNamesTheActionNotTheSurface() {
-        XCTAssertEqual(ToolbarButtonID.askThisPage.title, "Ask Cherry AI")
+        XCTAssertEqual(ToolbarButtonID.askThisPage.title, PearlVoice.askAction)
+        XCTAssertEqual(ToolbarButtonID.askThisPage.title, "Ask Pearl")
         XCTAssertFalse(ToolbarButtonID.askThisPage.title.lowercased().contains("this page"))
         // The persisted id is untouched by the rename (see `testCatalogueIDsAreStable`).
         XCTAssertEqual(ToolbarButtonID.askThisPage.rawValue, "askThisPage")

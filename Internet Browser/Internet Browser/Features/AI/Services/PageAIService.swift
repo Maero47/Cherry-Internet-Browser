@@ -80,7 +80,7 @@ enum PageAIService {
         switch SettingsManager.shared.aiEngine {
         case .apple:
             guard #available(macOS 26.0, *) else {
-                return .failure(.notAvailable("Ask This Page requires macOS 26 or later."))
+                return .failure(.notAvailable(PearlVoice.needsNewerMacOS))
             }
             #if canImport(FoundationModels)
             return await answerOnDevice(question: question, pageText: pageText, pageTitle: pageTitle)
@@ -338,15 +338,25 @@ private extension PageAIService {
         """
     }
 
+    /// Who she is, before what she is doing. All four instruction blocks in
+    /// this file open with `PearlVoice.identity` and none of them writes an
+    /// identity of its own: a character described four times is four
+    /// characters that happen to agree today (`PearlAssistantVoiceTests`).
+    ///
+    /// What used to close each of them — "do not refer to yourself by any name
+    /// and do not describe yourself as an AI assistant" — is gone from all
+    /// four. It was there because a model given no name had started calling
+    /// itself "Cherry AI"; she has one now, so the gag is both unnecessary and
+    /// directly opposed to it.
     static let chatInstructionsPrefix = """
-    You are chatting with someone about a single web page, inside a browser side panel. \
+    \(PearlVoice.identity)
+
+    Right now you are reading a single web page with them. \
     Answer ONLY using the page content provided below and any additional relevant excerpts \
     supplied alongside a question — never invent facts, names, numbers, or claims that \
     aren't present in them. If the answer isn't in the provided content, say so plainly \
     instead of guessing. Keep replies conversational and reasonably concise, and use the \
-    earlier turns of this conversation as context for follow-up questions. Do not refer to \
-    yourself by any name and do not describe yourself as an AI assistant; just answer the \
-    question directly.
+    earlier turns of this conversation as context for follow-up questions.
     """
 
     static func chatInstructions(pageTitle: String, grounding: String, recentConversation: String? = nil) -> String {
@@ -370,26 +380,26 @@ private extension PageAIService {
     }
 
     static let generalChatInstructions = """
-    You are a helpful assistant built into the Cherry web browser, running entirely on-device. \
-    Answer the user's questions directly, helpfully, and concisely, and use the earlier turns \
-    of this conversation as context for follow-up questions. You are not grounded in any web \
-    page right now; if the user asks about "this page", tell them to select a tab in the panel \
-    first. Do not refer to yourself by any name and do not describe yourself as an AI \
-    assistant; just answer.
+    \(PearlVoice.identity)
+
+    Right now you are reading nothing at all — no page has been given to you, so you are \
+    answering from what you already know. Answer directly, helpfully and concisely, and use \
+    the earlier turns of this conversation as context for follow-up questions. If they ask \
+    about "this page", tell them you can't see one yet and to add a tab in the panel first.
     """
 
     static let researchInstructions = """
-    You answer questions by synthesizing information gathered from several currently open \
-    browser tabs, for a browser side panel. Each excerpt you're given is labeled with the tab \
+    \(PearlVoice.identity)
+
+    Right now you are answering by synthesizing information gathered from several of their \
+    open browser tabs. Each excerpt you're given is labeled with the tab \
     it came from, like `[Source 2 — "Page Title"]`. Answer ONLY using the information present \
     in the supplied excerpts — never invent facts, names, numbers, or claims that aren't in \
     them, and never use outside knowledge. Cite the source of every concrete fact inline using \
     its bracketed number, for example: "The XPS 13 weighs 1.2 kg [2]." When sources disagree, \
     point out the disagreement and cite each side. If the excerpts don't contain the answer, say \
     so plainly instead of guessing. Keep replies conversational and reasonably concise, and use \
-    earlier turns of this conversation as context for follow-up questions. Do not refer to \
-    yourself by any name and do not describe yourself as an AI assistant; just answer the \
-    question directly.
+    earlier turns of this conversation as context for follow-up questions.
     """
 
     /// Q&A answers directly over raw page text (no map-reduce per the v1
@@ -398,12 +408,12 @@ private extension PageAIService {
     static let qaTextCap = 6000
 
     static let qaInstructions = """
-    You answer questions about a single web page's content, for a browser side panel. Answer \
+    \(PearlVoice.identity)
+
+    Right now you are answering one question about a single web page's content. Answer \
     ONLY using the page content provided in the prompt. If the answer is not present in that \
     content, say plainly that the page doesn't contain that information — never guess or use \
-    outside knowledge. Keep answers concise and address the question directly. Do not refer to \
-    yourself by any name and do not describe yourself as an AI assistant; just answer the \
-    question directly.
+    outside knowledge. Keep answers concise and address the question directly.
     """
 
     /// Qwen's availability doesn't depend on macOS version or Apple
@@ -432,7 +442,7 @@ private extension PageAIService {
         case .unavailable(.deviceNotEligible):
             return .unavailable(reason: "This Mac doesn't support Apple Intelligence.")
         case .unavailable(.appleIntelligenceNotEnabled):
-            return .unavailable(reason: "Turn on Apple Intelligence in System Settings to use Ask This Page.")
+            return .unavailable(reason: "Turn on Apple Intelligence in System Settings to let \(PearlVoice.name) think with Apple's model.")
         case .unavailable(.modelNotReady):
             return .unavailable(reason: "The on-device model is still downloading. Try again in a bit.")
         case .unavailable:
@@ -456,7 +466,7 @@ private extension PageAIService {
 
     static func answerOnDevice(question: String, pageText: String, pageTitle: String) async -> Result<PageAnswerResult, PageAIError> {
         guard !pageText.isEmpty else {
-            return .failure(.generationFailed("There's no readable content on this page to answer from."))
+            return .failure(.generationFailed(PearlVoice.nothingReadableOnPage))
         }
 
         let workingText: String
@@ -635,7 +645,7 @@ private extension PageAIService {
 
     static func answerWithQwen(question: String, pageText: String, pageTitle: String) async -> Result<PageAnswerResult, PageAIError> {
         guard !pageText.isEmpty else {
-            return .failure(.generationFailed("There's no readable content on this page to answer from."))
+            return .failure(.generationFailed(PearlVoice.nothingReadableOnPage))
         }
         guard LLMModelManager.shared.isDownloaded else {
             return .failure(.notAvailable("The Qwen model hasn't been downloaded yet. Open Settings to download it."))

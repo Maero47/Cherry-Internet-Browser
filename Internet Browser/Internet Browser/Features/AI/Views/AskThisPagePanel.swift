@@ -216,6 +216,15 @@ struct AskThisPagePanel: View {
         !isGeneralChat && !isSinglePageSelection
     }
 
+    /// The same three shapes, said the way Pearl says them. Every string this
+    /// panel puts in her mouth is looked up by this value in `PearlVoice`
+    /// rather than written inline, so what she is grounded on and what she
+    /// says about it cannot drift apart.
+    private var pearlMode: PearlVoice.Mode {
+        if isGeneralChat { return .general }
+        return isSinglePageSelection ? .page : .tabs
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             headerBar
@@ -798,16 +807,26 @@ struct AskThisPagePanel: View {
 
     // MARK: - Header
 
+    /// Her name and her face, then what she is currently reading.
+    ///
+    /// The face is 24pt (`PearlMascot.avatarHeight`) and it REPLACED the
+    /// `sparkles` glyph rather than joining it — the panel's identity is a
+    /// character now, and a character beside a magic-sparkle icon is two
+    /// answers to "who is this". This is also the only place she appears while
+    /// a conversation is on screen: see `chatBubble(for:)`, which draws no
+    /// portrait at all.
     private var headerBar: some View {
         HStack(spacing: 6) {
-            Image(systemName: "sparkles")
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(SettingsManager.shared.accentColor)
+            PearlPortrait(
+                pose: .sitting,
+                height: PearlMascot.avatarHeight,
+                label: PearlVoice.name
+            )
 
             VStack(alignment: .leading, spacing: 0) {
-                Text("Ask This Page")
+                Text(PearlVoice.name)
                     .font(.system(size: 12, weight: .semibold))
-                Text(isGeneralChat ? "General chat" : pageTitle)
+                Text(isGeneralChat ? PearlVoice.ungroundedSubtitle : pageTitle)
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -915,7 +934,7 @@ struct AskThisPagePanel: View {
     private var unavailableMessage: String {
         switch availability {
         case .available: return ""
-        case .unsupportedOS: return "Ask This Page requires macOS 26 or later."
+        case .unsupportedOS: return PearlVoice.needsNewerMacOS
         case .unavailable(let reason): return reason
         }
     }
@@ -1092,10 +1111,10 @@ struct AskThisPagePanel: View {
 
     /// Collapsible chain-of-thought control shown above a reasoning model's
     /// answer bubble. While the model is still inside its think block (no
-    /// answer text yet) it reads "Thinking…" with the animated dots; once the
-    /// answer starts (or the stream ends) it becomes a collapsed-by-default
-    /// "Thoughts" disclosure. Engines without a think block (`reasoning ==
-    /// nil`) never reach this view.
+    /// answer text yet) it says she is thinking, with the animated dots; once
+    /// the answer starts (or the stream ends) it becomes a collapsed-by-default
+    /// disclosure of her thoughts — both lines hers, from `PearlVoice`.
+    /// Engines without a think block (`reasoning == nil`) never reach this view.
     private func reasoningDisclosure(reasoning: String, for turn: PageChatTurn) -> some View {
         let isThinking = turn.isStreaming && turn.text.isEmpty
         let isExpanded = expandedReasoning.contains(turn.id)
@@ -1109,13 +1128,13 @@ struct AskThisPagePanel: View {
             } label: {
                 HStack(spacing: 5) {
                     if isThinking {
-                        Text("Thinking…")
+                        Text(PearlVoice.thinking)
                         TypingDotsView()
                             .scaleEffect(0.7)
                     } else {
                         Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
                             .font(.system(size: 8, weight: .semibold))
-                        Text("Thoughts")
+                        Text(PearlVoice.thoughts)
                     }
                 }
                 .font(.system(size: 10.5, weight: .medium))
@@ -1273,18 +1292,7 @@ struct AskThisPagePanel: View {
     private var chatEmptyState: some View {
         VStack(spacing: 14) {
             Spacer()
-            Image(systemName: "bubble.left.and.bubble.right")
-                .font(.system(size: 26))
-                .foregroundStyle(.secondary)
-            Text(isGeneralChat ? "Ask anything" : "Ask anything about this page")
-                .font(.system(size: 13, weight: .semibold))
-            Text(isGeneralChat
-                ? "Chats on-device with the selected engine. Add a tab to ground answers in a page."
-                : "Answers are grounded in this page's content and generated entirely on-device.")
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal, 32)
+            PearlGreeting(mode: pearlMode)
 
             VStack(spacing: 6) {
                 ForEach(isGeneralChat ? generalExamplePrompts : examplePrompts, id: \.self) { prompt in
@@ -1338,7 +1346,7 @@ struct AskThisPagePanel: View {
 
     private var chatInputRow: some View {
         inputRow(
-            placeholder: isGeneralChat ? "Ask anything…" : "Ask about this page…",
+            placeholder: PearlVoice.placeholder(for: pearlMode),
             canSend: chatSession.canSend,
             isResponding: chatSession.isResponding,
             onSend: sendDraft,
@@ -1691,7 +1699,7 @@ struct AskThisPagePanel: View {
                 }
                 Divider()
                 inputRow(
-                    placeholder: "Ask across these tabs…",
+                    placeholder: PearlVoice.placeholder(for: .tabs),
                     canSend: researchSession.canSend,
                     isResponding: researchSession.isResponding,
                     onSend: sendResearchDraft,
@@ -1714,7 +1722,7 @@ struct AskThisPagePanel: View {
         VStack(spacing: 10) {
             Spacer()
             ProgressView()
-            Text("Reading open tabs…")
+            Text(PearlVoice.readingTabs)
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
             Spacer()
@@ -1795,19 +1803,10 @@ struct AskThisPagePanel: View {
     private var researchEmptyState: some View {
         VStack(spacing: 14) {
             Spacer()
-            Image(systemName: "square.stack.3d.up")
-                .font(.system(size: 26))
-                .foregroundStyle(.secondary)
-            Text("Ask across the selected tabs")
-                .font(.system(size: 13, weight: .semibold))
+            PearlGreeting(mode: .tabs)
             Text(researchStatusLine)
                 .font(.system(size: 10.5))
                 .foregroundStyle(.secondary)
-            Text("Answers cite which tab each fact came from, generated entirely on-device.")
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal, 32)
 
             VStack(spacing: 6) {
                 ForEach(researchExamplePrompts, id: \.self) { prompt in
@@ -1867,6 +1866,42 @@ struct AskThisPagePanel: View {
         draft = ""
         webAgentError = nil
         researchSession.send(text)
+    }
+}
+
+/// Pearl over an empty conversation: her portrait at full size, her opening
+/// line, and — always — the sentence about what she does when the answer isn't
+/// there.
+///
+/// She REPLACES the glyph that used to head both empty states (a speech bubble
+/// in the chat, a stack of cards in research), the same bargain she keeps on
+/// the empty library screens: she costs the screen nothing, because the screen
+/// was already spending that space on a picture. Nothing here is written
+/// inline — every word is `PearlVoice.greeting(for:)`, so the two empty states
+/// cannot introduce her two different ways.
+///
+/// Its own type rather than a `@ViewBuilder` on the panel so that "she is here,
+/// saying this, in every mode" is checkable without a panel, a tab manager or
+/// an available engine (`PearlAssistantVoiceTests`).
+struct PearlGreeting: View {
+    let mode: PearlVoice.Mode
+
+    var body: some View {
+        let greeting = PearlVoice.greeting(for: mode)
+        VStack(spacing: 14) {
+            PearlPortrait(
+                pose: greeting.pose,
+                height: PearlVoice.greetingHeight,
+                label: greeting.accessibilityLabel
+            )
+            Text(greeting.headline)
+                .font(.system(size: 13, weight: .semibold))
+            Text(greeting.detail)
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 32)
+        }
     }
 }
 

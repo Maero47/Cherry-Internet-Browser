@@ -556,7 +556,7 @@ struct NavigationBarView: View {
     private func actionButton(for item: ToolbarButtonID) -> some View {
         switch item {
         case .askThisPage:
-            // Ask Cherry AI (on-device) — quick access, first action icon right
+            // Ask Pearl (on-device) — quick access, first action icon right
             // by the search bar, immediately left of Home. On every surface:
             // it answers about the page when there is one to read, and chats
             // generally when there isn't.
@@ -566,7 +566,7 @@ struct NavigationBarView: View {
                     .foregroundStyle(themedGlyph(SettingsManager.shared.accentColor))
             }
             .buttonStyle(ToolbarButtonStyle())
-            .help("Ask Cherry AI (Cmd+Shift+K)")
+            .help("\(PearlVoice.askAction) (Cmd+Shift+K)")
 
         case .home:
             Button { invoke(.home) } label: {

@@ -193,7 +193,7 @@ struct Internet_BrowserApp: App {
         // of latent collision this whole task exists to remove.
         CommandItem("Take Screenshot", .captureScreenshot, "4", [.command, .option])
         CommandItem("Toggle Focus Mode", .toggleFocusMode, "f", [.command, .shift])
-        CommandItem("Ask This Page", .askThisPage, "k", [.command, .shift])
+        CommandItem(PearlVoice.askAction, .askThisPage, "k", [.command, .shift])
     }
 
     @ViewBuilder
