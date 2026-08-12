@@ -47,6 +47,18 @@ struct LibraryEmptyState {
     let icon: String
     let headline: String
     let detail: String
+
+    /// True for "you have none of these YET", false for "your search matched
+    /// nothing". The two states already carried different words; this is the
+    /// same distinction made available to the view, which spends it on Pearl.
+    ///
+    /// She sleeps on the untouched screens because nothing has happened on
+    /// them yet and that is a warm fact, not a failure. She is deliberately
+    /// absent from the no-results state: there the user is looking for
+    /// something specific and has just been told it isn't here, and a curled
+    /// up cat in the middle of that is the mascot being cute at somebody
+    /// who is trying to work.
+    var isUntouched: Bool = false
 }
 
 /// How much room a row has to work with.
@@ -422,14 +434,37 @@ struct LibrarySearchField: View {
 // MARK: - Empty
 
 /// Nothing here, and a sentence saying what would put something here.
+///
+/// A full-page History, Bookmarks or Downloads screen with nothing in it is
+/// the coldest surface in Cherry: a whole window, a 28pt outline glyph and two
+/// grey sentences. On the three screens where "nothing" means "you haven't
+/// started yet", Pearl sleeps there instead of the glyph. It costs nothing —
+/// she replaces something rather than being added beside it — and it turns an
+/// empty window into a quiet one.
+///
+/// She does NOT replace the glyph on a search that matched nothing; see
+/// `LibraryEmptyState.isUntouched`.
 struct LibraryEmptyView: View {
     let state: LibraryEmptyState
 
     var body: some View {
-        VStack(spacing: 7) {
-            Image(systemName: state.icon)
-                .font(.system(size: 28, weight: .light))
-                .foregroundStyle(LibraryPalette.supporting)
+        VStack(spacing: state.isUntouched ? 12 : 7) {
+            if state.isUntouched {
+                // Hidden from VoiceOver: the two sentences under her already
+                // say what this screen is and what would put something on it,
+                // and this whole stack is combined into one element. She is
+                // the warmth, not the message.
+                PearlPortrait(
+                    pose: .curled,
+                    height: PearlMascot.restingHeight,
+                    label: "Pearl, asleep"
+                )
+                .accessibilityHidden(true)
+            } else {
+                Image(systemName: state.icon)
+                    .font(.system(size: 28, weight: .light))
+                    .foregroundStyle(LibraryPalette.supporting)
+            }
             Text(state.headline)
                 .font(.system(size: 14, weight: .medium))
                 .foregroundStyle(.primary)

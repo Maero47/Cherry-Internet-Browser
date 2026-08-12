@@ -7,8 +7,9 @@ import AppKit
 import Observation
 
 /// The wizard's steps, in the order the user walks them. The declaration
-/// order IS the flow: progress dots, Back/Continue and early finish all
-/// derive from `allCases`, so a step exists exactly by having a case here.
+/// order IS the flow: the progress rule, the step counter, Back/Continue and
+/// early finish all derive from `allCases`, so a step exists exactly by having
+/// a case here.
 ///
 /// The extensions step sits between Import and Tabs, where the seam that
 /// reserved it said it would: everything before it is about Cherry itself,
@@ -37,46 +38,19 @@ enum SetupWizardStep: String, CaseIterable, Identifiable {
         }
     }
 
-    var icon: String {
-        switch self {
-        case .welcome: "hand.wave"
-        case .appearance: "paintpalette"
-        case .searchPrivacy: "magnifyingglass"
-        case .importData: "square.and.arrow.down"
-        case .extensions: "puzzlepiece.extension"
-        case .tabLayout: "macwindow"
-        }
-    }
+    // A per-step SF Symbol used to live here, for the accent-tinted rounded
+    // tile at the top of every step. That tile is gone — a coloured square
+    // with a glyph in it beside a bold title is the most machine-made shape
+    // on a settings-shaped screen, and it said nothing the step's question
+    // does not say better. The symbols the cards use are the cards' own.
 }
 
-/// Where Pearl, Cherry's black-cat mascot, appears on the welcome step.
-///
-/// The artwork has landed (`Assets.xcassets/PearlHero.imageset`), so the
-/// welcome step draws HER — the neutral placeholder that stood in while the
-/// two branches were apart is gone, and nothing draws in her place. This one
-/// string is still the whole binding between the wizard and the catalog: it is
-/// the name the welcome step resolves at render time, so a test that watches
-/// the wizard's own view tree produce an image (rather than merely asserting
-/// the file exists) fails the moment it stops matching the catalog.
-///
-/// `PearlHero` and not `PearlHeroYellow`: the cut-out with the alpha channel,
-/// because she sits directly on the sheet's own material. The yellow-plate
-/// variant carries its own background and would paint a card the sheet did
-/// not ask for.
-enum PearlMascot {
-    static let heroAssetName = "PearlHero"
-
-    /// How tall Pearl is drawn on the welcome step. She is a portrait cut-out
-    /// (162 × 320 at 1x), so height is the dimension that decides how much of
-    /// the page she owns: at 200pt she is the largest thing on it — the page
-    /// reads as her greeting rather than as a form with a picture on it — and
-    /// still leaves the title, the paragraph and the footer un-scrolled inside
-    /// the sheet's 560pt.
-    static let heroHeight: CGFloat = 200
-
-    @MainActor
-    static var heroImage: NSImage? { NSImage(named: heroAssetName) }
-}
+// Pearl herself — her poses, her sizes, her hearts and the one rule about
+// when she may react — lives in `Features/Pearl/PearlMascot.swift`. She
+// appears on library screens as well as in this wizard now, so a home inside
+// Setup would have been the wrong one. `PearlMascot.heroAssetName` and
+// `heroImage` still resolve exactly as they did; they now name the waving
+// pose rather than the gazing one.
 
 /// Navigation state for the setup wizard, and nothing else.
 ///
@@ -93,6 +67,12 @@ final class SetupWizardModel {
     /// a newly added case (the extensions seam) cannot be forgotten here.
     static let steps: [SetupWizardStep] = SetupWizardStep.allCases
 
+    /// How many QUESTIONS the wizard asks — the flow minus the welcome, which
+    /// is Pearl saying hello rather than something to answer. The counter on
+    /// every step reads against this, so it agrees with the welcome page's own
+    /// sentence ("five questions") instead of quietly saying six.
+    static var questionCount: Int { steps.count - 1 }
+
     private(set) var stepIndex = 0
 
     /// Dismisses the sheet. The first-run marker is written by the dismissal
@@ -107,6 +87,20 @@ final class SetupWizardModel {
     var step: SetupWizardStep { Self.steps[stepIndex] }
     var isFirstStep: Bool { stepIndex == 0 }
     var isLastStep: Bool { stepIndex == Self.steps.count - 1 }
+
+    /// How full the rule across the top of the sheet is: empty on the welcome,
+    /// full on the last step. Computed, never stored — every one of these is a
+    /// view of `stepIndex`, and the model is pinned to hold nothing else.
+    var progressFraction: Double {
+        guard Self.steps.count > 1 else { return 1 }
+        return Double(stepIndex) / Double(Self.steps.count - 1)
+    }
+
+    /// Whether the small Pearl belongs in the footer on this step. She is
+    /// there for the four question steps in the middle and nowhere else: on
+    /// the welcome and on the last step she is already on the page at full
+    /// size, and two Pearls at once is a mascot with no idea where it lives.
+    var showsFooterCompanion: Bool { !isFirstStep && !isLastStep }
 
     func advance() {
         if isLastStep {

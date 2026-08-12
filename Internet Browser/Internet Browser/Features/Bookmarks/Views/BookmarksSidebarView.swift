@@ -148,7 +148,8 @@ struct BookmarksSidebarView: View {
             emptyState: LibraryEmptyState(
                 icon: "bookmark",
                 headline: "No bookmarks yet",
-                detail: "Press ⌘D on a page to save it here. Bookmarks you put on the bookmark bar are listed too."
+                detail: "Press ⌘D on a page to save it here. Bookmarks you put on the bookmark bar are listed too.",
+                isUntouched: true
             ),
             noResultsState: LibraryEmptyState(
                 icon: "magnifyingglass",

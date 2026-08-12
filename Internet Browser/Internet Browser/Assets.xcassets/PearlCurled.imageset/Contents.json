@@ -1,0 +1,18 @@
+{
+  "images": [
+    {
+      "idiom": "universal",
+      "filename": "PearlCurled.png",
+      "scale": "1x"
+    },
+    {
+      "idiom": "universal",
+      "filename": "PearlCurled@2x.png",
+      "scale": "2x"
+    }
+  ],
+  "info": {
+    "author": "xcode",
+    "version": 1
+  }
+}

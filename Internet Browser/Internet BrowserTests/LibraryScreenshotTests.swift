@@ -273,7 +273,8 @@ private struct HistoryGallery: View {
             emptyState: LibraryEmptyState(
                 icon: "clock",
                 headline: "No history yet",
-                detail: "Pages you visit are listed here, newest first, until you clear them."
+                detail: "Pages you visit are listed here, newest first, until you clear them.",
+                isUntouched: true
             ),
             noResultsState: LibraryEmptyState(
                 icon: "magnifyingglass",
@@ -324,7 +325,8 @@ private struct BookmarkGallery: View {
             emptyState: LibraryEmptyState(
                 icon: "bookmark",
                 headline: "No bookmarks yet",
-                detail: "Press ⌘D on a page to save it here. Bookmarks you put on the bookmark bar are listed too."
+                detail: "Press ⌘D on a page to save it here. Bookmarks you put on the bookmark bar are listed too.",
+                isUntouched: true
             ),
             noResultsState: LibraryEmptyState(
                 icon: "magnifyingglass",
@@ -370,7 +372,8 @@ private struct DownloadGallery: View {
             emptyState: LibraryEmptyState(
                 icon: "arrow.down.circle",
                 headline: "Nothing downloaded yet",
-                detail: "Files you download are listed here with where they came from and where Cherry put them."
+                detail: "Files you download are listed here with where they came from and where Cherry put them.",
+                isUntouched: true
             ),
             noResultsState: LibraryEmptyState(
                 icon: "magnifyingglass",

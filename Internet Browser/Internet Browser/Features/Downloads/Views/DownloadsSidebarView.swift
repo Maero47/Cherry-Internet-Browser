@@ -199,7 +199,8 @@ struct DownloadsSidebarView: View {
             emptyState: LibraryEmptyState(
                 icon: "arrow.down.circle",
                 headline: "Nothing downloaded yet",
-                detail: "Files you download are listed here with where they came from and where Cherry put them."
+                detail: "Files you download are listed here with where they came from and where Cherry put them.",
+                isUntouched: true
             ),
             noResultsState: LibraryEmptyState(
                 icon: "magnifyingglass",

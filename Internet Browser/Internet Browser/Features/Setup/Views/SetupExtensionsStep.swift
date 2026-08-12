@@ -26,6 +26,8 @@ import SwiftUI
 
 struct SetupExtensionsStep: View {
     @State private var installer: SetupExtensionInstaller
+    private let reactions: PearlReactions?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     /// `nil` means the real one — the shortlist, a real download and the
     /// app's `ExtensionManager`. The parameter exists so a test can hand in an
@@ -34,17 +36,19 @@ struct SetupExtensionsStep: View {
     /// network round trip. (`nil` rather than a default-constructed default
     /// argument: default arguments are evaluated outside the main actor, and
     /// the installer is main-actor state.)
-    init(installer: SetupExtensionInstaller? = nil) {
+    init(installer: SetupExtensionInstaller? = nil, reactions: PearlReactions? = nil) {
         _installer = State(initialValue: installer ?? SetupExtensionInstaller())
+        self.reactions = reactions
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            SetupStepHeader(
-                step: .extensions,
-                title: "Add what you need",
-                subtitle: "A short list, each one loaded into Cherry and watched doing its job. Nothing is added unless you tick it."
+        VStack(alignment: .leading, spacing: SetupMetrics.betweenCards) {
+            SetupStepMasthead(
+                number: 4, total: SetupWizardModel.questionCount,
+                question: "Anything you want added?",
+                subtitle: "Three we loaded into Cherry and watched doing their job. Nothing is added unless you tick it."
             )
+            .padding(.bottom, SetupMetrics.mastheadToControls - SetupMetrics.betweenCards)
 
             SettingsCard(
                 icon: "puzzlepiece.extension",
@@ -59,6 +63,14 @@ struct SetupExtensionsStep: View {
             if !installer.outcomes.isEmpty {
                 SetupExtensionOutcomeList(outcomes: installer.outcomes)
             }
+        }
+        // A reaction for extensions that really installed, and none at all if
+        // every one of them failed — the caveats and the failure lines are
+        // the point of this screen, and a cat celebrating over them would be
+        // the worst thing on it.
+        .onChange(of: installer.outcomes.filter(\.succeeded).count) { _, succeeded in
+            guard succeeded > 0 else { return }
+            reactions?.fire(.choice, reduceMotion: reduceMotion)
         }
     }
 
@@ -89,21 +101,21 @@ struct SetupExtensionsStep: View {
                 Text(installer.hasSelection
                      ? "Cherry will download and install what you ticked."
                      : "Nothing ticked — Continue skips this step. You can add these any time from Settings ▸ Extensions.")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
+                    .font(SetupType.aside)
+                    .foregroundStyle(SetupPalette.supporting)
                     .fixedSize(horizontal: false, vertical: true)
 
             case let .installing(name):
                 ProgressView()
                     .controlSize(.small)
                 Text("Installing \(name)…")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
+                    .font(SetupType.aside)
+                    .foregroundStyle(SetupPalette.supporting)
 
             case .finished:
                 Text("Done. Change any of this later in Settings ▸ Extensions.")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
+                    .font(SetupType.aside)
+                    .foregroundStyle(SetupPalette.supporting)
             }
 
             Spacer(minLength: 0)
@@ -146,12 +158,12 @@ struct SetupExtensionRow: View, Identifiable {
                         .font(.system(size: 13, weight: .semibold))
                     Text(entry.verifiedVersion)
                         .font(.system(size: 10).monospacedDigit())
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(SetupPalette.supporting)
                 }
 
                 Text(entry.summary)
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
+                    .font(SetupType.aside)
+                    .foregroundStyle(SetupPalette.supporting)
                     .fixedSize(horizontal: false, vertical: true)
 
                 if let caveat = entry.caveat {
@@ -182,8 +194,8 @@ struct SetupExtensionCaveat: View {
                 .foregroundStyle(.orange)
                 .padding(.top, 2)
             Text(text)
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
+                .font(SetupType.aside)
+                .foregroundStyle(SetupPalette.supporting)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .padding(.top, 2)
@@ -232,7 +244,7 @@ struct SetupExtensionOutcomeRow: View, Identifiable {
     var body: some View {
         HStack(alignment: .top, spacing: 7) {
             Image(systemName: outcome.succeeded ? "checkmark.circle.fill" : "xmark.octagon.fill")
-                .font(.system(size: 11))
+                .font(SetupType.aside)
                 .foregroundStyle(outcome.succeeded ? Color.green : Color.red)
                 .padding(.top, 1)
 
@@ -240,12 +252,12 @@ struct SetupExtensionOutcomeRow: View, Identifiable {
                 Text(outcome.succeeded
                      ? "\(outcome.displayName) installed"
                      : "\(outcome.displayName) couldn't be installed")
-                    .font(.system(size: 12, weight: .medium))
+                    .font(.system(size: 13, weight: .medium))
 
                 if let failure = outcome.failure {
                     Text(failure)
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
+                        .font(SetupType.aside)
+                        .foregroundStyle(SetupPalette.supporting)
                         .fixedSize(horizontal: false, vertical: true)
                 }
 

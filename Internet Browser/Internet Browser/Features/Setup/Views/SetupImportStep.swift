@@ -19,11 +19,16 @@
 import SwiftUI
 
 struct SetupImportStep: View {
+    /// Optional so the existing `testImportStepDrivesTheSharedImportService`
+    /// can keep constructing this step bare; the wizard always hands one in.
+    var reactions: PearlReactions?
+
     @State private var service = BrowserImportService()
     @State private var selectedBrowserID: SourceBrowser.ID?
     @State private var selectedProfileID: SourceProfile.ID?
     /// What this step offers; the wizard's remit is "bookmarks and history".
     @State private var selectedTypes: Set<ImportableDataType> = [.bookmarks, .history]
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var accent: Color { SettingsManager.shared.accentColor }
 
@@ -42,30 +47,31 @@ struct SetupImportStep: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            SetupStepHeader(
-                step: .importData,
-                title: "Bring your stuff",
+        VStack(alignment: .leading, spacing: SetupMetrics.betweenCards) {
+            SetupStepMasthead(
+                number: 3, total: SetupWizardModel.questionCount,
+                question: "Anything to bring over?",
                 subtitle: "Bookmarks and history from another browser on this Mac."
             )
+            .padding(.bottom, SetupMetrics.mastheadToControls - SetupMetrics.betweenCards)
 
             if service.isDetecting && service.sources.isEmpty {
                 SettingsCard(icon: "square.and.arrow.down", title: "Import From") {
                     HStack(spacing: 8) {
                         ProgressView().controlSize(.small)
                         Text("Looking for installed browsers…")
-                            .font(.system(size: 12))
-                            .foregroundStyle(.secondary)
+                            .font(SetupType.body)
+                            .foregroundStyle(SetupPalette.supporting)
                     }
                 }
             } else if service.sources.isEmpty {
                 SettingsCard(icon: "square.and.arrow.down", title: "Import From") {
                     Text("No other browsers with importable data were found on this Mac.")
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
+                        .font(SetupType.body)
+                        .foregroundStyle(SetupPalette.supporting)
                     Text("You can import any time later from Settings ▸ Import — including passwords from a CSV file.")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
+                        .font(SetupType.aside)
+                        .foregroundStyle(SetupPalette.supporting)
                 }
             } else {
                 importCard
@@ -81,6 +87,14 @@ struct SetupImportStep: View {
                 selectedBrowserID = first.id
                 selectedProfileID = first.profiles.first?.id
             }
+        }
+        // The moment worth a reaction on this step is not a tickbox — it is
+        // the user's own bookmarks arriving. An import that failed, or that
+        // found nothing new, gets nothing: hearts over an error message are
+        // the mascot laughing at you.
+        .onChange(of: service.lastResult?.summaryLines.count ?? 0) { _, lines in
+            guard lines > 0, service.lastResult?.errors.isEmpty == true else { return }
+            reactions?.fire(.choice, reduceMotion: reduceMotion)
         }
     }
 
@@ -127,7 +141,7 @@ struct SetupImportStep: View {
                         Image(systemName: "square.and.arrow.down")
                         Text("Import")
                     }
-                    .font(.system(size: 12.5, weight: .semibold))
+                    .font(.system(size: 13, weight: .semibold))
                     .padding(.horizontal, 14)
                     .padding(.vertical, 6)
                     .background(accent, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
@@ -140,8 +154,8 @@ struct SetupImportStep: View {
                 if service.isImporting {
                     ProgressView().controlSize(.small)
                     Text(service.statusText)
-                        .font(.system(size: 11.5))
-                        .foregroundStyle(.secondary)
+                        .font(SetupType.aside)
+                        .foregroundStyle(SetupPalette.supporting)
                         .lineLimit(1)
                 }
 
@@ -206,19 +220,19 @@ struct SetupImportStep: View {
         ) {
             if result.summaryLines.isEmpty && result.errors.isEmpty {
                 Text("Nothing new to import — everything was already in Cherry.")
-                    .font(.system(size: 12.5))
-                    .foregroundStyle(.secondary)
+                    .font(SetupType.body)
+                    .foregroundStyle(SetupPalette.supporting)
             }
 
             ForEach(result.summaryLines, id: \.self) { line in
                 Label(line, systemImage: "checkmark")
-                    .font(.system(size: 12.5))
+                    .font(SetupType.body)
                     .foregroundStyle(.green)
             }
 
             ForEach(result.errors, id: \.self) { error in
                 Label(error, systemImage: "xmark.octagon")
-                    .font(.system(size: 12.5))
+                    .font(SetupType.body)
                     .foregroundStyle(.orange)
             }
 
@@ -229,7 +243,7 @@ struct SetupImportStep: View {
                     }
                 } label: {
                     Label("Open Full Disk Access Settings", systemImage: "lock.shield")
-                        .font(.system(size: 12, weight: .medium))
+                        .font(.system(size: 13, weight: .medium))
                 }
                 .controlSize(.small)
             }

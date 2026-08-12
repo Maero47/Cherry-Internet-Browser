@@ -205,7 +205,8 @@ struct HistoryView: View {
             emptyState: LibraryEmptyState(
                 icon: "clock",
                 headline: "No history yet",
-                detail: "Pages you visit are listed here, newest first, until you clear them."
+                detail: "Pages you visit are listed here, newest first, until you clear them.",
+                isUntouched: true
             ),
             noResultsState: LibraryEmptyState(
                 icon: "magnifyingglass",

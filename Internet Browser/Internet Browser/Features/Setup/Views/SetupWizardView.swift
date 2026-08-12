@@ -2,10 +2,10 @@
 //  SetupWizardView.swift
 //  Cherry Browser
 //
-//  The first-run setup wizard: a sheet over the launch window that hands the
-//  user the five decisions that actually change how Cherry feels —
-//  appearance, search & privacy, import, extensions, tab layout — and then
-//  gets out of the way.
+//  The first-run setup wizard: a sheet over the launch window that asks the
+//  user five questions that actually change how Cherry feels — appearance,
+//  search & privacy, import, extensions, tab layout — and then gets out of
+//  the way.
 //
 //  Every control here binds straight to `SettingsManager.shared` or calls its
 //  selection methods — the SAME properties and methods the Settings pane
@@ -25,11 +25,39 @@
 //  first-run marker; quitting the app with the sheet still up writes nothing,
 //  so the wizard is offered once more on the next launch.
 //
+//  ## Pearl's arc through the sheet
+//
+//  She is not scattered across it; she moves through it, and where she is
+//  tells you where you are:
+//
+//    welcome     she IS the page — waving, introducing herself, no cards, no
+//                counter, no question.
+//    questions   she has moved down into the footer, 34pt, watching. Every
+//                choice that gets written to settings sends a few hearts up
+//                out of her. She is not a participant; she reacts.
+//    last step   she comes back up onto the page, delighted, and signs off.
+//
+//  Nothing about her delays anything. "Start Browsing" dismisses the sheet on
+//  the same runloop turn it always did — the celebration is a step you are
+//  standing on, not a curtain call you have to sit through.
+//
 
 import SwiftUI
 
 struct SetupWizardView: View {
-    @State private var model: SetupWizardModel
+    /// Internal rather than private so `PearlReactionTests` can drive the real
+    /// wizard — press its Continue, press its Back — and read what actually
+    /// happened. Both are reference types created in `init`, so a test holding
+    /// this struct holds the same objects the rendered view would.
+    @State var model: SetupWizardModel
+    @State var reactions = PearlReactions()
+    /// Which way the last move went, so the incoming step can arrive from the
+    /// side it came from. It lives on the VIEW and not on the model: the model
+    /// is pinned by reflection to hold navigation state and nothing else, and
+    /// the direction of a transition is a fact about an animation, not about
+    /// where the user is in the flow.
+    @State private var movingForward = true
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     init(onFinish: @escaping () -> Void) {
         _model = State(initialValue: SetupWizardModel(onFinish: onFinish))
@@ -39,17 +67,39 @@ struct SetupWizardView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            SetupProgressRule(fraction: model.progressFraction, reduceMotion: reduceMotion)
+
             ScrollView {
                 stepContent
-                    .padding(24)
+                    .padding(.top, SetupMetrics.contentTop)
+                    .padding(.horizontal, SetupMetrics.contentSides)
+                    .padding(.bottom, SetupMetrics.contentBottom)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    // A step change is a moment, so it gets one: the outgoing
+                    // step fades, the incoming one arrives from the side it
+                    // came from — right if you pressed Continue, left if you
+                    // pressed Back. Under Reduce Motion the swap is instant
+                    // and there is no transition at all.
+                    .id(model.stepIndex)
+                    .transition(stepTransition)
             }
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.26), value: model.stepIndex)
 
             Divider()
 
             footer
         }
         .frame(width: 620, height: 560)
+        .accessibilityLabel("Set up Cherry, step \(model.stepIndex + 1) of \(SetupWizardModel.steps.count): \(model.step.title)")
+    }
+
+    private var stepTransition: AnyTransition {
+        guard !reduceMotion else { return .identity }
+        let distance: CGFloat = movingForward ? 22 : -22
+        return .asymmetric(
+            insertion: .opacity.combined(with: .offset(x: distance)),
+            removal: .opacity
+        )
     }
 
     /// Exhaustive over `SetupWizardStep` on purpose: adding a case breaks the
@@ -59,88 +109,156 @@ struct SetupWizardView: View {
     private var stepContent: some View {
         switch model.step {
         case .welcome: SetupWelcomeStep()
-        case .appearance: SetupAppearanceStep()
-        case .searchPrivacy: SetupSearchPrivacyStep()
-        case .importData: SetupImportStep()
-        case .extensions: SetupExtensionsStep()
-        case .tabLayout: SetupTabLayoutStep()
+        case .appearance: SetupAppearanceStep(reactions: reactions)
+        case .searchPrivacy: SetupSearchPrivacyStep(reactions: reactions)
+        case .importData: SetupImportStep(reactions: reactions)
+        case .extensions: SetupExtensionsStep(reactions: reactions)
+        case .tabLayout: SetupTabLayoutStep(reactions: reactions)
         }
+    }
+
+    // MARK: - Moving
+
+    /// Advancing, with the reaction that goes with it, in ONE place.
+    ///
+    /// Internal rather than inlined into the button so the wiring is
+    /// testable: `PearlReactionTests` calls this and reads the pulse, which
+    /// is the difference between pinning "a reaction object exists and obeys
+    /// Reduce Motion" and pinning "pressing Continue actually reaches it".
+    ///
+    /// Arriving at the last step is a bigger moment than finishing a middle
+    /// one, so it gets its own reason. Finishing writes nothing here at all —
+    /// the sheet is going away, and hearts on a view that is being torn down
+    /// are hearts nobody sees.
+    func advance(reduceMotion: Bool) {
+        guard !model.isLastStep else {
+            model.finish()
+            return
+        }
+        movingForward = true
+        model.advance()
+        reactions.fire(model.isLastStep ? .arrived : .stepDone, reduceMotion: reduceMotion)
+    }
+
+    /// Back is not a celebration. Pinned by a test, because the tempting
+    /// symmetry — fire on every navigation — turns the hearts into a scroll
+    /// indicator.
+    func goBack() {
+        movingForward = false
+        model.goBack()
     }
 
     // MARK: - Footer
 
+    /// One row, not two stacked ones. Pearl and the quiet line hold the left,
+    /// the buttons hold the right, and the gap between them is the only
+    /// alignment the footer needs.
     private var footer: some View {
-        VStack(spacing: 10) {
-            // Lowers the stakes of every choice on screen — and it's true:
-            // each step writes ordinary settings the Settings pane can undo.
-            Text("Everything here can be changed later in Settings.")
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
-
-            HStack(spacing: 10) {
-                if !model.isFirstStep {
-                    Button("Back") { model.goBack() }
-                        .controlSize(.large)
-                }
-
-                progressDots
-
-                Spacer(minLength: 0)
-
-                if !model.isLastStep {
-                    Button("Skip Setup") { model.finish() }
-                        .controlSize(.large)
-                }
-
-                Button(primaryButtonTitle) { model.advance() }
-                    .controlSize(.large)
-                    .buttonStyle(.borderedProminent)
-                    .keyboardShortcut(.defaultAction)
+        HStack(spacing: 12) {
+            if model.showsFooterCompanion {
+                footerPearl
             }
+
+            if !model.isFirstStep {
+                // Lowers the stakes of every choice on screen — and it's true:
+                // each step writes ordinary settings the Settings pane can
+                // undo. Absent on the welcome, where the paragraph already
+                // says it and saying it twice is what a form does.
+                Text("Everything here is in Settings too.")
+                    .font(SetupType.aside)
+                    .foregroundStyle(SetupPalette.supporting)
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: 8)
+
+            if !model.isFirstStep {
+                Button("Back") { goBack() }
+                    .controlSize(.large)
+            }
+
+            if !model.isLastStep {
+                Button("Skip Setup") { model.finish() }
+                    .controlSize(.large)
+            }
+
+            Button(primaryButtonTitle) { advance(reduceMotion: reduceMotion) }
+                .controlSize(.large)
+                .buttonStyle(.borderedProminent)
+                .keyboardShortcut(.defaultAction)
         }
         .padding(.horizontal, 20)
-        .padding(.vertical, 14)
+        .padding(.vertical, 13)
+    }
+
+    /// Pearl in the footer, with the hearts coming up out of her.
+    ///
+    /// The burst is an `.overlay` aligned to her top, so it contributes no
+    /// layout at all — the footer's height does not move when she reacts, and
+    /// nothing on the row shifts under the pointer. `.id(pulse)` is what makes
+    /// a second reaction restart the animation instead of being swallowed.
+    ///
+    /// Hidden from VoiceOver, unlike the welcome and the sign-off where she is
+    /// the content: here she is company, and a mascot announcing itself in the
+    /// footer of all four question steps is four interruptions on the way to
+    /// the buttons.
+    private var footerPearl: some View {
+        PearlPortrait(
+            pose: .sitting,
+            height: PearlMascot.companionHeight,
+            label: "Pearl"
+        )
+        .overlay(alignment: .top) {
+            if reactions.pulse > 0 {
+                PearlHeartBurst()
+                    .id(reactions.pulse)
+                    .offset(y: -6)
+            }
+        }
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
     }
 
     private var primaryButtonTitle: String {
-        if model.isFirstStep { return "Set Up Cherry" }
+        // "First question" rather than "Set Up Cherry": the welcome has just
+        // promised five questions, and a button that says which one comes
+        // next is the rare place where being specific is also being warmer.
+        if model.isFirstStep { return "First question" }
         if model.isLastStep { return "Start Browsing" }
         return "Continue"
-    }
-
-    private var progressDots: some View {
-        HStack(spacing: 5) {
-            ForEach(Array(SetupWizardModel.steps.enumerated()), id: \.element) { index, step in
-                Circle()
-                    .fill(index == model.stepIndex ? accent : Color.primary.opacity(0.15))
-                    .frame(width: 6, height: 6)
-                    .accessibilityHidden(true)
-                    .help(step.title)
-            }
-        }
-        .padding(.leading, 8)
-        .accessibilityElement()
-        .accessibilityLabel("Step \(model.stepIndex + 1) of \(SetupWizardModel.steps.count): \(model.step.title)")
     }
 }
 
 // MARK: - Welcome
 
+/// Pearl introduces herself. No counter, no question, no cards — this page is
+/// one picture, one line she says, one paragraph, and the button.
 struct SetupWelcomeStep: View {
     var body: some View {
-        VStack(spacing: 14) {
+        VStack(spacing: 0) {
             pearl
-                .padding(.top, 4)
 
-            Text("Welcome to Cherry")
-                .font(.system(size: 24, weight: .bold))
-
-            Text("A minute of setup, five choices — how Cherry looks, how it searches, what it brings over, what you want added, and how your tabs sit. Skip any of it; nothing here is permanent.")
-                .font(.system(size: 13))
-                .foregroundStyle(.secondary)
+            // Her name is the biggest thing on the page and the only 30pt type
+            // in the wizard. "Hi, I'm Pearl" was the brief's own example; this
+            // is shorter than that and says more — she is not an assistant
+            // being introduced to you, she is the cat who was already here.
+            //
+            // Short on purpose in a second sense as well: at 30pt semibold this
+            // is about 360pt of a 556pt column, so it cannot wrap on to a
+            // second line and leave one orphaned word under her.
+            Text("I'm Pearl. I live here.")
+                .font(SetupType.welcome)
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: 420)
+                .padding(.top, 16)
+
+            Text("Nothing here is set up yet. Five questions and Cherry starts feeling like yours — skip any you don't care about, they're all in Settings too, and I'll be around either way.")
+                .font(SetupType.body)
+                .foregroundStyle(SetupPalette.supporting)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: 410)
+                .padding(.top, 10)
         }
         .frame(maxWidth: .infinity)
     }
@@ -151,44 +269,48 @@ struct SetupWelcomeStep: View {
     /// the sheet's material with no plate, no clip and no shadow of ours: the
     /// painting already carries its own cream outline.
     ///
+    /// The pose is `.waving` and not the original `.gazing` hero for one
+    /// reason: the hero looks up and away, and a cat who is not looking at you
+    /// cannot be the one introducing herself. Nothing else on the page moved
+    /// to accommodate it — she is the same height in the same place.
+    ///
     /// The stand-in that stood here while the artwork lived on another branch
     /// is GONE — no placeholder, no neutral pawprint, nothing drawn in her
-    /// place. The empty branch below is not a fallback anyone should ever see:
-    /// her imageset is compiled into this same bundle by this same build, so
-    /// reaching it means the app shipped without its own asset catalog entry,
-    /// and `SetupWizardPearlTests` fails on exactly that — it reads the image
-    /// back out of this view's tree, so a wizard that renders no Pearl is a
-    /// red test rather than a quietly emptier welcome.
-    ///
-    /// Resolved here (`heroImage`) rather than handed to `Image(_:)` as a
-    /// name, so the resolution happens where the test can watch it: what this
-    /// view carries is the decoded `NSImage`, not a string that SwiftUI might
-    /// or might not find something for at render time.
-    @ViewBuilder
+    /// place. `PearlPortrait`'s empty branch is not a fallback anyone should
+    /// ever see: her imageset is compiled into this same bundle by this same
+    /// build, so reaching it means the app shipped without its own asset
+    /// catalog entry, and `SetupWizardPearlTests` fails on exactly that — it
+    /// reads the image back out of this view's tree, so a wizard that renders
+    /// no Pearl is a red test rather than a quietly emptier welcome.
     private var pearl: some View {
-        if let hero = PearlMascot.heroImage {
-            Image(nsImage: hero)
-                .resizable()
-                .scaledToFit()
-                .frame(height: PearlMascot.heroHeight)
-                .accessibilityLabel("Pearl, Cherry's cat")
-        }
+        PearlPortrait(
+            pose: .waving,
+            height: PearlMascot.heroHeight,
+            label: "Pearl, Cherry's cat, waving hello"
+        )
     }
 }
 
 // MARK: - Appearance & theme
 
-private struct SetupAppearanceStep: View {
+/// Internal rather than private so `PearlReactionTests` can reach the accent
+/// swatches' own actions and prove that the tap which writes the setting is
+/// the same tap that sends the hearts up.
+struct SetupAppearanceStep: View {
+    let reactions: PearlReactions
+
     @Bindable private var settings = SettingsManager.shared
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private var customImageStore: HomepageCustomImageStore { .shared }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            SetupStepHeader(
-                step: .appearance,
-                title: "Make it yours",
-                subtitle: "Appearance, accent colour and the homepage background."
+        VStack(alignment: .leading, spacing: SetupMetrics.betweenCards) {
+            SetupStepMasthead(
+                number: 1, total: SetupWizardModel.questionCount,
+                question: "How should Cherry look?",
+                subtitle: "Light or dark, the colour it tints, and what sits behind your homepage."
             )
+            .padding(.bottom, SetupMetrics.mastheadToControls - SetupMetrics.betweenCards)
 
             SettingsCard(icon: "circle.lefthalf.filled", title: "Appearance") {
                 SettingsLabeledRow(title: "Light, dark, or follow the Mac") {
@@ -200,6 +322,9 @@ private struct SetupAppearanceStep: View {
                     .labelsHidden()
                     .pickerStyle(.segmented)
                     .frame(width: 210)
+                    .onChange(of: settings.appearanceMode) { _, _ in
+                        reactions.fire(.choice, reduceMotion: reduceMotion)
+                    }
                 }
             }
 
@@ -209,14 +334,7 @@ private struct SetupAppearanceStep: View {
                 subtitle: "Tints controls and highlights across Cherry."
             ) {
                 HStack(spacing: 11) {
-                    ForEach(AccentColorOption.options) { option in
-                        AccentSwatch(
-                            option: option,
-                            isSelected: settings.accentColorHex == option.hex
-                        ) {
-                            settings.accentColorHex = option.hex
-                        }
-                    }
+                    ForEach(accentSwatches, id: \.option.id) { swatch in swatch }
                 }
             }
 
@@ -236,6 +354,7 @@ private struct SetupAppearanceStep: View {
                             isSelected: settings.homepageCustomImageIsActive
                         ) {
                             settings.selectCustomImageHomepageBackground()
+                            reactions.fire(.choice, reduceMotion: reduceMotion)
                         }
                     }
 
@@ -248,6 +367,7 @@ private struct SetupAppearanceStep: View {
                         icon: "wand.and.stars"
                     ) {
                         settings.selectAutoHomepageBackground()
+                        reactions.fire(.choice, reduceMotion: reduceMotion)
                     }
 
                     ForEach(HomepageTheme.allCases) { theme in
@@ -260,6 +380,7 @@ private struct SetupAppearanceStep: View {
                                 && settings.homepageTheme == theme
                         ) {
                             settings.selectCuratedHomepageTheme(theme)
+                            reactions.fire(.choice, reduceMotion: reduceMotion)
                         }
                     }
                 }
@@ -273,6 +394,28 @@ private struct SetupAppearanceStep: View {
                     }
                     .controlSize(.small)
                 }
+            }
+        }
+    }
+
+    /// The accent swatches, MATERIALIZED as values rather than produced inside
+    /// the `ForEach` builder closure — the same move `SetupExtensionsStep`
+    /// makes with its rows, and for the same reason: a closure is opaque to
+    /// `Mirror`, an array of values is not.
+    ///
+    /// What that buys here is the one test worth having about the hearts —
+    /// `PearlReactionTests` reaches into this step, takes a swatch's own
+    /// action and calls it, and asserts that the tap which writes the accent
+    /// is the same tap that makes Pearl react. Wire the reaction to some other
+    /// code path and that test goes red.
+    private var accentSwatches: [AccentSwatch] {
+        AccentColorOption.options.map { option in
+            AccentSwatch(
+                option: option,
+                isSelected: settings.accentColorHex == option.hex
+            ) {
+                settings.accentColorHex = option.hex
+                reactions.fire(.choice, reduceMotion: reduceMotion)
             }
         }
     }
@@ -295,16 +438,23 @@ private struct SetupAppearanceStep: View {
 
 // MARK: - Search & privacy
 
+/// One subject leads: who answers your searches. Privacy is the second card
+/// rather than a co-headline, because a step whose title names two things has
+/// no most-important thing on it.
 private struct SetupSearchPrivacyStep: View {
+    let reactions: PearlReactions
+
     @Bindable private var settings = SettingsManager.shared
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            SetupStepHeader(
-                step: .searchPrivacy,
-                title: "Search and privacy",
-                subtitle: "Who answers your searches, and what pages are allowed to do."
+        VStack(alignment: .leading, spacing: SetupMetrics.betweenCards) {
+            SetupStepMasthead(
+                number: 2, total: SetupWizardModel.questionCount,
+                question: "Who answers your searches?",
+                subtitle: "And what pages are allowed to do while you're on them."
             )
+            .padding(.bottom, SetupMetrics.mastheadToControls - SetupMetrics.betweenCards)
 
             SettingsCard(icon: "magnifyingglass", title: "Search") {
                 SettingsLabeledRow(
@@ -315,6 +465,9 @@ private struct SetupSearchPrivacyStep: View {
                         selection: $settings.searchEngine,
                         options: SearchEngine.allCases.map { .init($0, $0.rawValue) }
                     )
+                    .onChange(of: settings.searchEngine) { _, _ in
+                        reactions.fire(.choice, reduceMotion: reduceMotion)
+                    }
                 }
             }
 
@@ -324,6 +477,9 @@ private struct SetupSearchPrivacyStep: View {
                     subtitle: "You can pause blocking per site from the toolbar.",
                     isOn: $settings.adBlockEnabled
                 )
+                .onChange(of: settings.adBlockEnabled) { _, _ in
+                    reactions.fire(.choice, reduceMotion: reduceMotion)
+                }
 
                 Divider()
 
@@ -341,18 +497,32 @@ private struct SetupSearchPrivacyStep: View {
     }
 }
 
-// MARK: - Tab layout
+// MARK: - Tab layout — and the sign-off
 
+/// The last question, and the only step besides the welcome that Pearl stands
+/// on. It is the shortest step in the wizard — one card, two rows — which is
+/// exactly why she fits here and why the end of the sheet does not feel like
+/// it just stopped.
+///
+/// She signs off where she said hello, and the sheet dismisses the instant
+/// Start Browsing is pressed. There is no celebration animation between the
+/// press and the dismissal, deliberately: making somebody watch a cat for
+/// three quarters of a second before their browser appears is exactly the
+/// "in the way" this design is not allowed to be.
 private struct SetupTabLayoutStep: View {
+    let reactions: PearlReactions
+
     @Bindable private var settings = SettingsManager.shared
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            SetupStepHeader(
-                step: .tabLayout,
-                title: "Arrange your tabs",
-                subtitle: "Where tabs live, and whether the bookmark bar is out."
+        VStack(alignment: .leading, spacing: SetupMetrics.betweenCards) {
+            SetupStepMasthead(
+                number: 5, total: SetupWizardModel.questionCount,
+                question: "Where do your tabs go?",
+                subtitle: "Along the top, or down the side."
             )
+            .padding(.bottom, SetupMetrics.mastheadToControls - SetupMetrics.betweenCards)
 
             SettingsCard(icon: "macwindow", title: "Window Layout") {
                 SettingsLabeledRow(
@@ -366,43 +536,53 @@ private struct SetupTabLayoutStep: View {
                             .init(true, "Vertical", systemImage: "rectangle.leadingthird.inset.filled"),
                         ]
                     )
+                    .onChange(of: settings.useVerticalTabs) { _, _ in
+                        reactions.fire(.choice, reduceMotion: reduceMotion)
+                    }
                 }
 
                 Divider()
 
                 SettingsToggleRow(title: "Show Bookmark Bar", isOn: $settings.showBookmarkBar)
+                    .onChange(of: settings.showBookmarkBar) { _, _ in
+                        reactions.fire(.choice, reduceMotion: reduceMotion)
+                    }
             }
+
+            signOff
+                .padding(.top, 4)
         }
     }
-}
 
-// MARK: - Shared header
-
-/// Icon + title + subtitle at the top of each step, in the step's own words.
-struct SetupStepHeader: View {
-    let step: SetupWizardStep
-    let title: String
-    let subtitle: String
-
-    private var accent: Color { SettingsManager.shared.accentColor }
-
-    var body: some View {
-        HStack(spacing: 12) {
-            Image(systemName: step.icon)
-                .font(.system(size: 17, weight: .semibold))
-                .foregroundStyle(accent)
-                .frame(width: 38, height: 38)
-                .background(accent.opacity(0.13), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(.system(size: 17, weight: .bold))
-                Text(subtitle)
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+    /// Her closing line, beside her, never over her — the artwork carries no
+    /// text at all anywhere in this wizard, which is why the contrast question
+    /// on these screens is about her own rim light separating from the sheet
+    /// rather than about type on a picture.
+    ///
+    /// The offline game is a real thing that really is behind the failure
+    /// page, so pointing at it is a small gift rather than a joke.
+    private var signOff: some View {
+        HStack(alignment: .bottom, spacing: 14) {
+            PearlPortrait(
+                pose: .delighted,
+                height: PearlMascot.farewellHeight,
+                label: "Pearl, delighted"
+            )
+            .overlay(alignment: .top) {
+                if reactions.pulse > 0 {
+                    PearlHeartBurst()
+                        .id(reactions.pulse)
+                        .offset(y: 6)
+                }
             }
+            .allowsHitTesting(false)
+
+            Text("That's the five of them. I'll be around — and if your connection ever drops, come and find me on the offline page. I'll race you.")
+                .font(SetupType.body)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.bottom, 14)
+
+            Spacer(minLength: 0)
         }
-        .padding(.bottom, 2)
     }
 }
