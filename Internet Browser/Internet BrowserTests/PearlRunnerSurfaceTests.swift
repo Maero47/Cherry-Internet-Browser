@@ -165,12 +165,12 @@ final class PearlRunnerLifecycleTests: XCTestCase {
 
     override func setUp() {
         super.setUp()
-        suiteName = "PearlRunnerLifecycleTests-\(UUID().uuidString)"
-        defaults = UserDefaults(suiteName: suiteName)
+        suiteName = ThrowawayDefaults.name("PearlRunnerLifecycleTests")
+        defaults = ThrowawayDefaults.make(suiteName)
     }
 
     override func tearDown() {
-        defaults.removePersistentDomain(forName: suiteName)
+        ThrowawayDefaults.destroy(defaults, named: suiteName)
         super.tearDown()
     }
 
@@ -338,12 +338,12 @@ final class PearlSpaceToStartTests: XCTestCase {
 
     override func setUp() {
         super.setUp()
-        suiteName = "PearlSpaceToStartTests-\(UUID().uuidString)"
-        defaults = UserDefaults(suiteName: suiteName)
+        suiteName = ThrowawayDefaults.name("PearlSpaceToStartTests")
+        defaults = ThrowawayDefaults.make(suiteName)
     }
 
     override func tearDown() {
-        defaults.removePersistentDomain(forName: suiteName)
+        ThrowawayDefaults.destroy(defaults, named: suiteName)
         super.tearDown()
     }
 
@@ -522,12 +522,12 @@ final class PearlHighScoreStoreTests: XCTestCase {
 
     override func setUp() {
         super.setUp()
-        suiteName = "PearlHighScoreStoreTests-\(UUID().uuidString)"
-        defaults = UserDefaults(suiteName: suiteName)
+        suiteName = ThrowawayDefaults.name("PearlHighScoreStoreTests")
+        defaults = ThrowawayDefaults.make(suiteName)
     }
 
     override func tearDown() {
-        defaults.removePersistentDomain(forName: suiteName)
+        ThrowawayDefaults.destroy(defaults, named: suiteName)
         super.tearDown()
     }
 

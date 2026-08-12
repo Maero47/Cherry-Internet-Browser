@@ -8,14 +8,32 @@ import XCTest
 
 final class SessionRestoreGroupTests: XCTestCase {
 
+    /// The keys `SessionRestoreManager` writes, spelled out because they are
+    /// what has to be put back.
+    private static let sessionKeys = [
+        "sessionRestoreTabs", "sessionRestoreGroups", "sessionRestoreSelectedIndex",
+    ]
+
     override func setUp() {
         super.setUp()
+        // `SessionRestoreManager.shared` writes the app's REAL defaults — the
+        // test host is the owner's browser, and these keys are the tabs it
+        // reopens on the next launch. Clearing them to get a clean slate is
+        // right; leaving them cleared would silently throw the owner's saved
+        // session away. Snapshot first, and put it back through a teardown
+        // block registered BEFORE anything is touched, so a test that fails
+        // part-way still restores.
+        let saved = Self.sessionKeys.reduce(into: [String: Any]()) { snapshot, key in
+            snapshot[key] = UserDefaults.standard.object(forKey: key)
+        }
+        addTeardownBlock {
+            SessionRestoreManager.shared.clearSession()
+            for key in Self.sessionKeys {
+                guard let value = saved[key] else { continue }
+                UserDefaults.standard.set(value, forKey: key)
+            }
+        }
         SessionRestoreManager.shared.clearSession()
-    }
-
-    override func tearDown() {
-        SessionRestoreManager.shared.clearSession()
-        super.tearDown()
     }
 
     func testSavedTabEntryDecodesMissingGroupIDAsNil() throws {

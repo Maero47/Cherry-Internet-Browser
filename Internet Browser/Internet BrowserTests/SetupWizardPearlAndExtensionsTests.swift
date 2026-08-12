@@ -268,29 +268,33 @@ final class SetupExtensionStepTests: XCTestCase {
         XCTAssertTrue(installer.host === ExtensionManager.shared)
     }
 
-    /// End to end, with the REAL `ExtensionManager` — only the download is
+    /// End to end through a real `ExtensionManager` — only the download is
     /// substituted, for a package built here on disk. This is what dies if
     /// `installShortlistPackage` stops calling `loadExtension`: the extension
-    /// would never appear in the app's installed list, and the wizard would
+    /// would never appear in the host's installed list, and the wizard would
     /// report a success that installed nothing.
     ///
-    /// Uses (and cleans up after itself in) the user's real managed
-    /// extensions directory, the same way `ExtensionRuntimeTests` does.
+    /// A REAL manager but not `ExtensionManager.shared`: driving `shared`
+    /// installs the fixture into the owner's own browser, and a failure
+    /// between the install and the cleanup leaves it there, enabled. That the
+    /// wizard's default host IS `shared` is pinned above, by identity, with
+    /// nothing installed.
     func testATickedEntryReallyEndsUpInstalledInTheApp() async throws {
         let fixture = try Self.makeFixtureExtensionPackage()
         defer { try? FileManager.default.removeItem(at: fixture.deletingLastPathComponent()) }
 
-        let before = Set(ExtensionManager.shared.installedExtensions.map(\.id))
+        let host = isolatedManager()
+        let before = Set(host.installedExtensions.map(\.id))
         let installer = SetupExtensionInstaller(
             entries: ExtensionShortlist.entries,
             download: { _ in fixture },
-            host: ExtensionManager.shared
+            host: host
         )
         installer.toggle(try uboEntry())
 
         await installer.installSelected()
-        let added = Set(ExtensionManager.shared.installedExtensions.map(\.id)).subtracting(before)
-        defer { for id in added { ExtensionManager.shared.remove(extensionID: id) } }
+        let added = Set(host.installedExtensions.map(\.id)).subtracting(before)
+        defer { for id in added { host.remove(extensionID: id) } }
 
         let outcome = try XCTUnwrap(installer.outcomes.first)
         XCTAssertNil(outcome.failure, "the fixture package failed to install: \(outcome.failure ?? "")")
@@ -307,11 +311,12 @@ final class SetupExtensionStepTests: XCTestCase {
         let junk = try Self.makeStubPackageFile(named: "not-an-extension.xpi")
         defer { try? FileManager.default.removeItem(at: junk.deletingLastPathComponent()) }
 
-        let before = try managedExtensionDirectories()
+        let host = isolatedManager()
+        let before = try managedExtensionDirectories(of: host)
         let installer = SetupExtensionInstaller(
             entries: ExtensionShortlist.entries,
             download: { _ in junk },
-            host: ExtensionManager.shared
+            host: host
         )
         installer.toggle(try uboEntry())
 
@@ -319,7 +324,7 @@ final class SetupExtensionStepTests: XCTestCase {
 
         let outcome = try XCTUnwrap(installer.outcomes.first)
         XCTAssertFalse(outcome.succeeded, "WebKit refused this package; the wizard said it installed")
-        XCTAssertEqual(try managedExtensionDirectories(), before,
+        XCTAssertEqual(try managedExtensionDirectories(of: host), before,
                        "a refused wizard install left an orphan folder behind")
     }
 
@@ -353,9 +358,20 @@ final class SetupExtensionStepTests: XCTestCase {
 
     private func uboEntry() throws -> ExtensionShortlistEntry { try entry("ubo-lite") }
 
-    private func managedExtensionDirectories() throws -> [String] {
-        try FileManager.default
-            .contentsOfDirectory(atPath: ExtensionManager.extensionsDirectory.path)
+    /// A manager with its own extensions directory, deleted when the test
+    /// ends — so an install that really happens really is undone, whatever
+    /// the test does in between.
+    private func isolatedManager() -> ExtensionManager {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cherry-wizard-ext-\(UUID().uuidString)", isDirectory: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        return ExtensionManager.isolatedForTesting(directory: directory)
+    }
+
+    private func managedExtensionDirectories(of manager: ExtensionManager) throws -> [String] {
+        guard FileManager.default.fileExists(atPath: manager.managedDirectory.path) else { return [] }
+        return try FileManager.default
+            .contentsOfDirectory(atPath: manager.managedDirectory.path)
             .filter { $0 != "index.json" }
             .sorted()
     }

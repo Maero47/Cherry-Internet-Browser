@@ -8,6 +8,12 @@
 //  marker in the developer's real defaults is load-bearing (it is what keeps
 //  the wizard from re-greeting the owner) and must never be touched.
 //
+//  A real suite rather than `MemoryFirstRunStore`, unlike the wizard's other
+//  tests: what is under test here IS the defaults store — that the marker
+//  reaches the disk and survives a relaunch — and an in-memory double would
+//  assert that of itself. The suite goes through `ThrowawayDefaults`, so the
+//  preference file it creates is deleted along with its contents.
+//
 
 import XCTest
 @testable import Cherry
@@ -19,12 +25,12 @@ final class SetupWizardFirstRunTests: XCTestCase {
 
     override func setUp() {
         super.setUp()
-        suiteName = "SetupWizardFirstRunTests-\(UUID().uuidString)"
-        defaults = UserDefaults(suiteName: suiteName)
+        suiteName = ThrowawayDefaults.name("SetupWizardFirstRunTests")
+        defaults = ThrowawayDefaults.make(suiteName)
     }
 
     override func tearDown() {
-        defaults.removePersistentDomain(forName: suiteName)
+        ThrowawayDefaults.destroy(defaults, named: suiteName)
         defaults = nil
         super.tearDown()
     }
@@ -49,7 +55,7 @@ final class SetupWizardFirstRunTests: XCTestCase {
     /// stand-in for a relaunch.
     func testMarkerSurvivesRelaunch() {
         SetupWizardFirstRun.markSeen(in: defaults)
-        let relaunched = UserDefaults(suiteName: suiteName)!
+        let relaunched = ThrowawayDefaults.make(suiteName)!
         XCTAssertFalse(SetupWizardFirstRun.shouldShow(in: relaunched))
     }
 

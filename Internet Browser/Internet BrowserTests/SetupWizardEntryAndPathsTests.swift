@@ -17,17 +17,19 @@ import XCTest
 @MainActor
 final class SetupWizardEntryAndPathsTests: XCTestCase {
 
-    private var suiteName = ""
-    private var defaults: UserDefaults!
+    private var defaults: MemoryFirstRunStore!
     private var savedPresenter: SetupWizardPresenter!
 
     override func setUp() {
         super.setUp()
-        suiteName = "SetupWizardEntryTests-\(UUID().uuidString)"
-        defaults = UserDefaults(suiteName: suiteName)
-        // Swap in a presenter over a throwaway store, with the test-host
-        // guard off, so the real entry points can win a claim in here without
-        // ever touching the developer's real first-run marker.
+        // A store this class owns — empty, so it reads as a first run on the
+        // owner's machine as much as on a fresh one — behind a presenter with
+        // the test-host guard off, so the real entry points can win a claim in
+        // here without ever reading or writing the owner's real marker. It is
+        // memory, not a `UserDefaults` suite: a suite would be a real
+        // preference domain in the owner's home, and would leave its plist
+        // behind.
+        defaults = MemoryFirstRunStore()
         savedPresenter = SetupWizardPresenter.shared
         SetupWizardPresenter.shared = SetupWizardPresenter(defaults: defaults, respectsTestHost: false)
     }
@@ -35,7 +37,6 @@ final class SetupWizardEntryAndPathsTests: XCTestCase {
     override func tearDown() {
         SetupWizardPresenter.shared = savedPresenter
         savedPresenter = nil
-        defaults.removePersistentDomain(forName: suiteName)
         defaults = nil
         super.tearDown()
     }

@@ -22,10 +22,17 @@
 //     tests below hold the two sides apart: a package with a dropped entry
 //     loads AND says what was dropped; a package WebKit refuses still fails.
 //
-//  These load real packages through the app's real `ExtensionManager`, which
-//  shares the user's Application Support extension index. Every load is
-//  removed again in a `defer` on the same statement that created it, and the
-//  fixtures live in the temporary directory.
+//  These load real packages through a real `ExtensionManager` — but never
+//  through `ExtensionManager.shared`, which installs into the USER'S
+//  Application Support extension index. Removing each load in a `defer` was
+//  not enough: a test that fails between the load and the defer, or a host
+//  that dies, leaves the fixture installed and enabled in the owner's
+//  browser, which is how two copies of uBO Lite once ended up in it. Each
+//  load below goes through `ExtensionManager.isolatedForTesting(directory:)`
+//  over a temporary directory that is deleted with the test, the same way
+//  `ExtensionOptionsPageTests` and `ExtensionDuplicateInstallTests` do it.
+//  The one thing still read from `shared` is its controller's configuration,
+//  which is read and not written.
 //
 
 import WebKit
@@ -34,6 +41,16 @@ import XCTest
 
 @MainActor
 final class ExtensionRuntimeTests: XCTestCase {
+
+    /// A manager with its own extensions directory, deleted when the test
+    /// ends. Everything that LOADS a package uses one of these; the user's
+    /// own extension index is never installed into.
+    private func isolatedManager() -> ExtensionManager {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cherry-runtime-\(UUID().uuidString)", isDirectory: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        return ExtensionManager.isolatedForTesting(directory: directory)
+    }
 
     // MARK: - The user agent extension pages get
 
@@ -103,8 +120,9 @@ final class ExtensionRuntimeTests: XCTestCase {
     /// background page now sees.
     func testAnExtensionPopupReallySendsTheUserAgent() async throws {
         let package = try makeFixturePackage(named: "user-agent", manifest: Self.popupManifest)
-        let loaded = try await ExtensionManager.shared.loadExtension(from: package)
-        defer { ExtensionManager.shared.remove(extensionID: loaded.id) }
+        let manager = isolatedManager()
+        let loaded = try await manager.loadExtension(from: package)
+        defer { manager.remove(extensionID: loaded.id) }
 
         let popup = try XCTUnwrap(loaded.context.action(for: nil)?.popupWebView,
                                   "fixture popup web view unavailable — harness problem, not a UA one")
@@ -136,18 +154,19 @@ final class ExtensionRuntimeTests: XCTestCase {
     /// loaded/not-loaded flag, fails here.
     func testAPackageWithADroppedEntryLoadsAndSaysWhatWasDropped() async throws {
         let package = try makeFixturePackage(named: "dropped-entry", manifest: Self.droppedEntryManifest)
-        let installedBefore = ExtensionManager.shared.installedExtensions.count
+        let manager = isolatedManager()
+        let installedBefore = manager.installedExtensions.count
 
-        let loaded = try await ExtensionManager.shared.loadExtension(from: package)
-        defer { ExtensionManager.shared.remove(extensionID: loaded.id) }
+        let loaded = try await manager.loadExtension(from: package)
+        defer { manager.remove(extensionID: loaded.id) }
 
         // It is RUNNING: a context exists and the controller holds it.
-        XCTAssertTrue(ExtensionManager.shared.loadedExtensions.contains { $0.id == loaded.id },
+        XCTAssertTrue(manager.loadedExtensions.contains { $0.id == loaded.id },
                       "an extension with a dropped manifest entry must still be loaded")
-        XCTAssertEqual(ExtensionManager.shared.installedExtensions.count, installedBefore + 1)
+        XCTAssertEqual(manager.installedExtensions.count, installedBefore + 1)
 
         let installed = try XCTUnwrap(
-            ExtensionManager.shared.installedExtensions.first { $0.id == loaded.id }
+            manager.installedExtensions.first { $0.id == loaded.id }
         )
         guard case .partiallyDropped(let dropped) = installed.packageStatus else {
             return XCTFail("expected dropped entries to be a warning, got \(installed.packageStatus)")
@@ -180,24 +199,25 @@ final class ExtensionRuntimeTests: XCTestCase {
         try "not a manifest".write(to: package.appendingPathComponent("readme.txt"),
                                    atomically: true, encoding: .utf8)
 
-        let installedBefore = ExtensionManager.shared.installedExtensions.map(\.id)
-        let managedBefore = try managedExtensionDirectories()
+        let manager = isolatedManager()
+        let installedBefore = manager.installedExtensions.map(\.id)
+        let managedBefore = try managedExtensionDirectories(of: manager)
 
         var thrown: (any Error)?
         do {
-            let loaded = try await ExtensionManager.shared.loadExtension(from: package)
-            ExtensionManager.shared.remove(extensionID: loaded.id)
+            let loaded = try await manager.loadExtension(from: package)
+            manager.remove(extensionID: loaded.id)
         } catch {
             thrown = error
         }
 
         let failure = try XCTUnwrap(thrown, "a package with no manifest must not report as loaded")
-        XCTAssertEqual(ExtensionManager.shared.installedExtensions.map(\.id), installedBefore,
+        XCTAssertEqual(manager.installedExtensions.map(\.id), installedBefore,
                        "a failed load must not leave an installed extension behind")
         // …nor a copy of the package on disk: the managed copy is taken
         // before WebKit is asked to parse it, and an orphan there is
         // unreachable from the settings pane forever.
-        XCTAssertEqual(try managedExtensionDirectories(), managedBefore,
+        XCTAssertEqual(try managedExtensionDirectories(of: manager), managedBefore,
                        "a failed load left its package copy in the extensions directory")
 
         // The same reason, seen from the launch-time reload path (which has
@@ -274,9 +294,10 @@ final class ExtensionRuntimeTests: XCTestCase {
     /// Every per-extension folder in the app's managed extensions directory,
     /// sorted. This is the USER'S real directory (the tests run in the hosted
     /// app), which is exactly why what these tests leave in it matters.
-    private func managedExtensionDirectories() throws -> [String] {
+    private func managedExtensionDirectories(of manager: ExtensionManager) throws -> [String] {
+        guard FileManager.default.fileExists(atPath: manager.managedDirectory.path) else { return [] }
         let contents = try FileManager.default.contentsOfDirectory(
-            atPath: ExtensionManager.extensionsDirectory.path
+            atPath: manager.managedDirectory.path
         )
         return contents.filter { $0 != "index.json" }.sorted()
     }

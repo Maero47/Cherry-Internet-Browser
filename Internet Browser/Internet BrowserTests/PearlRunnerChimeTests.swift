@@ -129,12 +129,12 @@ final class PearlRunnerChimeTests: XCTestCase {
 
     override func setUp() {
         super.setUp()
-        suiteName = "PearlRunnerChimeTests-\(UUID().uuidString)"
-        defaults = UserDefaults(suiteName: suiteName)
+        suiteName = ThrowawayDefaults.name("PearlRunnerChimeTests")
+        defaults = ThrowawayDefaults.make(suiteName)
     }
 
     override func tearDown() {
-        defaults.removePersistentDomain(forName: suiteName)
+        ThrowawayDefaults.destroy(defaults, named: suiteName)
         super.tearDown()
     }
 

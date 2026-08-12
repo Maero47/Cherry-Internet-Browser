@@ -231,9 +231,9 @@ final class PearlPetPlacementTests: XCTestCase {
     // MARK: - Where she was left
 
     func testWhereSheWasLeftSurvivesAndCannotCorrupt() throws {
-        let suiteName = "pearl-pet-home-\(UUID().uuidString)"
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
-        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let suiteName = ThrowawayDefaults.name("pearl-pet-home")
+        let defaults = try XCTUnwrap(ThrowawayDefaults.make(suiteName))
+        defer { ThrowawayDefaults.destroy(defaults, named: suiteName) }
 
         let home = PearlPetHome(defaults: defaults)
         XCTAssertEqual(home.spot, .home, "no key must mean her corner")
@@ -264,9 +264,9 @@ final class PearlPetPlacementTests: XCTestCase {
     /// rather than recomputed from the window she is in, and on any of the
     /// clamps being dropped.
     func testASpotSavedInABigWindowLandsInsideASmallOne() throws {
-        let suiteName = "pearl-pet-relaunch-\(UUID().uuidString)"
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
-        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let suiteName = ThrowawayDefaults.name("pearl-pet-relaunch")
+        let defaults = try XCTUnwrap(ThrowawayDefaults.make(suiteName))
+        defer { ThrowawayDefaults.destroy(defaults, named: suiteName) }
 
         let big = CGSize(width: 2560, height: 1440)
         let home = PearlPetHome(defaults: defaults)

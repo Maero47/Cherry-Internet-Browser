@@ -157,9 +157,9 @@ final class PearlTimerSeamTests: XCTestCase {
         let runnerDriver = SilentDriver()
         // Its own defaults: this test is about timers, and it has no business
         // writing a high score onto the machine it runs on.
-        let suite = "PearlTimerSeamTests-\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suite)!
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let suite = ThrowawayDefaults.name("PearlTimerSeamTests")
+        let defaults = ThrowawayDefaults.make(suite)!
+        defer { ThrowawayDefaults.destroy(defaults, named: suite) }
         let runner = PearlRunnerController(
             seed: 1,
             driver: runnerDriver,

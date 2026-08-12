@@ -173,12 +173,12 @@ final class PearlRunnerSpaceReachesTheRunnerTests: PearlRunnerKeyboardTestCase {
 
     override func setUp() {
         super.setUp()
-        suiteName = "PearlRunnerKeyboardTests-\(UUID().uuidString)"
-        defaults = UserDefaults(suiteName: suiteName)
+        suiteName = ThrowawayDefaults.name("PearlRunnerKeyboardTests")
+        defaults = ThrowawayDefaults.make(suiteName)
     }
 
     override func tearDown() {
-        defaults.removePersistentDomain(forName: suiteName)
+        ThrowawayDefaults.destroy(defaults, named: suiteName)
         super.tearDown()
     }
 

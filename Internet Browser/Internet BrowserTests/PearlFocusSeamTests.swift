@@ -97,12 +97,12 @@ final class PearlFocusSeamTests: PearlRunnerKeyboardTestCase {
 
     override func setUp() {
         super.setUp()
-        suiteName = "PearlFocusSeamTests-\(UUID().uuidString)"
-        defaults = UserDefaults(suiteName: suiteName)
+        suiteName = ThrowawayDefaults.name("PearlFocusSeamTests")
+        defaults = ThrowawayDefaults.make(suiteName)
     }
 
     override func tearDown() {
-        defaults.removePersistentDomain(forName: suiteName)
+        ThrowawayDefaults.destroy(defaults, named: suiteName)
         super.tearDown()
     }
 

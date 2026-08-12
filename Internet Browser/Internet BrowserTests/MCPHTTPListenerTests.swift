@@ -379,9 +379,9 @@ final class MCPHTTPListenerTests: XCTestCase {
     /// A fresh install opens no socket. This reads the same code path `init`
     /// uses, against a throwaway suite.
     func testFeatureIsOffOnFreshUserDefaults() throws {
-        let suiteName = "MCPHTTPListenerTests-\(UUID().uuidString)"
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
-        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let suiteName = ThrowawayDefaults.name("MCPHTTPListenerTests")
+        let defaults = try XCTUnwrap(ThrowawayDefaults.make(suiteName))
+        defer { ThrowawayDefaults.destroy(defaults, named: suiteName) }
 
         XCTAssertFalse(SettingsManager.mcpServerEnabled(from: defaults))
         XCTAssertEqual(SettingsManager.mcpServerPort(from: defaults), 8787)
@@ -417,9 +417,9 @@ final class MCPHTTPListenerTests: XCTestCase {
     }
 
     func testStoredPortIsHonouredAndOutOfRangeValuesFallBack() throws {
-        let suiteName = "MCPHTTPListenerTests-\(UUID().uuidString)"
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
-        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let suiteName = ThrowawayDefaults.name("MCPHTTPListenerTests")
+        let defaults = try XCTUnwrap(ThrowawayDefaults.make(suiteName))
+        defer { ThrowawayDefaults.destroy(defaults, named: suiteName) }
 
         defaults.set(9999, forKey: "mcpServerPort")
         XCTAssertEqual(SettingsManager.mcpServerPort(from: defaults), 9999)

@@ -5,6 +5,29 @@
 
 import Foundation
 
+/// The one store the first-run marker is read from and written to.
+///
+/// A protocol rather than `UserDefaults` itself, for the sake of the tests
+/// that walk a real first run: they have to be able to hand the wizard a store
+/// that is EMPTY BY CONSTRUCTION. A `UserDefaults(suiteName:)` suite is not
+/// that — it is a real preference domain in the owner's own
+/// `~/Library/Preferences`, it is searched alongside other domains, and
+/// whether the owner's real marker can be seen through it is an
+/// implementation detail of CFPreferences rather than anything the test
+/// states. A test that means "this machine has never finished the wizard"
+/// should be able to say so outright.
+///
+/// `UserDefaults` conforms as it stands — both members already exist on it
+/// with these signatures — so the shipped path is unchanged: the app still
+/// passes `UserDefaults.standard` and the marker still lives in the app's own
+/// defaults.
+protocol FirstRunMarkerStore: AnyObject {
+    func object(forKey defaultName: String) -> Any?
+    func set(_ value: Any?, forKey defaultName: String)
+}
+
+extension UserDefaults: FirstRunMarkerStore {}
+
 /// The explicit first-run marker behind the setup wizard.
 ///
 /// "First run" is exactly one fact: this key has never been written. Not "no
@@ -30,11 +53,11 @@ enum SetupWizardFirstRun {
     /// True only while nothing has ever been stored under the key. Any stored
     /// object — current version, older version, corrupt junk — means the
     /// wizard has had its one showing.
-    static func shouldShow(in defaults: UserDefaults) -> Bool {
+    static func shouldShow(in defaults: FirstRunMarkerStore) -> Bool {
         defaults.object(forKey: seenVersionKey) == nil
     }
 
-    static func markSeen(in defaults: UserDefaults) {
+    static func markSeen(in defaults: FirstRunMarkerStore) {
         defaults.set(currentVersion, forKey: seenVersionKey)
     }
 }
@@ -85,11 +108,11 @@ final class SetupWizardPresenter {
             || NSClassFromString("XCTestCase") != nil
     }()
 
-    private let defaults: UserDefaults
+    private let defaults: FirstRunMarkerStore
     private let respectsTestHost: Bool
     private(set) var hasClaimedThisSession = false
 
-    init(defaults: UserDefaults = .standard, respectsTestHost: Bool = true) {
+    init(defaults: FirstRunMarkerStore = UserDefaults.standard, respectsTestHost: Bool = true) {
         self.defaults = defaults
         self.respectsTestHost = respectsTestHost
     }

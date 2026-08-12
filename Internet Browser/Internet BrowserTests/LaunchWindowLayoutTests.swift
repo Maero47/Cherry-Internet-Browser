@@ -181,6 +181,24 @@ private func pump(_ seconds: TimeInterval) {
     RunLoop.main.run(until: Date().addingTimeInterval(seconds))
 }
 
+/// Pumps the main runloop until `condition` holds, and no longer than
+/// `seconds`.
+///
+/// For the waits whose subject is not the timing: "the sheet is up" is a
+/// precondition of the tests that then check what dismissing it writes, and a
+/// fixed sleep makes those tests report on how loaded the machine is. Nothing
+/// is softened by this — a sheet that never arrives still fails the caller's
+/// assertion, at the same deadline it would have failed at before. The tests
+/// whose subject IS the ordering keep their fixed pumps, because for them
+/// "not yet" and "by the next turn" are the whole point.
+@MainActor
+private func pumpUntil(_ seconds: TimeInterval, _ condition: () -> Bool) {
+    let deadline = Date().addingTimeInterval(seconds)
+    while !condition() && Date() < deadline {
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+    }
+}
+
 // MARK: - The returning user's launch window
 
 @MainActor
@@ -247,7 +265,7 @@ final class LaunchWindowLayoutTests: XCTestCase {
 /// would be measuring a window with a sheet on it — and the consequence was
 /// that the one launch sequence nobody had measured was the one a first-run
 /// user actually gets. So the guard is not sidestepped here, it is switched
-/// off ON PURPOSE, over a throwaway defaults suite, and the resulting window
+/// off ON PURPOSE, over a store this class owns, and the resulting window
 /// is put through the SAME comparison `LaunchWindowLayoutTests` uses.
 ///
 /// What is being guarded: the wizard must claim SYNCHRONOUSLY (bookkeeping,
@@ -256,29 +274,57 @@ final class LaunchWindowLayoutTests: XCTestCase {
 /// show → sheet. Presenting inside the bring-up callout is geometry activity
 /// on a window that is coming up, which is precisely what stranded the
 /// homepage's glyphs in the first place.
+///
+/// ## The state these tests own
+///
+/// "A first run" is the whole premise here, and the test host shares the
+/// owner's real `UserDefaults` — so on any machine that has finished the
+/// wizard, a first run is the one state this class cannot borrow. It brings
+/// its own: `MemoryFirstRunStore`, empty by construction, handed to a
+/// presenter with the test-host guard switched off. Nothing about the answer
+/// depends on what the machine's own marker says, on whether a
+/// `UserDefaults` suite is searched alongside the app's domain, or on the app
+/// having been run before; and nothing is written to the owner's defaults,
+/// not even the empty suite plist a throwaway suite leaves behind.
+///
+/// The state is asserted before it is relied on, too (`openFirstRunWindow`).
+/// The failure this replaces was `precondition: the sheet came up` — true,
+/// and useless: the sheet had not come up BECAUSE the wizard was never
+/// offered, and nothing said so.
 @MainActor
 final class LaunchWindowFirstRunLayoutTests: XCTestCase {
 
-    private var suiteName = ""
-    private var defaults: UserDefaults!
+    private var store: MemoryFirstRunStore!
     private var savedPresenter: SetupWizardPresenter!
+    /// The owner's real marker, as it was on the way in. Never asserted on —
+    /// only compared with itself on the way out.
+    private var ownersMarkerOnEntry: String = ""
 
     override func setUp() {
         super.setUp()
-        suiteName = "LaunchWindowFirstRun-\(UUID().uuidString)"
-        defaults = UserDefaults(suiteName: suiteName)
+        store = MemoryFirstRunStore()
         savedPresenter = SetupWizardPresenter.shared
-        // Guard off, throwaway store: a real first run, and the developer's
-        // own first-run marker is never read or written.
-        SetupWizardPresenter.shared = SetupWizardPresenter(defaults: defaults, respectsTestHost: false)
+        ownersMarkerOnEntry = Self.ownersMarker()
+        // Guard off, a store this test owns: a real first run, on any machine.
+        SetupWizardPresenter.shared = SetupWizardPresenter(defaults: store, respectsTestHost: false)
     }
 
     override func tearDown() {
         SetupWizardPresenter.shared = savedPresenter
         savedPresenter = nil
-        defaults.removePersistentDomain(forName: suiteName)
-        defaults = nil
+        store = nil
+        // The wizard writes its marker when the sheet is dismissed, and these
+        // tests dismiss three of them. Every one of those writes must have
+        // landed in this class's own store: a run of the suite must not end
+        // with the owner offered the wizard again, nor with it silently
+        // marked seen for someone who has never been shown it.
+        XCTAssertEqual(Self.ownersMarker(), ownersMarkerOnEntry,
+                       "these tests changed the owner's real first-run marker")
         super.tearDown()
+    }
+
+    private static func ownersMarker() -> String {
+        String(describing: UserDefaults.standard.object(forKey: SetupWizardFirstRun.seenVersionKey))
     }
 
     /// The ordering itself, measured on a real window from the real function.
@@ -326,7 +372,7 @@ final class LaunchWindowFirstRunLayoutTests: XCTestCase {
         let (window, viewModel) = try openFirstRunWindow(at: frame)
         defer { dismissAndClose(window, viewModel) }
 
-        pump(2.0)
+        pumpUntil(4.0) { window.attachedSheet != nil }
         XCTAssertNotNil(window.attachedSheet, "precondition: the wizard sheet is up over this window")
 
         if viewModel.tabManager.selectedTab?.showHomePage != true {
@@ -366,15 +412,15 @@ final class LaunchWindowFirstRunLayoutTests: XCTestCase {
     func testDismissingTheLaunchWindowsWizardEndsFirstRunForGood() throws {
         let (window, viewModel) = try openFirstRunWindow(at: NSRect(x: 160, y: 140, width: 1050, height: 720))
         defer { dismissAndClose(window, viewModel) }
-        pump(1.0)
+        pumpUntil(4.0) { viewModel.showSetupWizard }
         XCTAssertTrue(viewModel.showSetupWizard, "precondition: the sheet came up")
 
         viewModel.showSetupWizard = false
         pump(0.5)
 
-        XCTAssertFalse(SetupWizardFirstRun.shouldShow(in: defaults))
+        XCTAssertFalse(SetupWizardFirstRun.shouldShow(in: store))
         XCTAssertFalse(
-            SetupWizardPresenter(defaults: defaults, respectsTestHost: false)
+            SetupWizardPresenter(defaults: store, respectsTestHost: false)
                 .claimPresentation(isPrivate: false),
             "a relaunch after finishing offered the wizard again"
         )
@@ -393,6 +439,19 @@ final class LaunchWindowFirstRunLayoutTests: XCTestCase {
     /// `associatedWindow` would mean pumping first — and the whole point of
     /// the ordering assertions is to look BEFORE anything is pumped.
     private func openFirstRunWindow(at frame: NSRect) throws -> (NSWindow, BrowserViewModel) {
+        // The two facts every assertion below rests on, checked while they can
+        // still be named. Without these, a window that is simply never offered
+        // the wizard fails as "the sheet came up" — which is what it looks
+        // like from the outside, and tells nobody why.
+        XCTAssertTrue(
+            SetupWizardFirstRun.shouldShow(in: store),
+            "precondition: this class's own store must read as a first run"
+        )
+        XCTAssertFalse(
+            SetupWizardPresenter.shared.hasClaimedThisSession,
+            "precondition: the session's one wizard claim was spent before this window opened"
+        )
+
         let before = Set(BrowserViewModel.windowViewModels.keys)
         openBrowserWindow(isPrivate: false, frame: frame)
         let window = try XCTUnwrap(BrowserViewModel.detachedWindows.last,
@@ -406,8 +465,8 @@ final class LaunchWindowFirstRunLayoutTests: XCTestCase {
     }
 
     /// Takes the sheet down BEFORE `tearDown` restores the real presenter, so
-    /// the dismissal's `markSeen` lands in this test's throwaway suite and
-    /// never on the developer's own first-run marker.
+    /// the dismissal's `markSeen` lands in this class's own store and never on
+    /// the owner's first-run marker. `tearDown` checks that it did.
     private func dismissAndClose(_ window: NSWindow, _ viewModel: BrowserViewModel) {
         viewModel.showSetupWizard = false
         pump(0.3)

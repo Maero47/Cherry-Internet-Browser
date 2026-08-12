@@ -206,9 +206,9 @@ final class MCPSettingsPresentationTests: XCTestCase {
     }
 
     func testAFreshInstallSaysOffWithoutHavingStartedAnything() {
-        let suiteName = "MCPSettingsPresentationTests-\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let suiteName = ThrowawayDefaults.name("MCPSettingsPresentationTests")
+        let defaults = ThrowawayDefaults.make(suiteName)!
+        defer { ThrowawayDefaults.destroy(defaults, named: suiteName) }
 
         XCTAssertFalse(SettingsManager.mcpServerEnabled(from: defaults))
         let state = presentation(
