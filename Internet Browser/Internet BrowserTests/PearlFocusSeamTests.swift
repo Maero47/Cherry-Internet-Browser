@@ -260,9 +260,18 @@ final class PearlFocusSeamTests: PearlRunnerKeyboardTestCase {
     /// answer — she is a sibling view in the same pane, and `giveBack()` hands
     /// the keyboard to a remembered responder.
     ///
+    /// The window has a second keyboard slot standing in for Cherry's chrome,
+    /// and that is load-bearing rather than scenery. With ONE slot in the
+    /// window, AppKit's own key-view recalculation lands the keyboard back on
+    /// it when the runner's slot is torn down — so the assertion below passes
+    /// whether or not `giveBack()` exists, which is what a first draft of this
+    /// test did. With two, the fallback is ambiguous and only the handover
+    /// knows which of them was actually typing, which is also the shape of a
+    /// real browser window.
+    ///
     /// Dies on: `PearlPetView` accepting first responder (she then becomes a
-    /// candidate the borrow can land on), and on `giveBack()` losing its
-    /// "still in this window" check.
+    /// candidate the borrow can land on), deleting the section's `onDisappear`
+    /// give-back, and on `giveBack()` losing its "still in this window" check.
     func testTheRunnerBorrowsFromThePageAndGivesItBackToThePage() {
         let driver = KeyboardSeamDriver()
         let presence = FailureScreenPresence()
@@ -273,12 +282,14 @@ final class PearlFocusSeamTests: PearlRunnerKeyboardTestCase {
         // pane — rather than a foreign subview inside SwiftUI's own hosting
         // view, which SwiftUI is entitled to rearrange.
         let container = NSView(frame: CGRect(x: 0, y: 0, width: 900, height: 600))
+        let chrome = FocusPageStandIn(frame: CGRect(x: 0, y: 560, width: 900, height: 40))
+        container.addSubview(chrome)
         let hosting = NSHostingView(
             rootView: AnyView(
                 PageThatCanFail(presence: presence, controller: controller(driver), made: { page = $0 })
             )
         )
-        hosting.frame = container.bounds
+        hosting.frame = CGRect(x: 0, y: 0, width: 900, height: 560)
         container.addSubview(hosting)
         let cat = pearl(in: container.bounds.size, driver: SilentDriver())
         container.addSubview(cat)
