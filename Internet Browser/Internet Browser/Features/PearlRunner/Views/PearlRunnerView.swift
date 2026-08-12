@@ -43,6 +43,14 @@
 //  What does not grow is the idle mark: it stands in for the failure symbol
 //  and has to stay the symbol's height, or the copy below it moves.
 //
+//  ## What colour any of it is
+//
+//  Not this file's decision, and not the appearance's either: the field is a
+//  dusk tone picked for the sprite sheet's own baked colours, the same one in
+//  Aqua and in Dark Aqua, because a near-black cat and a near-white gull share
+//  every frame and only the middle serves both. `PearlRunnerPalette` is where
+//  that is measured and argued.
+//
 //  ## Starting
 //
 //  The game still never starts itself: no frame is simulated, and no driver
@@ -295,23 +303,51 @@ struct PearlRunnerSection: View {
 /// from the sprite the game itself runs on, so the mark and the runner are
 /// visibly the same cat; in placeholder mode it is the same silhouette the
 /// canvas draws.
-private struct PearlStillMark: View {
+///
+/// ## Why she is on a chip and not on the page
+///
+/// She is the same near-black cat here as she is in a run, and the offline
+/// page in Dark Aqua is `#1E1E1E`. Standing straight on it, the mark measured
+/// **1.22:1** — a cat-shaped hole with two gold eyes in it, where every other
+/// failure family has a legible symbol. The runner sheet has no cream rim
+/// light to save her the way the mascot art does (see `PearlContrastTests`),
+/// so what saves her is the same thing that saves her in a run: the field.
+///
+/// The mark is therefore a 30pt chip of `PearlRunnerPalette.day` with Pearl
+/// standing on it — the game's own tone, at rest, so the field the space bar
+/// grows is a field already on screen. The chip is the height the mark has
+/// always been, so nothing below it moves; Pearl inside it is 26pt, which is
+/// the drawn height of the 26pt symbol she stands in for.
+///
+/// Internal for the same reason `PearlRunnerCanvas` is: the harness measures
+/// the tone this view actually puts behind her, walked out of its own body,
+/// rather than the palette it is supposed to be reading.
+struct PearlStillMark: View {
 
-    /// Matches the 26pt symbol's drawn height closely enough that the copy
-    /// below sits where it sits on every other failure screen.
+    /// The chip. Matches the 26pt symbol's drawn height closely enough that
+    /// the copy below sits where it sits on every other failure screen.
     private static let height = 30.0
+    /// Pearl inside it.
+    private static let inset = 2.0
+
+    private static var catHeight: Double { height - inset * 2 }
 
     var body: some View {
         Group {
             if let image = PearlSpriteLibrary.shared.image("run", frame: 0) {
                 image.resizable()
             } else {
-                RoundedRectangle(cornerRadius: 4).fill(FailurePalette.body)
+                RoundedRectangle(cornerRadius: 4).fill(PearlRunnerPalette.silhouette)
             }
         }
         .frame(
-            width: Self.height * PearlSpriteContract.run.width / PearlSpriteContract.run.height,
-            height: Self.height
+            width: Self.catHeight * PearlSpriteContract.run.width / PearlSpriteContract.run.height,
+            height: Self.catHeight
+        )
+        .padding(Self.inset)
+        .background(
+            RoundedRectangle(cornerRadius: 5, style: .continuous)
+                .fill(PearlRunnerPalette.day)
         )
         .accessibilityHidden(true)
     }
@@ -346,6 +382,14 @@ private struct PearlRunnerSurface: View {
         // ratio inside a maximum: the magnification is `PearlField`'s answer,
         // and the canvas is drawn at precisely it.
         .frame(width: metrics.width, height: metrics.height)
+        // The corners have to come off now. The canvas fills a rectangle and
+        // the hairline round it is `LibraryShape.rowShape` — the address
+        // box's shape, which is how the field is joined to the page rather
+        // than dropped on it. While the field was near-white on a near-white
+        // page nobody could see the four square corners poking out past that
+        // curve; a dusk field on either page colour, they are the first thing
+        // you see.
+        .clipShape(LibraryShape.rowShape)
         .overlay(LibraryShape.rowShape.stroke(FailurePalette.hairline, lineWidth: 1))
         .overlay(
             LibraryShape.rowShape
@@ -370,7 +414,14 @@ private struct PearlRunnerSurface: View {
 /// (no sheet in the bundle yet) every element is a flat rectangle at exactly
 /// the logical size the sprite contract fixes, so the geometry being played
 /// is the geometry being drawn either way.
-private struct PearlRunnerCanvas: View {
+///
+/// Internal rather than private, and its three tones are internal properties,
+/// because the contrast harness measures THIS — the colour the canvas hands
+/// to `context.fill`, for a game value it built — rather than the palette the
+/// canvas is supposed to be reading. A field hardcoded back into the renderer
+/// is the mutation that has to die, and a test that asks the palette cannot
+/// see it.
+struct PearlRunnerCanvas: View {
 
     let game: PearlRunnerGame
     let highScore: Int
@@ -379,13 +430,28 @@ private struct PearlRunnerCanvas: View {
 
     private var sprites: PearlSpriteLibrary { .shared }
 
-    /// Day is paper, night is sky; the ink flips with it, Chrome-runner
-    /// style, so the placeholder silhouettes stay visible in both.
-    private var background: Color {
-        game.isNight ? Color(red: 0.09, green: 0.09, blue: 0.12) : Color(red: 0.97, green: 0.97, blue: 0.96)
-    }
-    private var ink: Color {
-        game.isNight ? Color(red: 0.92, green: 0.92, blue: 0.90) : Color(red: 0.20, green: 0.20, blue: 0.22)
+    /// The field. Never the page's colour: the sheet's cast runs from a
+    /// near-black cat to a near-white gull, and only a dusk tone in the middle
+    /// leaves both of them visible — see `PearlRunnerPalette`. `isNight` moves
+    /// it within that band; the appearance does not move it at all.
+    var background: Color { PearlRunnerPalette.field(isNight: game.isNight) }
+
+    /// Text, and the bright half of the placeholder cast. One tone now, in day
+    /// and night alike, because the field no longer crosses the middle.
+    var ink: Color { PearlRunnerPalette.ink }
+
+    /// The dark half of the placeholder cast: Pearl and the trees, drawn in
+    /// the sheet's own near-black so a sheet-less run reads the way a real one
+    /// does.
+    var silhouette: Color { PearlRunnerPalette.silhouette }
+
+    /// The score's tone as it is actually drawn, blink included. A function
+    /// rather than a literal at the call site because the strength is half the
+    /// measurement — 11pt white at full opacity clears the text floor on both
+    /// fields and the three quarters it used to be drawn at does not — and the
+    /// harness has to be able to ask for the number that ships.
+    func scoreInk(blinkedOut: Bool) -> Color {
+        ink.opacity(blinkedOut ? 0.25 : 1)
     }
 
     var body: some View {
@@ -422,7 +488,7 @@ private struct PearlRunnerCanvas: View {
             if let image = sprites.image("cloud", frame: 0) {
                 context.draw(image, in: rect)
             } else {
-                context.fill(Path(roundedRect: rect, cornerRadius: 6), with: .color(ink.opacity(0.25)))
+                context.fill(Path(roundedRect: rect, cornerRadius: 6), with: .color(ink.opacity(0.85)))
             }
         }
 
@@ -544,7 +610,7 @@ private struct PearlRunnerCanvas: View {
             } else {
                 context.fill(
                     Path(roundedRect: rect.insetBy(dx: 1, dy: 0), cornerRadius: 2),
-                    with: .color(ink.opacity(0.85))
+                    with: .color(silhouette)
                 )
             }
         }
@@ -575,14 +641,15 @@ private struct PearlRunnerCanvas: View {
         if let image = sprites.image(name, frame: frameIndex) {
             context.draw(image, in: rect)
         } else {
-            // Pearl is a black cat; the placeholder is her silhouette, with
-            // the run cycle shown as a 1pt bob so life reads before art does.
+            // Pearl is a black cat; the placeholder is her silhouette, in her
+            // own near-black rather than in the ink, with the run cycle shown
+            // as a 1pt bob so life reads before art does.
             var body = rect
             if name == "run" && frameIndex == 1 {
                 body.origin.y += 1
                 body.size.height -= 1
             }
-            context.fill(Path(roundedRect: body, cornerRadius: 4), with: .color(ink))
+            context.fill(Path(roundedRect: body, cornerRadius: 4), with: .color(silhouette))
         }
     }
 
@@ -598,9 +665,13 @@ private struct PearlRunnerCanvas: View {
         if highScore > 0 {
             line = "HI " + String(format: "%05d", highScore) + "  " + line
         }
+        // Full strength between blinks. It used to be 0.75, which was
+        // affordable on paper and is not on a dusk field: the score is 11pt
+        // text, it wants 4.5:1, and the field's brightness ceiling was solved
+        // for the brightest ink there is rather than for three quarters of it.
         let text = Text(line)
             .font(.system(size: 11, weight: .medium, design: .monospaced))
-            .foregroundStyle(ink.opacity(blinkedOut ? 0.2 : 0.75))
+            .foregroundStyle(scoreInk(blinkedOut: blinkedOut))
         context.draw(text, at: CGPoint(x: PearlWorld.width - 10, y: 10), anchor: .topTrailing)
     }
 
