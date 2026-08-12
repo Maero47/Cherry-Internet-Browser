@@ -33,6 +33,11 @@ Re-running it is idempotent: it always rebuilds from the runner's original
 region plus the generated poses.
 
     python3 Tools/pearl-sprites/build_pet_frames.py
+
+One thing it does NOT know about: step 2 above snaps to the runner's AMBER
+palette, so running this re-golds Pearl's eyes whatever colour they were
+shipping in. `Tools/pearl-eyes/pearl_eyes.py` is what decides that, and it has
+to be re-run afterwards — `PearlEyeColourTests` is what fails if it is not.
 """
 
 import json
