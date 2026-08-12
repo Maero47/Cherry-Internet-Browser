@@ -45,8 +45,7 @@ struct SetupExtensionsStep: View {
         VStack(alignment: .leading, spacing: SetupMetrics.betweenCards) {
             SetupStepMasthead(
                 number: 4, total: SetupWizardModel.questionCount,
-                question: "Anything you want added?",
-                subtitle: "Three we loaded into Cherry and watched doing their job. Nothing is added unless you tick it."
+                question: "Anything you want added?"
             )
             .padding(.bottom, SetupMetrics.mastheadToControls - SetupMetrics.betweenCards)
 

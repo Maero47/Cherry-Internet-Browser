@@ -27,15 +27,18 @@
 //
 //  ## Pearl's arc through the sheet
 //
-//  She is not scattered across it; she moves through it, and where she is
-//  tells you where you are:
+//  She is not scattered across it; she ARRIVES at each part of it, and where
+//  she is tells you where you are:
 //
 //    welcome     she IS the page — waving, introducing herself, no cards, no
 //                counter, no question.
-//    questions   she has moved down into the footer, 34pt, watching. Every
-//                choice that gets written to settings sends a few hearts up
-//                out of her. She is not a participant; she reacts.
-//    last step   she comes back up onto the page, delighted, and signs off.
+//    questions   she comes up at the top of each one, 120pt, with a speech
+//                bubble that says what that question is for — then one click
+//                and she is gone for the rest of it.
+//    last step   the same arrival, delighted, and her bubble is the goodbye.
+//
+//  `SetupPearlIntro.swift` owns all of that, including the reason she is no
+//  longer a small permanent tenant of the footer.
 //
 //  Nothing about her delays anything. "Start Browsing" dismisses the sheet on
 //  the same runloop turn it always did — the celebration is a step you are
@@ -51,6 +54,10 @@ struct SetupWizardView: View {
     /// this struct holds the same objects the rendered view would.
     @State var model: SetupWizardModel
     @State var reactions = PearlReactions()
+    /// Which steps Pearl has already had her one appearance on. Internal for
+    /// the same reason `reactions` is: `PearlIntroTests` drives the real
+    /// wizard's Continue and Back and reads what happened to her.
+    @State var intro = PearlIntroDirector()
     /// Which way the last move went, so the incoming step can arrive from the
     /// side it came from. It lives on the VIEW and not on the model: the model
     /// is pinned by reflection to hold navigation state and nothing else, and
@@ -102,11 +109,36 @@ struct SetupWizardView: View {
         )
     }
 
+    /// Her arrival, then the step itself.
+    ///
+    /// The intro is assembled HERE and not inside each step view, so there is
+    /// one place that decides she appears, one place that decides she is above
+    /// the question rather than over it, and no step that can quietly forget
+    /// her. It is in the layout flow — nothing is covered, nothing is blocked,
+    /// and every control below is complete on the frame she lands on.
+    @ViewBuilder
+    private var stepContent: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if let arrival = PearlIntroScript.arrival(on: model.step),
+               intro.isPresent(on: model.step) {
+                PearlIntro(
+                    arrival: arrival,
+                    pulse: reactions.pulse,
+                    reduceMotion: reduceMotion,
+                    onSkip: { skipPearl() }
+                )
+                .padding(.bottom, SetupMetrics.mastheadToControls)
+            }
+
+            stepBody
+        }
+    }
+
     /// Exhaustive over `SetupWizardStep` on purpose: adding a case breaks the
     /// build until it has a view here — which is how the extensions step got
     /// walked in without anyone having to remember a second list.
     @ViewBuilder
-    private var stepContent: some View {
+    private var stepBody: some View {
         switch model.step {
         case .welcome: SetupWelcomeStep()
         case .appearance: SetupAppearanceStep(reactions: reactions)
@@ -136,6 +168,7 @@ struct SetupWizardView: View {
             return
         }
         movingForward = true
+        intro.spend(model.step)
         model.advance()
         reactions.fire(model.isLastStep ? .arrived : .stepDone, reduceMotion: reduceMotion)
     }
@@ -143,22 +176,42 @@ struct SetupWizardView: View {
     /// Back is not a celebration. Pinned by a test, because the tempting
     /// symmetry — fire on every navigation — turns the hearts into a scroll
     /// indicator.
+    ///
+    /// It spends Pearl's appearance on the step being left for the same
+    /// reason `advance` does: she gets one arrival per step, and walking back
+    /// and forth is not four arrivals.
     func goBack() {
         movingForward = false
+        intro.spend(model.step)
         model.goBack()
+    }
+
+    /// "Got it". One click, and she is done on this step — for good, not until
+    /// the next re-render.
+    ///
+    /// Internal so `PearlIntroTests` presses the real button's own action
+    /// rather than poking the director: a bubble that cannot be dismissed
+    /// through the control the user actually sees is not skippable.
+    func skipPearl() {
+        withAnimation(PearlArrival.animation(reduceMotion: reduceMotion)) {
+            intro.spend(model.step)
+        }
     }
 
     // MARK: - Footer
 
-    /// One row, not two stacked ones. Pearl and the quiet line hold the left,
-    /// the buttons hold the right, and the gap between them is the only
-    /// alignment the footer needs.
+    /// One row, not two stacked ones. The quiet line holds the left, the
+    /// buttons hold the right, and the gap between them is the only alignment
+    /// the footer needs.
+    ///
+    /// Pearl is NOT in here any more. She sat at 34pt on the left of this row
+    /// for four consecutive steps, which made her furniture — and it is also
+    /// where her hearts went to die: a burst anchored above her head from
+    /// inside a 60pt footer paints its whole ascent into the rectangle the
+    /// scroll view owns, and the scroll view is a real AppKit subview stacked
+    /// over everything this row draws. `PearlHeartBurst` has the measurements.
     private var footer: some View {
         HStack(spacing: 12) {
-            if model.showsFooterCompanion {
-                footerPearl
-            }
-
             if !model.isFirstStep {
                 // Lowers the stakes of every choice on screen — and it's true:
                 // each step writes ordinary settings the Settings pane can
@@ -189,34 +242,6 @@ struct SetupWizardView: View {
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 13)
-    }
-
-    /// Pearl in the footer, with the hearts coming up out of her.
-    ///
-    /// The burst is an `.overlay` aligned to her top, so it contributes no
-    /// layout at all — the footer's height does not move when she reacts, and
-    /// nothing on the row shifts under the pointer. `.id(pulse)` is what makes
-    /// a second reaction restart the animation instead of being swallowed.
-    ///
-    /// Hidden from VoiceOver, unlike the welcome and the sign-off where she is
-    /// the content: here she is company, and a mascot announcing itself in the
-    /// footer of all four question steps is four interruptions on the way to
-    /// the buttons.
-    private var footerPearl: some View {
-        PearlPortrait(
-            pose: .sitting,
-            height: PearlMascot.companionHeight,
-            label: "Pearl"
-        )
-        .overlay(alignment: .top) {
-            if reactions.pulse > 0 {
-                PearlHeartBurst()
-                    .id(reactions.pulse)
-                    .offset(y: -6)
-            }
-        }
-        .allowsHitTesting(false)
-        .accessibilityHidden(true)
     }
 
     private var primaryButtonTitle: String {
@@ -307,8 +332,7 @@ struct SetupAppearanceStep: View {
         VStack(alignment: .leading, spacing: SetupMetrics.betweenCards) {
             SetupStepMasthead(
                 number: 1, total: SetupWizardModel.questionCount,
-                question: "How should Cherry look?",
-                subtitle: "Light or dark, the colour it tints, and what sits behind your homepage."
+                question: "How should Cherry look?"
             )
             .padding(.bottom, SetupMetrics.mastheadToControls - SetupMetrics.betweenCards)
 
@@ -441,7 +465,11 @@ struct SetupAppearanceStep: View {
 /// One subject leads: who answers your searches. Privacy is the second card
 /// rather than a co-headline, because a step whose title names two things has
 /// no most-important thing on it.
-private struct SetupSearchPrivacyStep: View {
+///
+/// Internal rather than private for the same reason `SetupAppearanceStep` is:
+/// a `Mirror` walk stops at a child view's boundary, so a test that wants to
+/// read this step's own masthead has to be able to name the step.
+struct SetupSearchPrivacyStep: View {
     let reactions: PearlReactions
 
     @Bindable private var settings = SettingsManager.shared
@@ -451,8 +479,7 @@ private struct SetupSearchPrivacyStep: View {
         VStack(alignment: .leading, spacing: SetupMetrics.betweenCards) {
             SetupStepMasthead(
                 number: 2, total: SetupWizardModel.questionCount,
-                question: "Who answers your searches?",
-                subtitle: "And what pages are allowed to do while you're on them."
+                question: "Who answers your searches?"
             )
             .padding(.bottom, SetupMetrics.mastheadToControls - SetupMetrics.betweenCards)
 
@@ -497,19 +524,27 @@ private struct SetupSearchPrivacyStep: View {
     }
 }
 
-// MARK: - Tab layout — and the sign-off
+// MARK: - Tab layout
 
-/// The last question, and the only step besides the welcome that Pearl stands
-/// on. It is the shortest step in the wizard — one card, two rows — which is
-/// exactly why she fits here and why the end of the sheet does not feel like
-/// it just stopped.
+/// The last question. It is the shortest step in the wizard — one card, two
+/// rows — which is why her arrival at the top of it carries the ending: her
+/// bubble on this step is the goodbye (`PearlIntroScript`), delivered
+/// delighted, at the same size she said hello at.
 ///
-/// She signs off where she said hello, and the sheet dismisses the instant
-/// Start Browsing is pressed. There is no celebration animation between the
-/// press and the dismissal, deliberately: making somebody watch a cat for
-/// three quarters of a second before their browser appears is exactly the
-/// "in the way" this design is not allowed to be.
-private struct SetupTabLayoutStep: View {
+/// She used to sign off in a block at the BOTTOM of this step, under the card.
+/// That is gone: it put two of her on one screen the moment she also started
+/// arriving at the top, and of the two the arrival is the one the user reads —
+/// the bottom block sat below the fold on a step that already scrolled.
+///
+/// The sheet still dismisses the instant Start Browsing is pressed. There is
+/// no celebration animation between the press and the dismissal, deliberately:
+/// making somebody watch a cat for three quarters of a second before their
+/// browser appears is exactly the "in the way" this design is not allowed to
+/// be.
+///
+/// Internal rather than private for the same reason `SetupAppearanceStep` is:
+/// a test cannot walk into a step's body without being able to name the step.
+struct SetupTabLayoutStep: View {
     let reactions: PearlReactions
 
     @Bindable private var settings = SettingsManager.shared
@@ -519,8 +554,7 @@ private struct SetupTabLayoutStep: View {
         VStack(alignment: .leading, spacing: SetupMetrics.betweenCards) {
             SetupStepMasthead(
                 number: 5, total: SetupWizardModel.questionCount,
-                question: "Where do your tabs go?",
-                subtitle: "Along the top, or down the side."
+                question: "Where do your tabs go?"
             )
             .padding(.bottom, SetupMetrics.mastheadToControls - SetupMetrics.betweenCards)
 
@@ -548,41 +582,6 @@ private struct SetupTabLayoutStep: View {
                         reactions.fire(.choice, reduceMotion: reduceMotion)
                     }
             }
-
-            signOff
-                .padding(.top, 4)
-        }
-    }
-
-    /// Her closing line, beside her, never over her — the artwork carries no
-    /// text at all anywhere in this wizard, which is why the contrast question
-    /// on these screens is about her own rim light separating from the sheet
-    /// rather than about type on a picture.
-    ///
-    /// The offline game is a real thing that really is behind the failure
-    /// page, so pointing at it is a small gift rather than a joke.
-    private var signOff: some View {
-        HStack(alignment: .bottom, spacing: 14) {
-            PearlPortrait(
-                pose: .delighted,
-                height: PearlMascot.farewellHeight,
-                label: "Pearl, delighted"
-            )
-            .overlay(alignment: .top) {
-                if reactions.pulse > 0 {
-                    PearlHeartBurst()
-                        .id(reactions.pulse)
-                        .offset(y: 6)
-                }
-            }
-            .allowsHitTesting(false)
-
-            Text("That's the five of them. I'll be around — and if your connection ever drops, come and find me on the offline page. I'll race you.")
-                .font(SetupType.body)
-                .fixedSize(horizontal: false, vertical: true)
-                .padding(.bottom, 14)
-
-            Spacer(minLength: 0)
         }
     }
 }

@@ -123,7 +123,7 @@ enum SetupPalette {
 
 // MARK: - The masthead
 
-/// The counter, the question, and the line under it.
+/// The counter and the question.
 ///
 /// The counter says "QUESTION 3 OF 5" and not "STEP 4 OF 6" because the
 /// welcome is not a question — it is Pearl saying hello — and counting it
@@ -132,12 +132,22 @@ enum SetupPalette {
 /// small text needs 4.5:1, and Cherry's accent palette runs to yellows that
 /// cannot give it. The colour on this screen is spent on the progress rule and
 /// the controls, where it means something.
+///
+/// ## Where the subtitle went
+///
+/// Every step used to carry a grey line under the question saying what the
+/// step was about — "Light or dark, the colour it tints, and what sits behind
+/// your homepage". Pearl now arrives at the top of the same step and says the
+/// same thing better, in her own voice (`PearlIntroScript`), so the grey line
+/// was the sheet saying everything twice with the second telling being the
+/// duller one. It is gone; `subtitle` survives as an optional for any step
+/// that ever needs a caveat Pearl should not be the one delivering.
 struct SetupStepMasthead: View {
     /// 1-based, over the questions only.
     let number: Int
     let total: Int
     let question: String
-    let subtitle: String
+    var subtitle: String? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -152,18 +162,20 @@ struct SetupStepMasthead: View {
                 .font(SetupType.question)
                 .padding(.top, SetupMetrics.counterToQuestion)
 
-            Text(subtitle)
-                .font(SetupType.body)
-                .foregroundStyle(SetupPalette.supporting)
-                .fixedSize(horizontal: false, vertical: true)
-                .padding(.top, SetupMetrics.questionToSubtitle)
+            if let subtitle {
+                Text(subtitle)
+                    .font(SetupType.body)
+                    .foregroundStyle(SetupPalette.supporting)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, SetupMetrics.questionToSubtitle)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         // One element to VoiceOver, in the order it is read on screen; the
         // counter is folded in here rather than announced separately.
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Question \(number) of \(total). \(question)")
-        .accessibilityValue(subtitle)
+        .accessibilityValue(subtitle ?? "")
     }
 }
 
