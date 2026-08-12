@@ -46,6 +46,21 @@ nonisolated enum PearlSpriteContract {
     static let gull = LogicalSize(width: 46, height: 40)
     /// The ground is a repeating strip: height fixed, width the artist's.
     static let groundHeight = 12.0
+
+    /// The desktop pet's upright poses — sit, blink, groom, eat, happy — all
+    /// share ONE box, and that is the whole reason they can replace each
+    /// other in place. A cat drawn tight to her own ink in each pose would
+    /// change size between frames, and something drawn from the bottom-left
+    /// would then jump a pixel or two sideways every time she blinked. The
+    /// poses are padded into this box when the sheet is built
+    /// (`Tools/pearl-sprites/build_pet_frames.py`), bottom-aligned and
+    /// centred, so the renderer draws one rectangle and never has to know
+    /// which pose is in it.
+    static let petStanding = LogicalSize(width: 36, height: 40)
+    /// Asleep she is a different shape entirely — wider than tall — so she
+    /// gets her own box rather than a mostly-empty upright one. Its bottom
+    /// edge is the same floor line the standing box sits on.
+    static let petSleeping = LogicalSize(width: 36, height: 24)
     /// Scenery. Sizes are the placeholder's own; the contract fixes the
     /// names, not these dimensions.
     static let cloud = LogicalSize(width: 46, height: 14)
@@ -54,17 +69,28 @@ nonisolated enum PearlSpriteContract {
 
     /// Frame name → exact frame count. The complete set of names — a manifest
     /// with a name outside this list is not conforming.
+    ///
+    /// The `pet_` names are the desktop pet's (`Features/PearlPet`). They are
+    /// in this contract, and in the runner's sheet, deliberately: Pearl is one
+    /// cat, and a second sheet with a second palette would have made her two.
+    /// The pairs are two-frame breathing cycles; the singles are poses she
+    /// holds.
     static let frameCounts: [String: Int] = [
         "run": 2, "duck": 2, "jump": 1, "hit": 1,
         "tree_small": 1, "tree_large": 1, "gull": 2,
         "ground": 1, "cloud": 1, "moon": 1, "star": 1,
+        "pet_sit": 2, "pet_blink": 1, "pet_groom": 2,
+        "pet_happy": 1, "pet_eat": 2, "pet_sleep": 2,
     ]
 
     /// The names whose pixel sizes must equal the logical size × scale,
-    /// because collision geometry is derived from them.
+    /// because collision geometry — or, for the pet, her hit-testable
+    /// rectangle — is derived from them.
     static let fixedSizes: [String: LogicalSize] = [
         "run": run, "duck": duck, "jump": jump, "hit": hit,
         "tree_small": treeSmall, "tree_large": treeLarge, "gull": gull,
+        "pet_sit": petStanding, "pet_blink": petStanding, "pet_groom": petStanding,
+        "pet_happy": petStanding, "pet_eat": petStanding, "pet_sleep": petSleeping,
     ]
 }
 

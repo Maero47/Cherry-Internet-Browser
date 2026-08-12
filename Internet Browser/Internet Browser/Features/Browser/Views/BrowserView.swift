@@ -1119,6 +1119,17 @@ struct BrowserContentView: View {
                     // address that failed, and neither the failed page nor the
                     // one still loaded underneath can reach any of this.
                     .overlay { failureOverlay }
+                    // Pearl, if she has been switched on. She is over the WEB
+                    // VIEW specifically — not over the homepage, not over a
+                    // `cherry://` page, not over the reader — because she
+                    // stands on the pages you browse, and Cherry's own
+                    // surfaces are Cherry talking. She is also below the
+                    // failure surface in the modifier order above, so an
+                    // offline page is never a cat standing on an apology.
+                    //
+                    // Everything about whether she is here at all is in
+                    // `PearlPetPresence`; nothing about it is in this file.
+                    .overlay { pearlPetOverlay }
             }
         }
         // Video fullscreen hides the whole navigation bar, and with it the MCP
@@ -1140,6 +1151,32 @@ struct BrowserContentView: View {
             guard isFocused else { return }
             omniboxFocusTrigger += 1
         }
+    }
+
+    /// Pearl, standing on this pane's page — or nothing at all, which is what
+    /// she is by default.
+    ///
+    /// The two conditions that are THIS view's to know are passed in: whether
+    /// this pane is the focused one (only one Pearl per window, in the pane
+    /// you are working in), and whether a bottom-anchored surface is up. The
+    /// find bar and the status toast are drawn at the bottom of the window,
+    /// exactly where she stands, and they are the ones the user asked for —
+    /// so she is the one that leaves.
+    @ViewBuilder
+    private var pearlPetOverlay: some View {
+        PearlPetOverlay(
+            host: viewModel,
+            showsWebContent: tab.internalPage == nil
+                && !tab.showSettingsPage
+                && !tab.showHomePage
+                && !tab.isShowingFailure
+                && !viewModel.showReaderMode,
+            isFocusedPane: isFocused,
+            isPrivate: viewModel.isPrivateMode,
+            bottomSurfaceVisible: viewModel.showFindInPage
+                || viewModel.showScreenshotToast
+                || viewModel.isVideoFullscreen
+        )
     }
 
     /// The certificate interstitial, or the error surface, or nothing.

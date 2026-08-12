@@ -113,11 +113,25 @@ enum PearlMascot {
     /// light enough (dark) to clear the 3:1 graphical-object floor against
     /// the sheet's own material — measured in `PearlContrastTests`, not
     /// eyeballed.
-    static let heartTint = Color(nsColor: NSColor(name: nil) { appearance in
+    static let heartNSTint = NSColor(name: nil) { appearance in
         appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
             ? NSColor(srgbRed: 1.00, green: 0.56, blue: 0.64, alpha: 1)
             : NSColor(srgbRed: 0.84, green: 0.26, blue: 0.37, alpha: 1)
-    })
+    }
+
+    static let heartTint = Color(nsColor: heartNSTint)
+
+    /// **The one rule about her hearts: under Reduce Motion they do not fly.**
+    ///
+    /// Not "fly without animating" — the hearts ARE the animation, and a
+    /// static rosette of hearts hanging over the thing they came out of is
+    /// worse than no reaction at all. It lives here, as one function, because
+    /// there are now two places she reacts — the setup wizard
+    /// (`PearlReactions.fire`) and the desktop pet (`PearlPetView`) — and two
+    /// copies of a rule is how a rule stops being one.
+    static func heartsMayFly(reduceMotion: Bool) -> Bool {
+        !reduceMotion
+    }
 }
 
 // MARK: - When she is allowed to react
@@ -153,17 +167,15 @@ final class PearlReactions {
     private(set) var pulse = 0
     private(set) var lastReason: Reason?
 
-    /// The one rule: **under Reduce Motion nothing fires at all.**
-    ///
-    /// Not "fires without animating" — the hearts ARE the animation, and a
-    /// static rosette of hearts sitting permanently over the footer is worse
-    /// than no reaction. So the counter does not move, the burst never
-    /// enters the tree, and `lastReason` stays where it was. The caller
-    /// passes the environment value rather than this object reading an
-    /// AppKit global, so the accessibility setting under test is the one
-    /// SwiftUI actually resolved for the view.
+    /// The one rule, asked of the one place that holds it
+    /// (`PearlMascot.heartsMayFly`): **under Reduce Motion nothing fires at
+    /// all.** So the counter does not move, the burst never enters the tree,
+    /// and `lastReason` stays where it was. The caller passes the environment
+    /// value rather than this object reading an AppKit global, so the
+    /// accessibility setting under test is the one SwiftUI actually resolved
+    /// for the view.
     func fire(_ reason: Reason, reduceMotion: Bool) {
-        guard !reduceMotion else { return }
+        guard PearlMascot.heartsMayFly(reduceMotion: reduceMotion) else { return }
         lastReason = reason
         pulse += 1
     }

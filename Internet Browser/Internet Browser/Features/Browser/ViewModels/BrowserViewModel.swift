@@ -1723,6 +1723,37 @@ final class BrowserViewModel {
     }
 }
 
+// MARK: - Pearl, the desktop pet
+
+/// Everything Pearl's right-click menu can reach.
+///
+/// The conformance is empty except for the page-selection reader, and that is
+/// the point: the screenshot, the new tab and the search she offers are the
+/// methods above, the same ones the toolbar, the menu bar and the omnibox
+/// call. She borrows the browser; she does not carry a copy of it.
+extension BrowserViewModel: PearlPetHost {
+
+    /// What the user has selected in the focused pane's page, or `nil` when
+    /// nothing is.
+    ///
+    /// Nothing in Cherry read the page's selection before, so this is the one
+    /// genuinely new capability the pet needed. It is deliberately a plain
+    /// `window.getSelection()` against the focused tab's web view — the same
+    /// thing the OS's own Services menu would see — and it never touches a
+    /// tab that is not on screen.
+    func readPageSelection(_ completion: @escaping (String?) -> Void) {
+        guard let webView = tabManager.focusedTab?.webView else {
+            completion(nil)
+            return
+        }
+        webView.evaluateJavaScript("window.getSelection().toString()") { result, _ in
+            DispatchQueue.main.async {
+                completion(result as? String)
+            }
+        }
+    }
+}
+
 // MARK: - Detached Window
 
 /// Custom NSWindow subclass for detached tabs
