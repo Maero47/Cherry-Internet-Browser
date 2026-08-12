@@ -36,6 +36,13 @@
 //  performs it runs at 10 Hz, computes the pose with the arithmetic in
 //  `PearlPetMood`, and assigns only when the frame actually changed.
 //
+//  Her SIZE costs nothing here. A 3x Pearl is the same 36x40 image in a
+//  108x120 layer with `magnificationFilter = .nearest` — the magnification is
+//  the GPU's, done once per composite, and every art pixel lands on a whole
+//  3x3 block of points because the multiple is a whole number
+//  (`PearlPetSize`). The only place the scale appears in code at all is
+//  `isOnPearl`, which divides by it to find the art pixel under the pointer.
+//
 //  The hearts are `CAShapeLayer`s running a Core Animation keyframe, so once
 //  they are handed to the render server the main thread does nothing at all
 //  until they are removed.
@@ -47,6 +54,12 @@
 //  the view leaves its window and started when it joins one, so a closed
 //  window leaves nothing running — and `PearlPetLifecycleTests` is what keeps
 //  that true.
+//
+//  The same door handles the two `NSApplication` observations she carries
+//  (`didResignActive` / `didBecomeActive`, which are how she knows you have
+//  gone away): registered when she joins a window, removed when she leaves it,
+//  and removed again in `deinit` for the case where she is dropped without
+//  ever having been in one.
 //
 
 import AppKit
@@ -62,10 +75,14 @@ final class PearlPetView: NSView {
     /// model owns the window that owns this view.
     weak var host: (any PearlPetHost)?
 
-    /// Called when the user drags her, with her new position as a fraction of
-    /// the usable width. The SwiftUI side owns where she is; this view only
-    /// reports the gesture.
-    var onMove: ((CGFloat) -> Void)?
+    /// Called when the user drags her or sends her home, with her new spot as
+    /// fractions of her travel. The SwiftUI side owns where she is; this view
+    /// only reports the gesture.
+    var onMove: ((PearlPetSpot) -> Void)?
+
+    /// Called when the user picks a size off her menu. Same arrangement: the
+    /// SwiftUI side owns it and writes it down, this view only asks.
+    var onResize: ((PearlPetSize) -> Void)?
 
     /// "Put Pearl Away" — the Settings switch, reachable from where she is.
     var onPutAway: (() -> Void)?
@@ -91,20 +108,35 @@ final class PearlPetView: NSView {
     private var shown: PearlPetAppearance?
 
     private var dragOrigin: CGPoint?
-    private var dragStartPosition: CGFloat = 0
+    private var dragStartSpot = PearlPetSpot.home
     private var didDrag = false
 
-    /// The pane she is standing in, and where along its floor she is. Both are
-    /// SwiftUI's to decide and are pushed in by `PearlPetOverlay`; the view
-    /// keeps them only so a drag can be expressed in the same fraction the
-    /// placement model uses.
-    var contentSize: CGSize = .zero
-    var position: CGFloat = PearlPetPlacement.defaultPosition
+    /// True only while `pageBehind(at:)` is asking the view stack who is under
+    /// the pointer with her taken out of it. See `scrollWheel`.
+    private var isPassingThrough = false
 
-    /// One art pixel per point. The sheet is authored at 1x and drawn at 1x,
-    /// so `hitTest`'s pixel lookup is a straight cast; a magnified pet would
-    /// have to divide here and in `spriteRect`.
-    private static let spriteScale: CGFloat = 1
+    /// The number of finished downloads she has already reacted to. Compared
+    /// rather than counted, so a Pearl built into a window that has seen ten
+    /// downloads does not celebrate ten times on arrival.
+    private var noticedDownloads: Int?
+
+    /// The pane she is standing in and where in it she is. Both are SwiftUI's
+    /// to decide and are pushed in by `PearlPetOverlay`; the view keeps them
+    /// only so a drag can be expressed in the same fractions the placement
+    /// model uses.
+    var contentSize: CGSize = .zero
+    var spot = PearlPetSpot.home
+
+    /// How big she is drawn. Changing it re-lays the layer immediately rather
+    /// than waiting for the next tick, because a size change is a thing the
+    /// user just chose off a menu and there may be no next tick at all (she
+    /// may be asleep, dozing, or under Reduce Motion).
+    var size: PearlPetSize = .default {
+        didSet {
+            guard size != oldValue else { return }
+            spriteLayer.frame = spriteRect
+        }
+    }
 
     // MARK: - Life
 
@@ -147,15 +179,53 @@ final class PearlPetView: NSView {
     @available(*, unavailable)
     required init?(coder: NSCoder) { nil }
 
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         if window == nil {
             driver.stop()
             spriteLayer.removeAllAnimations()
+            NotificationCenter.default.removeObserver(self)
         } else {
             keepAboveWebContent()
+            watchTheApp()
             syncTicking()
         }
+    }
+
+    /// The two notifications behind "she dozes when you leave Cherry".
+    ///
+    /// Notifications rather than a poll of `NSApp.isActive`: there is no tick
+    /// to poll from once she has stopped, which is the entire point of
+    /// stopping. Registered here and torn down on the way out of the window,
+    /// so an off Pearl is an absent Pearl — no observer, no timer, no residue.
+    private func watchTheApp() {
+        let centre = NotificationCenter.default
+        centre.removeObserver(self)
+        centre.addObserver(
+            self, selector: #selector(appWentAway),
+            name: NSApplication.didResignActiveNotification, object: nil
+        )
+        centre.addObserver(
+            self, selector: #selector(appCameBack),
+            name: NSApplication.didBecomeActiveNotification, object: nil
+        )
+    }
+
+    @objc private func appWentAway() {
+        mood.doze()
+        refresh()
+        syncTicking()
+    }
+
+    @objc private func appCameBack() {
+        guard mood.isDozing else { return }
+        mood.disturb(at: clock())
+        refresh()
+        syncTicking()
     }
 
     /// Insurance, run once when she joins a window.
@@ -190,11 +260,7 @@ final class PearlPetView: NSView {
     }
 
     private var spriteSize: CGSize {
-        let logical = (shown?.pose ?? .sitting).logicalSize
-        return CGSize(
-            width: logical.width * Self.spriteScale,
-            height: logical.height * Self.spriteScale
-        )
+        size.spriteSize(for: shown?.pose ?? .sitting)
     }
 
     override func layout() {
@@ -218,7 +284,7 @@ final class PearlPetView: NSView {
     /// corners of her frame, the gaps between her ears, the whole heart
     /// headroom above her — is a hole in this view.
     override func hitTest(_ point: NSPoint) -> NSView? {
-        guard !isHidden else { return nil }
+        guard !isHidden, !isPassingThrough else { return nil }
         let local = convert(point, from: superview)
         return isOnPearl(local) ? self : nil
     }
@@ -241,11 +307,30 @@ final class PearlPetView: NSView {
             return false
         }
 
-        let x = Int((point.x - rect.minX) / Self.spriteScale)
+        // The only division by her scale in the whole feature: the layer is
+        // magnified by the GPU, so this is what turns a point on a 3x cat back
+        // into the art pixel that was drawn there.
+        let x = Int((point.x - rect.minX) / size.scale)
         // Art rows run downwards; the view's y runs up from her feet.
-        let y = height - 1 - Int((point.y - rect.minY) / Self.spriteScale)
+        let y = height - 1 - Int((point.y - rect.minY) / size.scale)
         guard x >= 0, x < width, y >= 0, y < height else { return false }
         return mask[y * width + x] > 0
+    }
+
+    /// The view a mouse event at this window point would have reached if she
+    /// were not standing there — normally the page.
+    ///
+    /// Asked by taking herself out of the answer for the length of one
+    /// `hitTest` rather than by looking for a `WKWebView` among her siblings:
+    /// the pane's subview stack is SwiftUI's to arrange, and a rule that names
+    /// a class is a rule that goes quietly wrong the day the page is wrapped
+    /// in something.
+    func pageBehind(at windowPoint: CGPoint) -> NSView? {
+        guard let superview else { return nil }
+        isPassingThrough = true
+        defer { isPassingThrough = false }
+        let found = superview.hitTest(superview.convert(windowPoint, from: nil))
+        return found === self ? nil : found
     }
 
     // MARK: - Being a cat
@@ -293,6 +378,14 @@ final class PearlPetView: NSView {
 
     // MARK: - Mouse
 
+    /// Picking her up.
+    ///
+    /// The page never sees any of this: AppKit delivered the `mouseDown` here
+    /// because the pointer was on one of her own pixels, and every event of
+    /// the drag that follows goes to the view that took the `mouseDown`. So a
+    /// drag that starts on Pearl cannot start a text selection underneath her,
+    /// and there is nothing to suppress — the page is simply not part of the
+    /// gesture.
     override func mouseDown(with event: NSEvent) {
         if event.modifierFlags.contains(.control) {
             presentMenu()
@@ -302,27 +395,47 @@ final class PearlPetView: NSView {
         // under the pointer as the drag moves her, so a local origin would be
         // chasing itself and she would stop dead after the first pixel.
         dragOrigin = event.locationInWindow
-        dragStartPosition = position
+        dragStartSpot = spot
         didDrag = false
     }
 
     override func mouseDragged(with event: NSEvent) {
         guard let dragOrigin else { return }
-        let travelled = event.locationInWindow.x - dragOrigin.x
-        if abs(travelled) > 2 { didDrag = true }
+        let travelled = CGSize(
+            width: event.locationInWindow.x - dragOrigin.x,
+            height: event.locationInWindow.y - dragOrigin.y
+        )
+        if abs(travelled.width) > 2 || abs(travelled.height) > 2 { didDrag = true }
         guard didDrag else { return }
         mood.disturb(at: clock())
         // In fractions of her travel, never in window coordinates: this view's
         // own frame is moving underneath the drag as SwiftUI re-places it.
-        let travel = PearlPetPlacement.travel(in: contentSize, spriteSize: spriteSize)
-        guard travel > 0 else { return }
-        onMove?(PearlPetPlacement.clampedPosition(dragStartPosition + travelled / travel))
+        onMove?(
+            PearlPetPlacement.spot(
+                draggedFrom: dragStartSpot, by: travelled, in: contentSize, size: size
+            )
+        )
     }
 
     override func mouseUp(with event: NSEvent) {
         defer { dragOrigin = nil }
         guard dragOrigin != nil, !didDrag else { return }
         pet()
+    }
+
+    /// A wheel event that lands on her belongs to the page.
+    ///
+    /// AppKit routes scrolling by hit test, so without this she would be a
+    /// hole in the page's scrolling — a small one at 1x, nine times the area
+    /// at 3x, and the same broken promise as a stolen click either way. The
+    /// event is handed to whatever was behind her unmodified; nothing is
+    /// re-synthesised and nothing is consumed.
+    override func scrollWheel(with event: NSEvent) {
+        guard let page = pageBehind(at: event.locationInWindow) else {
+            super.scrollWheel(with: event)
+            return
+        }
+        page.scrollWheel(with: event)
     }
 
     override func rightMouseDown(with event: NSEvent) {
@@ -354,6 +467,35 @@ final class PearlPetView: NSView {
         syncTicking()
     }
 
+    /// The browser has finished this many downloads. She looks up at the ones
+    /// she has not seen yet — once, whatever the jump — and no hearts: hearts
+    /// are for affection, and a finished download is news.
+    ///
+    /// This is the whole of "she reacts to the browser". It is a comparison of
+    /// two integers on a value SwiftUI already had, so there is no observer,
+    /// no timer, no notification and nothing that runs when nothing is
+    /// happening. Under Reduce Motion it does nothing at all: the fish is a
+    /// reply to something the user asked for, this is not.
+    func noticeDownloads(_ finished: Int) {
+        defer { noticedDownloads = finished }
+        // The first value she is ever handed is the state of the world when
+        // she arrived, not news.
+        guard let seen = noticedDownloads, finished > seen, !reduceMotion else { return }
+        mood.notice(at: clock())
+        refresh()
+        syncTicking()
+    }
+
+    /// Send her back to her corner. The menu's way out of a bad parking spot;
+    /// the placement model owns where "home" is.
+    func sendHome() {
+        mood.disturb(at: clock())
+        spot = .home
+        onMove?(.home)
+        refresh()
+        syncTicking()
+    }
+
     // MARK: - The menu
 
     private func presentMenu() {
@@ -371,7 +513,18 @@ final class PearlPetView: NSView {
 
     private func showMenu(at origin: CGPoint, selection: String?) {
         guard window != nil, let host else { return }
+        CherryMenuController.shared.present(
+            menuItems(selection: selection, host: host),
+            placement: .point(origin),
+            parentWindow: window
+        )
+    }
 
+    /// Her menu, as rows. Built apart from presenting it so
+    /// `PearlPetMenuTests` can read what is on it and run what it does — a
+    /// menu that is only ever handed to a controller is a menu no test can
+    /// open.
+    func menuItems(selection: String?, host: any PearlPetHost) -> [CherryMenuItem] {
         var items: [CherryMenuItem] = [
             .action("Take a Screenshot", systemImage: "camera") {
                 PearlPetMenu.takeScreenshot(host: host)
@@ -391,16 +544,41 @@ final class PearlPetView: NSView {
         )
         items.append(.separator)
         items.append(
+            .submenu("Pearl's Size", systemImage: "arrow.up.left.and.arrow.down.right") {
+                PearlPetSize.allCases.map { choice -> CherryMenuItem in
+                    CherryMenuItem.action(choice.title, on: choice == size) { [weak self] in
+                        self?.resize(to: choice)
+                    }
+                }
+            }
+        )
+        items.append(
+            // Disabled rather than absent when she is already there: the row
+            // is the answer to "how do I undo this", and a row that vanishes
+            // once you no longer need it is a row you cannot learn.
+            .action("Send Pearl Home", systemImage: "arrow.uturn.backward",
+                    enabled: !spot.isHome) { [weak self] in
+                self?.sendHome()
+            }
+        )
+        items.append(.separator)
+        items.append(
             .action("Put Pearl Away", systemImage: "moon.zzz") { [weak self] in
                 self?.onPutAway?()
             }
         )
+        return items
+    }
 
-        CherryMenuController.shared.present(
-            items,
-            placement: .point(origin),
-            parentWindow: window
-        )
+    /// A size off her menu: applied here so she changes under the pointer, and
+    /// reported so the SwiftUI side can re-place her view and write it down.
+    func resize(to size: PearlPetSize) {
+        guard size != self.size else { return }
+        mood.disturb(at: clock())
+        self.size = size
+        onResize?(size)
+        refresh()
+        syncTicking()
     }
 
     // MARK: - Hearts

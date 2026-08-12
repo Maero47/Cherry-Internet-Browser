@@ -39,11 +39,11 @@ final class PearlPetHitTestTests: XCTestCase {
         container.addSubview(page)
 
         pearl = PearlPetView(driver: SilentDriver())
+        pearl.size = .default
         let host = PearlPetPlacement.hostFrame(
             in: container.bounds.size,
-            spriteSize: CGSize(width: PearlSpriteContract.petStanding.width,
-                               height: PearlSpriteContract.petStanding.height),
-            position: 0.5
+            size: .default,
+            spot: PearlPetSpot(x: 0.5, y: 1)
         )
         // `hostFrame` counts y downwards, the way SwiftUI places things; an
         // unflipped `NSView` counts up. Same rectangle, other way up.

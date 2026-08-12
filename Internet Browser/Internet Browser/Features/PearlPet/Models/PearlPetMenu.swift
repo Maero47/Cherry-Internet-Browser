@@ -19,7 +19,7 @@
 //  where files go and its own bugs; this one cannot drift, because there is
 //  nothing here to drift.
 //
-//  ## Why these four
+//  ## Why these six
 //
 //  - **Take a Screenshot.** Cherry can already do it, so the playful route to
 //    it costs nothing and lands in Downloads with the toast the user knows.
@@ -30,9 +30,25 @@
 //    changes nothing outside the animation: no hunger, no counter, no file. A
 //    persisted appetite would be state that can go stale, be wrong across
 //    windows, and demand migration, in exchange for a number nobody can see.
+//  - **Pearl's Size.** Three whole multiples, with the one she is ticked. It
+//    is on her menu rather than only in Settings because the question "is she
+//    the right size?" is one you ask while looking at her, and because the
+//    answer is worth seeing applied immediately — which is exactly what a
+//    Settings pane in another window cannot do. Why three and not a slider:
+//    `PearlPetSize`.
+//  - **Send Pearl Home.** The one row here that does something no other route
+//    in Cherry offers. Now that she can be put anywhere on the page, a drag
+//    can leave her somewhere the user regrets — over a video's controls, on
+//    top of a fixed sidebar — and without this the only ways back are dragging
+//    her out again by the pixel or switching her off. Disabled rather than
+//    hidden when she is already home, so it can be learned.
 //  - **Put Pearl Away.** The switch, where the user is looking when they want
 //    it. Hunting through Settings for the off switch of a thing standing in
 //    front of you is the wrong shape of annoying.
+//
+//  The rows themselves are built by `PearlPetView.menuItems(selection:host:)`
+//  rather than here, because two of them are questions only the view can
+//  answer — what size she currently is, and whether she is already home.
 //
 
 import Foundation

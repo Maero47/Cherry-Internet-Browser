@@ -5,10 +5,20 @@
 //  The seam between the page and the cat standing on it.
 //
 //  This is deliberately thin. It answers three questions and nothing else:
-//  whether she is here at all (`PearlPetPresence`), where on the floor she
-//  stands (`PearlPetPlacement`), and what she is allowed to reach into
-//  (`PearlPetHost`). Everything she DOES is in `PearlPetView`; everything she
-//  IS is in the models beside it.
+//  whether she is here at all (`PearlPetPresence`), where on the page she
+//  stands and how big she is (`PearlPetPlacement`, `PearlPetSize`), and what
+//  she is allowed to reach into (`PearlPetHost`). Everything she DOES is in
+//  `PearlPetView`; everything she IS is in the models beside it.
+//
+//  ## Where her spot and her size are kept
+//
+//  In `PearlPetHome` — one place for the whole app, read when a pane brings
+//  her on and written when the user moves or resizes her. That is the answer
+//  to "per window, per tab, or per app": a cat who is in a different corner of
+//  every tab is a cat you have to look for, and there is no window identity
+//  that survives a relaunch to key her to. It has one visible consequence,
+//  which is the intended one: a drag moves her in the window you are dragging
+//  in, and every pane opened afterwards starts where you left her.
 //
 //  ## Why an overlay on the web view and not a layer on the window
 //
@@ -48,46 +58,53 @@ struct PearlPetOverlay: View {
     let isPrivate: Bool
     /// The find bar and the status toast stand exactly where she does.
     let bottomSurfaceVisible: Bool
+    /// How many downloads Cherry has finished this session. The pane hands it
+    /// over; she reacts to the ones she has not seen yet. Passed as a plain
+    /// count rather than observed here, so this file keeps having nothing in
+    /// it that runs.
+    let finishedDownloads: Int
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var settings: SettingsManager { .shared }
     private let home = PearlPetHome()
-    @State private var position = PearlPetHome().position
-
-    /// Her standing box. The sleeping box is shorter and narrower, so a host
-    /// view sized for the standing one always has room for both.
-    private var spriteSize: CGSize {
-        CGSize(
-            width: PearlSpriteContract.petStanding.width,
-            height: PearlSpriteContract.petStanding.height
-        )
-    }
+    @State private var spot = PearlPetHome().spot
+    @State private var petSize = PearlPetHome().size
 
     var body: some View {
         GeometryReader { geometry in
-            let size = geometry.size
+            let content = geometry.size
             if PearlPetPresence.shouldShow(
                 enabled: settings.showPearlPet,
                 isPrivate: isPrivate,
                 isFocusedPane: isFocusedPane,
                 showsWebContent: showsWebContent,
                 bottomSurfaceVisible: bottomSurfaceVisible,
-                contentSize: size
+                contentSize: content,
+                size: petSize
             ) {
+                // Recomputed from THIS pane's size every time it changes, which
+                // is what makes a spot saved in a big window land inside a
+                // small one — there is no stored rectangle to be stale.
                 let frame = PearlPetPlacement.hostFrame(
-                    in: size,
-                    spriteSize: spriteSize,
-                    position: position
+                    in: content,
+                    size: petSize,
+                    spot: spot
                 )
                 PearlPetRepresentable(
                     host: host,
-                    contentSize: size,
-                    position: position,
+                    contentSize: content,
+                    spot: spot,
+                    size: petSize,
+                    finishedDownloads: finishedDownloads,
                     reduceMotion: reduceMotion,
                     onMove: { moved in
-                        position = moved
-                        home.position = moved
+                        spot = moved
+                        home.spot = moved
+                    },
+                    onResize: { chosen in
+                        petSize = chosen
+                        home.size = chosen
                     },
                     onPutAway: { settings.showPearlPet = false }
                 )
@@ -104,9 +121,12 @@ private struct PearlPetRepresentable: NSViewRepresentable {
 
     let host: any PearlPetHost
     let contentSize: CGSize
-    let position: CGFloat
+    let spot: PearlPetSpot
+    let size: PearlPetSize
+    let finishedDownloads: Int
     let reduceMotion: Bool
-    let onMove: (CGFloat) -> Void
+    let onMove: (PearlPetSpot) -> Void
+    let onResize: (PearlPetSize) -> Void
     let onPutAway: () -> Void
 
     func makeNSView(context: Context) -> PearlPetView {
@@ -129,9 +149,15 @@ private struct PearlPetRepresentable: NSViewRepresentable {
     private func apply(to view: PearlPetView) {
         view.host = host
         view.contentSize = contentSize
-        view.position = position
+        view.spot = spot
+        view.size = size
         view.reduceMotion = reduceMotion
         view.onMove = onMove
+        view.onResize = onResize
         view.onPutAway = onPutAway
+        // Last, so that everything she might react with is already in place —
+        // and after the size, so a reaction that arrives in the same update as
+        // a resize is drawn at the size the user just picked.
+        view.noticeDownloads(finishedDownloads)
     }
 }

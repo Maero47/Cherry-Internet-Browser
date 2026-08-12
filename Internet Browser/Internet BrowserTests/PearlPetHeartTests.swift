@@ -67,7 +67,7 @@ final class PearlPetHeartTests: XCTestCase {
     /// invisible ones, none.
     func testUnderReduceMotionThePetBuildsNoHearts() {
         let view = PearlPetView(driver: SilentDriver())
-        view.frame = CGRect(x: 0, y: 0, width: 56, height: 86)
+        view.frame = CGRect(origin: .zero, size: PearlPetPlacement.hostSize(for: .default))
         view.reduceMotion = true
         let before = view.layer?.sublayers?.count ?? 0
 
@@ -80,7 +80,7 @@ final class PearlPetHeartTests: XCTestCase {
     /// And with motion allowed, petting her makes exactly three.
     func testPettingHerMakesThreeHearts() {
         let view = PearlPetView(driver: SilentDriver())
-        view.frame = CGRect(x: 0, y: 0, width: 56, height: 86)
+        view.frame = CGRect(origin: .zero, size: PearlPetPlacement.hostSize(for: .default))
         let before = view.layer?.sublayers?.count ?? 0
 
         view.pet()
@@ -100,9 +100,8 @@ final class PearlPetHeartTests: XCTestCase {
     private var productionSpan: CGFloat {
         PearlPetPlacement.hostFrame(
             in: CGSize(width: 1200, height: 800),
-            spriteSize: CGSize(width: PearlSpriteContract.petStanding.width,
-                               height: PearlSpriteContract.petStanding.height),
-            position: 0.5
+            size: .default,
+            spot: PearlPetSpot(x: 0.5, y: 1)
         ).height
     }
 
@@ -153,7 +152,7 @@ final class PearlPetHeartTests: XCTestCase {
     /// being cut without the burst being re-checked.
     func testNothingThePetPaintsLeavesTheViewSheIsDrawnIn() {
         let span = productionSpan
-        let width = PearlSpriteContract.petStanding.width + 2 * PearlPetPlacement.heartSideroom
+        let width = PearlPetPlacement.hostSize(for: .default).width
         let bounds = CGRect(x: 0, y: 0, width: width, height: span)
         let painted = PearlPetBurst.paintedRect(span: span, centreX: bounds.midX)
 
@@ -175,7 +174,8 @@ final class PearlPetHeartTests: XCTestCase {
     func testTheLayersSheBuildsAreThoseFlights() throws {
         let span = productionSpan
         let view = PearlPetView(driver: SilentDriver())
-        view.frame = CGRect(x: 0, y: 0, width: 56, height: span)
+        view.frame = CGRect(x: 0, y: 0,
+                            width: PearlPetPlacement.hostSize(for: .default).width, height: span)
         let existing = Set((view.layer?.sublayers ?? []).map { ObjectIdentifier($0) })
 
         view.pet()

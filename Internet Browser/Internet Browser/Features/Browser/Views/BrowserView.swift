@@ -1175,7 +1175,10 @@ struct BrowserContentView: View {
             isPrivate: viewModel.isPrivateMode,
             bottomSurfaceVisible: viewModel.showFindInPage
                 || viewModel.showScreenshotToast
-                || viewModel.isVideoFullscreen
+                || viewModel.isVideoFullscreen,
+            // The counter the download toast already runs on. She looks up at
+            // the ones she has not seen; nothing new is observed for her.
+            finishedDownloads: viewModel.downloadManager.downloadCompletedTrigger
         )
     }
 

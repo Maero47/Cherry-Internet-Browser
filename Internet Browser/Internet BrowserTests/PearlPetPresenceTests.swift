@@ -39,7 +39,8 @@ final class PearlPetPresenceTests: XCTestCase {
         isFocusedPane: Bool = true,
         showsWebContent: Bool = true,
         bottomSurfaceVisible: Bool = false,
-        contentSize: CGSize? = nil
+        contentSize: CGSize? = nil,
+        size: PearlPetSize = .default
     ) -> Bool {
         PearlPetPresence.shouldShow(
             enabled: enabled,
@@ -47,7 +48,8 @@ final class PearlPetPresenceTests: XCTestCase {
             isFocusedPane: isFocusedPane,
             showsWebContent: showsWebContent,
             bottomSurfaceVisible: bottomSurfaceVisible,
-            contentSize: contentSize ?? page
+            contentSize: contentSize ?? page,
+            size: size
         )
     }
 
@@ -137,7 +139,25 @@ final class PearlPetPresenceTests: XCTestCase {
         XCTAssertFalse(showing(contentSize: CGSize(width: 300, height: 800)))
         XCTAssertFalse(showing(contentSize: CGSize(width: 1200, height: 200)))
         XCTAssertFalse(showing(contentSize: .zero))
-        XCTAssertTrue(showing(contentSize: PearlPetPlacement.minimumContentSize))
+        for size in PearlPetSize.allCases {
+            XCTAssertTrue(
+                showing(contentSize: PearlPetPlacement.minimumContentSize(for: size), size: size),
+                "\(size) is refused in the window her own minimum says she fits"
+            )
+        }
+    }
+
+    /// "Too small" is not one number. A page a small Pearl sits on comfortably
+    /// has no room for a large one, and the window that decides it is the one
+    /// she is being drawn in, not the one she was configured in.
+    ///
+    /// Dies on `shouldShow` dropping its `size` argument, and on
+    /// `minimumContentSize(for:)` going back to a constant.
+    func testABiggerPearlNeedsABiggerPage() {
+        let modest = CGSize(width: 500, height: 360)
+        XCTAssertTrue(showing(contentSize: modest, size: .small))
+        XCTAssertTrue(showing(contentSize: modest, size: .medium))
+        XCTAssertFalse(showing(contentSize: modest, size: .large))
     }
 
     // MARK: - The pane actually asks

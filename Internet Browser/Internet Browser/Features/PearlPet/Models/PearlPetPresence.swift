@@ -38,17 +38,23 @@ enum PearlPetPresence {
     ///     exactly where she stands. When one is up she leaves; she is the
     ///     thing that yields, because the other two were asked for.
     ///   - contentSize: too small a page has no room for a cat.
+    ///   - size: how big a cat the user asked for. It belongs in this decision
+    ///     because "too small a page" is not one number: a 3x Pearl on a page
+    ///     that a 1x Pearl sits on comfortably is not a companion, she is the
+    ///     furniture. `PearlPetPlacement.minimumContentSize(for:)` is where
+    ///     that scale lives.
     static func shouldShow(
         enabled: Bool,
         isPrivate: Bool,
         isFocusedPane: Bool,
         showsWebContent: Bool,
         bottomSurfaceVisible: Bool,
-        contentSize: CGSize
+        contentSize: CGSize,
+        size: PearlPetSize
     ) -> Bool {
         guard enabled, !isPrivate, isFocusedPane, showsWebContent, !bottomSurfaceVisible else {
             return false
         }
-        return PearlPetPlacement.fits(contentSize)
+        return PearlPetPlacement.fits(contentSize, size: size)
     }
 }
