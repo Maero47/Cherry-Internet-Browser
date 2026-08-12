@@ -32,6 +32,16 @@
 //  The loop's phase is offset per pet, so two windows side by side do not
 //  blink in lockstep like a pair of animatronics.
 //
+//  ## And her night
+//
+//  `isDozing` is the one piece of state here that is not a function of time,
+//  and it earns the exception: it means "you have gone away from Cherry
+//  entirely", which no clock can work out. She curls up immediately rather
+//  than after the usual two minutes, and — the part that matters more than the
+//  pose — `isStill` becomes true, so the view stops its tick outright. A pet
+//  that keeps animating in an app you are not looking at is a pet that costs
+//  battery for nobody, and the only honest fix is to stop.
+//
 
 import Foundation
 
@@ -97,16 +107,30 @@ struct PearlPetMood: Equatable {
     /// When she was last clicked, fed, dragged, or otherwise noticed.
     var lastDisturbed: TimeInterval = 0
 
-    /// The reaction she is in the middle of, if any, and when it ends.
+    /// The reaction she is in the middle of, if any, and when it began and
+    /// ends. Both instants are kept because the frame within a reaction is
+    /// counted from its START: derived instead by subtracting "the duration a
+    /// reaction of this pose has" from the end, it would be wrong the moment
+    /// two reactions ever shared a pose — which `notice` and `delight` now do.
     private(set) var reaction: PearlPetPose?
+    private(set) var reactionBegan: TimeInterval = 0
     private(set) var reactionEnds: TimeInterval = 0
 
-    /// True when she is a still picture: the user asked for less motion and
-    /// nothing she was asked to do is still running. The view stops its tick
-    /// entirely on this, which is the difference between "she stops moving"
-    /// and "she disappears".
+    /// Set while Cherry is not the app you are using. See the note at the top:
+    /// this is the one thing here a clock cannot derive.
+    private(set) var isDozing = false
+
+    /// How long she looks up for when the browser tells her something
+    /// happened. Shorter than a petting, because nobody asked for it — it is
+    /// meant to be caught out of the corner of an eye, not watched.
+    static let noticeDuration: TimeInterval = 0.9
+
+    /// True when she is a still picture: either the user asked for less motion
+    /// or she is dozing because you left, and nothing she was asked to do is
+    /// still running. The view stops its tick entirely on this, which is the
+    /// difference between "she stops moving" and "she disappears".
     func isStill(at now: TimeInterval, reduceMotion: Bool) -> Bool {
-        guard reduceMotion else { return false }
+        guard reduceMotion || isDozing else { return false }
         return reaction == nil || now >= reactionEnds
     }
 
@@ -114,16 +138,26 @@ struct PearlPetMood: Equatable {
 
     /// Clicked. Hearts are the view's business; the pose is this one's.
     mutating func delight(at now: TimeInterval) {
-        lastDisturbed = now
-        reaction = .delighted
-        reactionEnds = now + Self.delightDuration
+        react(.delighted, for: Self.delightDuration, at: now)
     }
 
     /// Fed a fish.
     mutating func feed(at now: TimeInterval) {
+        react(.eating, for: Self.mealDuration, at: now)
+    }
+
+    /// Something in the browser finished. She looks up; nothing else changes,
+    /// there is nothing to dismiss, and if she was asleep she wakes.
+    mutating func notice(at now: TimeInterval) {
+        react(.delighted, for: Self.noticeDuration, at: now)
+    }
+
+    private mutating func react(_ pose: PearlPetPose, for duration: TimeInterval, at now: TimeInterval) {
         lastDisturbed = now
-        reaction = .eating
-        reactionEnds = now + Self.mealDuration
+        isDozing = false
+        reaction = pose
+        reactionBegan = now
+        reactionEnds = now + duration
     }
 
     /// Picked up and moved, or otherwise interfered with: she wakes, but she
@@ -131,6 +165,16 @@ struct PearlPetMood: Equatable {
     /// carried across the window while eating is not a reason to stop eating.
     mutating func disturb(at now: TimeInterval) {
         lastDisturbed = now
+        isDozing = false
+    }
+
+    /// You left Cherry for another app. She curls up where she is and the view
+    /// stops ticking; `disturb` is what undoes it when you come back.
+    ///
+    /// Takes no time, deliberately: nothing about dozing is scheduled, so
+    /// there is no deadline to get wrong and nothing to cancel.
+    mutating func doze() {
+        isDozing = true
     }
 
     // MARK: - What she looks like
@@ -145,14 +189,14 @@ struct PearlPetMood: Equatable {
         if let reaction, now < reactionEnds {
             let step = reaction == .eating ? 0.3 : 0.5
             let frame = frameCount(for: reaction) > 1
-                ? Int((now - (reactionEnds - duration(of: reaction))) / step) % frameCount(for: reaction)
+                ? Int((now - reactionBegan) / step) % frameCount(for: reaction)
                 : 0
             return PearlPetAppearance(pose: reaction, frame: max(frame, 0))
         }
 
         guard !reduceMotion else { return PearlPetAppearance(pose: .sitting, frame: 0) }
 
-        if now - lastDisturbed >= Self.sleepsAfter {
+        if isDozing || now - lastDisturbed >= Self.sleepsAfter {
             // Slow breathing, 1.4s a frame. Nothing else happens while she is
             // asleep: no blinking (her eyes are shut), no grooming.
             return PearlPetAppearance(pose: .sleeping, frame: Int((now / 1.4).rounded(.down)) % 2)
@@ -174,9 +218,5 @@ struct PearlPetMood: Equatable {
 
     private func frameCount(for pose: PearlPetPose) -> Int {
         PearlSpriteContract.frameCounts[pose.frameName] ?? 1
-    }
-
-    private func duration(of pose: PearlPetPose) -> TimeInterval {
-        pose == .eating ? Self.mealDuration : Self.delightDuration
     }
 }

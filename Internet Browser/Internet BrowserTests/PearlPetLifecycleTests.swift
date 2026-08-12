@@ -20,7 +20,7 @@ final class PearlPetLifecycleTests: XCTestCase {
 
     private func pearl(driver: SilentDriver, reduceMotion: Bool = false) -> PearlPetView {
         let view = PearlPetView(driver: driver)
-        view.frame = CGRect(x: 0, y: 0, width: 56, height: 86)
+        view.frame = CGRect(origin: .zero, size: PearlPetPlacement.hostSize(for: .default))
         view.reduceMotion = reduceMotion
         return view
     }
@@ -111,7 +111,7 @@ final class PearlPetLifecycleTests: XCTestCase {
         var now: TimeInterval = 1000
         let driver = SilentDriver()
         let view = PearlPetView(driver: driver, clock: { now })
-        view.frame = CGRect(x: 0, y: 0, width: 56, height: 86)
+        view.frame = CGRect(origin: .zero, size: PearlPetPlacement.hostSize(for: .default))
         view.reduceMotion = true
         let window = NSWindow(
             contentRect: CGRect(x: 0, y: 0, width: 600, height: 400),

@@ -104,7 +104,8 @@ final class PearlTimerSeamTests: XCTestCase {
                 isFocusedPane: during.isFocusedPane,
                 showsWebContent: during.showsWebContent,
                 bottomSurfaceVisible: during.bottomSurfaceVisible,
-                contentSize: CGSize(width: 1200, height: 800)
+                contentSize: CGSize(width: 1200, height: 800),
+                size: .default
             ),
             "she would have been built over the game"
         )
@@ -152,7 +153,7 @@ final class PearlTimerSeamTests: XCTestCase {
     func testAcrossTheHandoverAtMostOneDriverIsEverRunning() {
         let petDriver = SilentDriver()
         let pet = PearlPetView(driver: petDriver)
-        pet.frame = CGRect(x: 0, y: 0, width: 56, height: 86)
+        pet.frame = CGRect(origin: .zero, size: PearlPetPlacement.hostSize(for: .default))
         let runnerDriver = SilentDriver()
         // Its own defaults: this test is about timers, and it has no business
         // writing a high score onto the machine it runs on.
@@ -206,7 +207,7 @@ final class PearlTimerSeamTests: XCTestCase {
             PearlPetPresence.shouldShow(
                 enabled: false, isPrivate: false, isFocusedPane: true,
                 showsWebContent: true, bottomSurfaceVisible: false,
-                contentSize: CGSize(width: 1200, height: 800)
+                contentSize: CGSize(width: 1200, height: 800), size: .default
             ),
             "the switch is off and she is still allowed on the page"
         )
@@ -216,7 +217,7 @@ final class PearlTimerSeamTests: XCTestCase {
         // started a driver.
         let driver = SilentDriver()
         let pet = PearlPetView(driver: driver)
-        pet.frame = CGRect(x: 0, y: 0, width: 56, height: 86)
+        pet.frame = CGRect(origin: .zero, size: PearlPetPlacement.hostSize(for: .default))
         XCTAssertEqual(driver.starts, 0)
         XCTAssertFalse(driver.isRunning)
     }

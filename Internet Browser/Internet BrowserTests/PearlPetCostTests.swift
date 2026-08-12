@@ -17,16 +17,24 @@
 //     measures the whole production tick path, including the frames where the
 //     picture really does change.
 //
-//  2. **Scrolling** — hit testing. A scroll event is delivered to the view
-//     under the pointer, so AppKit hit-tests the pane for every wheel event
-//     the user produces. Pearl is a view in that pane, so she is on that path
-//     whether or not the pointer is anywhere near her: that is the cost of
-//     scrolling with her switched on, and it is measured here at all three
-//     points — over the page, over her transparent frame, and over the cat.
+//  2. **Scrolling** — hit testing, and now the pass-through behind it. A
+//     scroll event is delivered to the view under the pointer, so AppKit
+//     hit-tests the pane for every wheel event the user produces. Pearl is a
+//     view in that pane, so she is on that path whether or not the pointer is
+//     anywhere near her: that is the cost of scrolling with her switched on,
+//     and it is measured here at all three points — over the page, over her
+//     transparent frame, and over the cat — plus the handing-on that keeps the
+//     page scrolling when the pointer is on her.
+//
+//  Her SIZE is free, and the last test here is what says so: magnifying a
+//  sprite is the GPU's job, so a 3x cat runs the same tick and the same pixel
+//  lookup as a 1x one.
 //
 //  Nothing else runs. She does not observe the page, the scroll position, the
 //  navigation, or the DOM; there is no JavaScript, no `WKWebView` message
-//  handler and no notification anywhere in the feature.
+//  handler and no polling anywhere in the feature. The two `NSApplication`
+//  notifications she now takes fire when you leave and return to Cherry, which
+//  is not a rate anything can be measured at.
 //
 
 import AppKit
@@ -35,11 +43,26 @@ import XCTest
 
 private final class PageStandInForCost: NSView {}
 
+/// A page that counts the wheel events handed to it.
+private final class ScrollSpyPage: NSView {
+    var wheels = 0
+    override func scrollWheel(with event: NSEvent) { wheels += 1 }
+}
+
 @MainActor
 final class PearlPetCostTests: XCTestCase {
 
     private static func seconds(_ duration: Duration) -> Double {
         Double(duration.components.seconds) + Double(duration.components.attoseconds) * 1e-18
+    }
+
+    /// A wheel event, which only Core Graphics will build.
+    private static func wheelEvent() -> NSEvent? {
+        guard let cg = CGEvent(
+            scrollWheelEvent2Source: nil, units: .pixel,
+            wheelCount: 1, wheel1: -3, wheel2: 0, wheel3: 0
+        ) else { return nil }
+        return NSEvent(cgEvent: cg)
     }
 
     // MARK: - Idle
@@ -52,7 +75,7 @@ final class PearlPetCostTests: XCTestCase {
         var now: TimeInterval = 0
         let driver = SilentDriver()
         let view = PearlPetView(driver: driver, clock: { now })
-        view.frame = CGRect(x: 0, y: 0, width: 56, height: 86)
+        view.frame = CGRect(origin: .zero, size: PearlPetPlacement.hostSize(for: .default))
         let window = NSWindow(
             contentRect: CGRect(x: 0, y: 0, width: 1200, height: 800),
             styleMask: [.titled], backing: .buffered, defer: true
@@ -88,6 +111,49 @@ final class PearlPetCostTests: XCTestCase {
         )
     }
 
+    /// The same loop at every size, because "a bigger cat costs more" is the
+    /// obvious thing to fear and the thing that must not be true: the sprite is
+    /// magnified by the compositor, so the tick is the same work whatever she
+    /// is scaled to.
+    ///
+    /// Dies on the view ever re-slicing, re-rasterising or re-drawing the
+    /// sprite per size rather than handing one `CGImage` to a bigger layer.
+    func testHerSizeCostsNothingPerTick() {
+        var means: [PearlPetSize: Double] = [:]
+        for size in PearlPetSize.allCases {
+            var now: TimeInterval = 0
+            let driver = SilentDriver()
+            let view = PearlPetView(driver: driver, clock: { now })
+            view.size = size
+            view.frame = CGRect(origin: .zero, size: PearlPetPlacement.hostSize(for: size))
+            let window = NSWindow(
+                contentRect: CGRect(x: 0, y: 0, width: 1600, height: 1000),
+                styleMask: [.titled], backing: .buffered, defer: true
+            )
+            window.contentView?.addSubview(view)
+
+            let clock = ContinuousClock()
+            var total = 0.0
+            let ticks = Int(PearlPetMood.idleLoop / PearlPetMood.tickInterval)
+            for _ in 0..<ticks {
+                now += PearlPetMood.tickInterval
+                total += Self.seconds(clock.measure { driver.fire() })
+            }
+            means[size] = total / Double(ticks)
+            print(String(format: "PEARL IDLE at %@ (%.0fx%.0fpt): mean=%.4fms",
+                         size.title, size.standingSize.width, size.standingSize.height,
+                         (total / Double(ticks)) * 1000))
+        }
+
+        let small = means[.small] ?? 0
+        let large = means[.large] ?? 0
+        XCTAssertLessThan(large, 0.005, "a 3x tick cost \(large * 1000)ms")
+        XCTAssertLessThan(
+            large, max(small * 4, 0.001),
+            "a 3x cat costs \(large / max(small, 1e-9))x a 1x cat per tick — she is being redrawn"
+        )
+    }
+
     // MARK: - Scrolling
 
     /// Every wheel event on a page with Pearl on it, measured where the
@@ -100,11 +166,9 @@ final class PearlPetCostTests: XCTestCase {
         container.addSubview(page)
 
         let view = PearlPetView(driver: SilentDriver())
+        view.size = .default
         let host = PearlPetPlacement.hostFrame(
-            in: container.bounds.size,
-            spriteSize: CGSize(width: PearlSpriteContract.petStanding.width,
-                               height: PearlSpriteContract.petStanding.height),
-            position: PearlPetPlacement.defaultPosition
+            in: container.bounds.size, size: .default, spot: .home
         )
         view.frame = CGRect(x: host.minX, y: container.bounds.height - host.maxY,
                             width: host.width, height: host.height)
@@ -136,6 +200,35 @@ final class PearlPetCostTests: XCTestCase {
         }
     }
 
+    /// And the extra step a wheel event over her own pixels now takes: asking
+    /// who is behind her and handing the event on. It is one more hit test, so
+    /// it is held to the same bar as one.
+    func testScrollPassThroughCost() throws {
+        // Big enough to be under the event wherever AppKit places a
+        // synthesised wheel — see `PearlPetBehaviourTests` for why the
+        // location is not ours to choose.
+        let container = NSView(frame: CGRect(x: 0, y: 0, width: 100_000, height: 100_000))
+        let page = ScrollSpyPage(frame: container.bounds)
+        container.addSubview(page)
+
+        let view = PearlPetView(driver: SilentDriver())
+        view.size = .default
+        view.frame = CGRect(origin: .zero, size: PearlPetPlacement.hostSize(for: .default))
+        container.addSubview(view)
+
+        let event = try XCTUnwrap(Self.wheelEvent())
+
+        let clock = ContinuousClock()
+        let events = 2000
+        let elapsed = Self.seconds(clock.measure {
+            for _ in 0..<events { view.scrollWheel(with: event) }
+        })
+        let per = elapsed / Double(events)
+        print(String(format: "PEARL SCROLL pass-through over her: %.5fms/event", per * 1000))
+        XCTAssertEqual(page.wheels, events, "the page stopped scrolling under her")
+        XCTAssertLessThan(per, 0.001, "handing a wheel event on cost \(per * 1000)ms")
+    }
+
     /// The same measurement with her switched off, as the baseline: the pane
     /// without her in it. The difference between this and the case above is
     /// the whole of what she costs a scrolling page.
@@ -160,16 +253,22 @@ final class PearlPetCostTests: XCTestCase {
     /// first hit test on a pose is the only one that touches a bitmap. If that
     /// ever regressed, every wheel event would rasterise a sprite.
     func testTheHitTestDoesNotRasteriseAnything() {
-        let view = PearlPetView(driver: SilentDriver())
-        view.frame = CGRect(x: 0, y: 0, width: 56, height: 86)
-        let point = CGPoint(x: view.spriteRect.midX, y: view.spriteRect.minY + 8)
+        for size in PearlPetSize.allCases {
+            let view = PearlPetView(driver: SilentDriver())
+            view.size = size
+            view.frame = CGRect(origin: .zero, size: PearlPetPlacement.hostSize(for: size))
+            let point = CGPoint(x: view.spriteRect.midX, y: view.spriteRect.minY + 8 * size.scale)
 
-        let clock = ContinuousClock()
-        _ = view.isOnPearl(point)   // the one that may build a mask
-        let warm = Self.seconds(clock.measure {
-            for _ in 0..<10_000 { _ = view.isOnPearl(point) }
-        }) / 10_000
-        print(String(format: "PEARL pixel lookup: %.6fms", warm * 1000))
-        XCTAssertLessThan(warm, 0.0001, "a pixel lookup cost \(warm * 1000)ms — it is not a cached mask")
+            let clock = ContinuousClock()
+            _ = view.isOnPearl(point)   // the one that may build a mask
+            let warm = Self.seconds(clock.measure {
+                for _ in 0..<10_000 { _ = view.isOnPearl(point) }
+            }) / 10_000
+            print(String(format: "PEARL pixel lookup at %@: %.6fms", size.title, warm * 1000))
+            XCTAssertLessThan(
+                warm, 0.0001,
+                "a pixel lookup at \(size.title) cost \(warm * 1000)ms — it is not a cached mask"
+            )
+        }
     }
 }
