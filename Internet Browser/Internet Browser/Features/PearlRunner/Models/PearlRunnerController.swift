@@ -102,7 +102,8 @@ final class PearlRunnerController: ObservableObject {
         self.highScore = store.load()
     }
 
-    /// The player clicked or keyed the offer.
+    /// The player asked for a run: a space bar on the offline surface, or a
+    /// click on Pearl's mark.
     func begin() {
         hasStarted = true
         resume()
@@ -113,6 +114,46 @@ final class PearlRunnerController: ObservableObject {
         guard game.phase == .crashed else { return }
         game.reset()
         resume()
+    }
+
+    // MARK: - The space bar
+
+    /// A space bar went down on a failure screen. Decides who the press
+    /// belongs to (`PearlSpaceKey`), does whatever that means, and returns the
+    /// answer so the view consumes the key only when it was the runner's — a
+    /// press that came back `.notOurs` must reach the scroll view untouched.
+    @discardableResult
+    func spacePressed(offersRunner: Bool, runnerHasKeyboardFocus: Bool) -> PearlSpaceKey.Meaning {
+        let meaning = PearlSpaceKey.meaning(
+            offersRunner: offersRunner,
+            runnerHasKeyboardFocus: runnerHasKeyboardFocus,
+            hasStarted: hasStarted,
+            phase: game.phase
+        )
+        switch meaning {
+        case .notOurs:
+            break
+        case .start:
+            // Pearl starts on the ground, the way the dino does: the press
+            // that begins a run is not also the first jump.
+            input.jump = false
+            begin()
+        case .jump:
+            input.jump = true
+            resume()
+        case .restart:
+            // The press that clears the crash screen must not carry into the
+            // new run as a held jump.
+            input.jump = false
+            restart()
+        }
+        return meaning
+    }
+
+    /// The space bar came back up. Releasing early is what caps a tap jump, so
+    /// this has to arrive even on the press that started the run.
+    func spaceReleased() {
+        input.jump = false
     }
 
     /// Ticks stop but the picture stays: focus left the game.
