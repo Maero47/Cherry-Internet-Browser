@@ -321,11 +321,31 @@ uBlock Origin, whose MV2 blocking simply cannot work here: WebKit delivers
 
 ## Getting it
 
-There is no download link here yet. Cherry cannot be signed on the machine it is built
-on, so a published DMG would greet whoever clicked it with a security block and no
-explanation — see the next section for exactly what that looks like. The script that
-makes the DMG is in the repository, and the decision to put one somewhere people can
-click is the author's to make.
+**[Download Cherry 1.0 (39 MB)](../../releases/latest)**
+
+`sha256 17393584b5b2dfbffc6827fbbe44bb719b7a8b13d5a2070c2ca4a12141556e25`
+
+### Read this before you double-click it
+
+Cherry is not notarized, so **macOS will refuse to open it and tell you the app is
+damaged**. It is not damaged. It is unsigned, and that is the only message macOS has
+for an app it cannot check with Apple.
+
+Drag Cherry to Applications, then run this once:
+
+```sh
+xattr -d com.apple.quarantine /Applications/Cherry.app
+```
+
+Open it normally after that. This is the route that was actually tested on a
+freshly-downloaded copy — see the Gatekeeper section below for what was measured.
+
+Right-clicking the app and choosing **Open**, or the **Open Anyway** button in System
+Settings → Privacy & Security, are the usual ways past this and will very likely work
+too; neither was tested here, so neither is promised.
+
+Notarizing would remove all of this, and needs a paid Apple Developer account. It may
+happen; it has not yet.
 
 ### Build the DMG yourself
 
