@@ -488,7 +488,7 @@ Written in Swift and SwiftUI, state through `@Observable`, storage in Core Data.
 Two dependencies, both Swift packages: the official
 [MCP Swift SDK](https://github.com/modelcontextprotocol/swift-sdk) and
 [mlx-swift-examples](https://github.com/ml-explore/mlx-swift-examples) for the local
-Qwen engine. `PROJECT_PROGRESS.md` is the long version, feature by feature.
+Qwen engine.
 
 ## License
 
