@@ -97,6 +97,14 @@ her away.
 She refuses to appear in private windows, on Cherry's own pages, in the unfocused
 half of a split view, when the find bar is up, and in a window too small to hold her.
 
+<p align="center">
+  <img src="docs/pearl-pet.gif" width="720" alt="Pearl being picked up from the corner of a Wikipedia article, carried to the middle of the page, clicked for hearts, and put back">
+</p>
+
+<p align="center">
+  <sub>Picking her up, moving her, clicking her, and sending her home. Recorded in Cherry.</sub>
+</p>
+
 ### The game
 
 When a page fails because the network is gone — and only then — the offline screen
@@ -223,6 +231,15 @@ app's Dock icon as well as the interface — there is a drawn icon per accent:
 
 Open **Ask Pearl** with ⌘⇧K. A panel opens beside the page, and everything in it runs
 on your Mac.
+
+<p align="center">
+  <img src="docs/ask-pearl.gif" width="720" alt="The Ask Pearl panel opening beside a Wikipedia article, a question being typed, and the answer arriving from Qwen running locally">
+</p>
+
+<p align="center">
+  <sub>One continuous take, nothing cut out of the middle. The answer comes from
+  <code>Qwen3-8B-4bit</code> running on the Mac that recorded this.</sub>
+</p>
 
 | Mode | What it does |
 |---|---|
