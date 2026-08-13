@@ -1,8 +1,6 @@
 <p align="center">
-  <img src="Internet%20Browser/Internet%20Browser/Assets.xcassets/AppIcon.appiconset/icon_512.png" width="160" alt="The Cherry app icon">
+  <img src="docs/poster.jpg" width="900" alt="Cherry: browse, ask, automate. A macOS browser with an on-device model that reads the page you are on, and an MCP server so Claude Code or Codex can drive it.">
 </p>
-
-<h1 align="center">Cherry</h1>
 
 <p align="center">
   <b>A web browser for macOS, with a cat in it.</b><br>
