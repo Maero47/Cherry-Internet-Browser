@@ -12,7 +12,7 @@
 
 <p align="center">
   <sub>
-    Personal project · macOS 26.2 or later · not on the App Store · no Developer ID
+    Personal project · macOS 26.2 or later · not on the App Store · signed and notarized
   </sub>
 </p>
 
@@ -323,29 +323,23 @@ uBlock Origin, whose MV2 blocking simply cannot work here: WebKit delivers
 
 **[Download Cherry 1.0 (39 MB)](../../releases/latest)**
 
-`sha256 17393584b5b2dfbffc6827fbbe44bb719b7a8b13d5a2070c2ca4a12141556e25`
+`sha256 83f879bb8e418ac5b0c47f8f4663a2ff167e072e8fdc15d5b848fbbc6cacbc43`
 
-### Read this before you double-click it
+### What happens when you open it
 
-Cherry is not notarized, so **macOS will refuse to open it and tell you the app is
-damaged**. It is not damaged. It is unsigned, and that is the only message macOS has
-for an app it cannot check with Apple.
+Open the disk image, drag Cherry to Applications, double-click it. macOS asks once
+whether you are sure you want to open an app downloaded from the Internet, you say
+**Open**, and Cherry starts. That is the whole procedure — no terminal, no `xattr`, and
+nothing about the app being damaged.
 
-Drag Cherry to Applications, then run this once:
+That one prompt is a confirmation, not a block, and it is not about Cherry: macOS shows
+it on the first launch of anything that arrived with a download flag on it, signed and
+notarized or not, and there is no way for a developer to turn it off.
 
-```sh
-xattr -d com.apple.quarantine /Applications/Cherry.app
-```
-
-Open it normally after that. This is the route that was actually tested on a
-freshly-downloaded copy — see the Gatekeeper section below for what was measured.
-
-Right-clicking the app and choosing **Open**, or the **Open Anyway** button in System
-Settings → Privacy & Security, are the usual ways past this and will very likely work
-too; neither was tested here, so neither is promised.
-
-Notarizing would remove all of this, and needs a paid Apple Developer account. It may
-happen; it has not yet.
+Cherry is signed with a Developer ID Application certificate, built with the hardened
+runtime and a secure timestamp, notarized by Apple, and stapled — the app and the disk
+image both. The Gatekeeper section below is what that looks like when it is measured
+rather than asserted.
 
 ### Build the DMG yourself
 
@@ -354,78 +348,83 @@ git clone <this repo> && cd <it>
 ./Tools/build-dmg.sh
 ```
 
-That produces `dist/Cherry-1.0.dmg` — a Release build, ad-hoc signed, universal
-(`x86_64 arm64`), around **39 MB**, containing exactly two things: `Cherry.app` and a
-symlink to `/Applications`. The script builds into a throwaway directory under
-`/private/tmp` and deletes it on any exit, strips the debug map so the app does not
-carry the builder's home directory around inside it, refuses to build an image
-containing databases, tokens, keys or user defaults, prints the image's SHA-256, and
-prints the same warning you are about to read.
+That produces `dist/Cherry-1.0.dmg` — a Release build, universal (`x86_64 arm64`),
+around **39 MB**, containing exactly two things: `Cherry.app` and a symlink to
+`/Applications`. The script builds into a throwaway directory under `/private/tmp` and
+deletes it on any exit, strips the debug map so the app does not carry the builder's
+home directory around inside it, refuses to build an image containing databases,
+tokens, keys or user defaults, and prints the image's SHA-256.
+
+Cloned fresh, it signs **ad-hoc**: no certificate is needed and none is in this
+repository. That build runs on the Mac that made it, and a Mac that downloaded it would
+refuse it — the script says so at the end, in those words.
+
+The signed, notarized build is the same script with two environment variables, which is
+where the certificate and the credential live because neither belongs in a repository:
+
+```sh
+export CHERRY_SIGN_IDENTITY=…    # a Developer ID Application identity
+export CHERRY_NOTARY_PROFILE=…   # an `xcrun notarytool store-credentials` profile name
+./Tools/build-dmg.sh
+```
+
+With both set it signs inside out — nested bundles first, then the app, hardened
+runtime and secure timestamp throughout — notarizes and staples the app, builds the
+image around the stapled app, then signs, notarizes and staples the image too. It never
+asks for a password and never prints the identity; the notary credential stays in the
+keychain. Set one variable without the other and it stops and tells you, rather than
+producing a signed-but-unnotarized image that a downloader could not open anyway.
 
 It needs Xcode 26, and takes several minutes the first time because MLX compiles from
 source. You can also just open `Internet Browser/Internet Browser.xcodeproj` and press
 ⌘R.
 
-### Gatekeeper: if someone hands you the DMG
+### Gatekeeper, measured
 
-**Read this part.** It is not optional and it is not a formality.
+Measured on **macOS 26.5.2**, on a copy of the released DMG carrying the same
+`com.apple.quarantine` attribute Safari writes when a download finishes
+(`0083;…;Safari;…`), with the app copied out of the mounted image the way you would
+copy it.
 
-This machine has no Apple code-signing identity — `security find-identity -v -p
-codesigning` returns *0 valid identities* — so Cherry cannot be signed with a Developer
-ID and cannot be notarized. It is signed ad-hoc, which is enough to run where it was
-built and not enough anywhere else.
+The image, assessed as Gatekeeper assesses it before mounting:
 
-Here is what actually happens. This was measured on **macOS 26.5.2**, on a copy of the
-DMG carrying the same quarantine flag Safari writes when a download finishes, with the
-app copied out of the mounted image the way you would copy it:
+```
+Cherry-1.0.dmg: accepted
+source=Notarized Developer ID
+```
 
-1. **The DMG mounts and copies fine.** Dragging Cherry to Applications works. Nothing
-   warns you yet. The quarantine flag comes along with the app.
-2. **Then it does not open.** macOS copies the app into a random read-only folder
-   (App Translocation), checks the signature, does not like it, puts a security dialog
-   in front of you, and kills the process. The system's own log for that attempt:
+The app, copied out to a normal folder, still carrying the quarantine flag it inherited
+from the image:
 
-   ```
-   amfid:      Cherry not valid: … Code=-423 "The file is adhoc signed or
-               signed by an unknown certificate chain"
-   syspolicyd: GatekeeperPolicyScanError Code=-67018
-               "Code did not match any currently allowed policy"
-   syspolicyd: Prompt shown (6, 0), waiting for response
-   syspolicyd: Adding Gatekeeper denial breadcrumb (open)
-   syspolicyd: Terminating process due to Gatekeeper rejection
-   ```
+```
+Cherry.app: accepted
+source=Notarized Developer ID
+```
 
-   macOS keeps two sentences for this case, and both are in its own string table:
-   *"'Cherry' is damaged and can't be opened"* and *"Apple could not verify 'Cherry' is
-   free of malware that may harm your Mac"*, next to a **Move to Trash** button.
-   **Cherry is not damaged and is not malware.** That is what macOS says about any app
-   with no Developer ID, and it says it in the strongest words it has.
-3. **The fix that was verified**, on that quarantined copy, one command:
+Apple's own pre-distribution check on that same copy: *"App passed all pre-distribution
+checks and is ready for distribution."* Where the previous release got a rejection —
+`-67018`, *"Code did not match any currently allowed policy"* — this one gets an
+acceptance, from the same command, on a copy quarantined the same way.
 
-   ```sh
-   xattr -d com.apple.quarantine /Applications/Cherry.app
-   ```
+**The ticket travels inside the download.** Notarization only helps offline if Apple's
+approval is *in* the artifact rather than fetched at first launch, and it is: stapling
+writes a 1,716-byte ticket to `Cherry.app/Contents/CodeResources` and appends a
+2,249-byte one to the end of the DMG. Both start with `s8ch`, Apple's ticket magic, and
+both were read out of the downloaded copy, not out of the build directory. That file is
+what Gatekeeper reads instead of calling home.
 
-   Then open it normally. Measured immediately after: it launched from its own path,
-   with no dialog and no Gatekeeper rejection in the log. (Files *inside* the bundle
-   keep their own copies of the flag — 34 of them — and that does not stop the launch.
-   `xattr -dr` clears those too if you want it tidy.)
+Two things this README will not claim. It did not perform a cold first launch with the
+network down — `stapler validate` cannot stand in for that, because it queries Apple's
+CloudKit even when the ticket is stapled and so fails without a network for reasons
+that have nothing to do with the app, and this machine's network was not taken down to
+try the real thing. What was measured is that the ticket is physically inside both
+artifacts. And the confirmation dialog described above was not clicked through, because
+that means launching a browser and letting it write its first-run state; that it is a
+confirmation and not a rejection follows from Gatekeeper accepting the app, which was
+measured.
 
-That command removes the "downloaded from the internet" mark. You are telling your Mac
-you trust this app because of where you got it, not because Apple checked it — a real
-decision, and one to make only for a build from someone you trust or one you built
-yourself from this source.
-
-Two things this README will not claim, because they were not tested: **right-click →
-Open**, and the **Open Anyway** button that appears in System Settings → Privacy &
-Security after a blocked launch. Both are mouse routes and this was measured from a
-terminal. macOS did write the denial breadcrumb that makes the Settings button appear,
-so that route very likely works; the `xattr` command is the one with evidence behind it.
-
-**What would fix it properly:** a paid Apple Developer Program membership, a Developer
-ID Application certificate in the keychain, and an `xcrun notarytool submit` pass on
-every build. Then the DMG opens on one click — no terminal, no warning, no explaining.
-None of that exists on the machine this was built on, so none of it is faked here.
+Files *inside* the bundle keep their own copies of the quarantine flag — 36 of them —
+and none of that stops anything now.
 
 ---
 
@@ -464,7 +463,8 @@ menu item behind it.
   engine wants an Apple-silicon Mac and a download you start yourself.
 - **Xcode 26** to build it.
 - A personal project, by one person, with no company behind it and no support promise.
-  It is not sandboxed, it is not on the App Store, and it is not notarized.
+  It is not sandboxed and it is not on the App Store. It is signed with a Developer ID
+  and notarized by Apple, which is what lets it open on a Mac that downloaded it.
 - The engine is `WKWebView`. Cherry does not have its own renderer, so its page
   compatibility is Safari's page compatibility — including where that is worse than
   Chrome's.
